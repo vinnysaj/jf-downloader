@@ -1,0 +1,660 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1E7E1A1E7E1A1E7E1A1E706 /* AetherEngine in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E703 /* AetherEngine */; };
+		A1E7E1A1E7E1A1E7E1A1E707 /* Nuke in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E704 /* Nuke */; };
+		A1E7E1A1E7E1A1E7E1A1E708 /* NukeUI in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E705 /* NukeUI */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		8AFF0FA8A0E1CA20D31CA3F4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A391A1819DA1A6FCC0276006 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 976B3DB60BE9331065AC1FCB;
+			remoteInfo = Vinnyfin;
+		};
+		A35E995A35708CFE32325F4A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A391A1819DA1A6FCC0276006 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 976B3DB60BE9331065AC1FCB;
+			remoteInfo = Vinnyfin;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0696FC3419A958EA70DD02E9 /* VinnyfinUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VinnyfinUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5D10A52A987F8DDDC248D2A2 /* vinnyfin.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = vinnyfin.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7BADCD9C76DAEAAB4CF6A6D5 /* VinnyfinTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VinnyfinTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		3B680B6C3E56AD42CD698342 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				"Vinnyfin-macOS.entitlements",
+			);
+			target = 976B3DB60BE9331065AC1FCB /* Vinnyfin */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		5843EC513002D4DAC1E272F7 /* Vinnyfin */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				3B680B6C3E56AD42CD698342 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = Vinnyfin;
+			sourceTree = "<group>";
+		};
+		850D8079A140ED3691C41285 /* VinnyfinUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = VinnyfinUITests;
+			sourceTree = "<group>";
+		};
+		B7F4BF62BC54328D95850863 /* VinnyfinTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = VinnyfinTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1E7E1A1E7E1A1E7E1A1E709 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1E7E1A1E7E1A1E7E1A1E706 /* AetherEngine in Frameworks */,
+				A1E7E1A1E7E1A1E7E1A1E707 /* Nuke in Frameworks */,
+				A1E7E1A1E7E1A1E7E1A1E708 /* NukeUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		587DAA54711BEBC695D29FB1 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5D10A52A987F8DDDC248D2A2 /* vinnyfin.app */,
+				7BADCD9C76DAEAAB4CF6A6D5 /* VinnyfinTests.xctest */,
+				0696FC3419A958EA70DD02E9 /* VinnyfinUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B2674128E42356E3E4089AA5 = {
+			isa = PBXGroup;
+			children = (
+				5843EC513002D4DAC1E272F7 /* Vinnyfin */,
+				B7F4BF62BC54328D95850863 /* VinnyfinTests */,
+				850D8079A140ED3691C41285 /* VinnyfinUITests */,
+				587DAA54711BEBC695D29FB1 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3A78035E216140D030C528EC /* VinnyfinTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 61B162CEAF778C55CC4032DF /* Build configuration list for PBXNativeTarget "VinnyfinTests" */;
+			buildPhases = (
+				ABF0E60819A571CCEF46ED1F /* Sources */,
+				1926D1E43D0A099F26634655 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B316666EBF66448C43B7460D /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B7F4BF62BC54328D95850863 /* VinnyfinTests */,
+			);
+			name = VinnyfinTests;
+			packageProductDependencies = (
+			);
+			productName = VinnyfinTests;
+			productReference = 7BADCD9C76DAEAAB4CF6A6D5 /* VinnyfinTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		976B3DB60BE9331065AC1FCB /* Vinnyfin */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 33DD849D12DB8178059A44EA /* Build configuration list for PBXNativeTarget "Vinnyfin" */;
+			buildPhases = (
+				E161FA50840A365A1A347530 /* Sources */,
+				A1E7E1A1E7E1A1E7E1A1E709 /* Frameworks */,
+				D9F6EC267ED4438C2305969A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				5843EC513002D4DAC1E272F7 /* Vinnyfin */,
+			);
+			name = Vinnyfin;
+			packageProductDependencies = (
+				A1E7E1A1E7E1A1E7E1A1E703 /* AetherEngine */,
+				A1E7E1A1E7E1A1E7E1A1E704 /* Nuke */,
+				A1E7E1A1E7E1A1E7E1A1E705 /* NukeUI */,
+			);
+			productName = Vinnyfin;
+			productReference = 5D10A52A987F8DDDC248D2A2 /* vinnyfin.app */;
+			productType = "com.apple.product-type.application";
+		};
+		C15E999431C3000AC0B371D7 /* VinnyfinUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF7C5472D8884440F1BED195 /* Build configuration list for PBXNativeTarget "VinnyfinUITests" */;
+			buildPhases = (
+				0BBB2CB5B85406248FBE82C3 /* Sources */,
+				25668B67BF2417060C170940 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5274CCAA6511654F276C5B5F /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				850D8079A140ED3691C41285 /* VinnyfinUITests */,
+			);
+			name = VinnyfinUITests;
+			packageProductDependencies = (
+			);
+			productName = VinnyfinUITests;
+			productReference = 0696FC3419A958EA70DD02E9 /* VinnyfinUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A391A1819DA1A6FCC0276006 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					3A78035E216140D030C528EC = {
+						ProvisioningStyle = Automatic;
+					};
+					976B3DB60BE9331065AC1FCB = {
+						ProvisioningStyle = Automatic;
+					};
+					C15E999431C3000AC0B371D7 = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = 976B3DB60BE9331065AC1FCB;
+					};
+				};
+			};
+			buildConfigurationList = E8C30742CCCB5105D47FAF6E /* Build configuration list for PBXProject "Vinnyfin" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = B2674128E42356E3E4089AA5;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A1E7E1A1E7E1A1E7E1A1E701 /* XCRemoteSwiftPackageReference "AetherEngine" */,
+				A1E7E1A1E7E1A1E7E1A1E702 /* XCRemoteSwiftPackageReference "Nuke" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 587DAA54711BEBC695D29FB1 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				976B3DB60BE9331065AC1FCB /* Vinnyfin */,
+				3A78035E216140D030C528EC /* VinnyfinTests */,
+				C15E999431C3000AC0B371D7 /* VinnyfinUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1926D1E43D0A099F26634655 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		25668B67BF2417060C170940 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D9F6EC267ED4438C2305969A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		0BBB2CB5B85406248FBE82C3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ABF0E60819A571CCEF46ED1F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E161FA50840A365A1A347530 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5274CCAA6511654F276C5B5F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 976B3DB60BE9331065AC1FCB /* Vinnyfin */;
+			targetProxy = 8AFF0FA8A0E1CA20D31CA3F4 /* PBXContainerItemProxy */;
+		};
+		B316666EBF66448C43B7460D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 976B3DB60BE9331065AC1FCB /* Vinnyfin */;
+			targetProxy = A35E995A35708CFE32325F4A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		6F53A65F92511F2FCBE3C5E1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin.uitests;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				TEST_TARGET_NAME = Vinnyfin;
+			};
+			name = Debug;
+		};
+		76F1DCCA7A16E8A54541BDD2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx xros xrsimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TVOS_DEPLOYMENT_TARGET = 27.0;
+				XROS_DEPLOYMENT_TARGET = 27.0;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.1;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2,3,7";
+			};
+			name = Release;
+		};
+		AE47CC7A9B70F2B35DC7F1FD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin.tests;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vinnyfin.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vinnyfin";
+			};
+			name = Release;
+		};
+		C101440C6246A2A5C8ECE20F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx xros xrsimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TVOS_DEPLOYMENT_TARGET = 27.0;
+				XROS_DEPLOYMENT_TARGET = 27.0;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.1;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2,3,7";
+			};
+			name = Debug;
+		};
+		CFEB5D82F172DD67CAC92EDF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin.tests;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vinnyfin.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vinnyfin";
+			};
+			name = Debug;
+		};
+		DC7247B4FEAF1B077B81636B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin.uitests;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				TEST_TARGET_NAME = Vinnyfin;
+			};
+			name = Release;
+		};
+		F1A78615BA981451E0531FE3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "AppIcon TV";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Vinnyfin/Vinnyfin-macOS.entitlements";
+				INFOPLIST_FILE = Vinnyfin/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin;
+				PRODUCT_NAME = vinnyfin;
+			};
+			name = Release;
+		};
+		FD4CB1CE2F7B4B4A9F2A1ACA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "AppIcon TV";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Vinnyfin/Vinnyfin-macOS.entitlements";
+				INFOPLIST_FILE = Vinnyfin/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin;
+				PRODUCT_NAME = vinnyfin;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		33DD849D12DB8178059A44EA /* Build configuration list for PBXNativeTarget "Vinnyfin" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FD4CB1CE2F7B4B4A9F2A1ACA /* Debug */,
+				F1A78615BA981451E0531FE3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		61B162CEAF778C55CC4032DF /* Build configuration list for PBXNativeTarget "VinnyfinTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFEB5D82F172DD67CAC92EDF /* Debug */,
+				AE47CC7A9B70F2B35DC7F1FD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E8C30742CCCB5105D47FAF6E /* Build configuration list for PBXProject "Vinnyfin" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C101440C6246A2A5C8ECE20F /* Debug */,
+				76F1DCCA7A16E8A54541BDD2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FF7C5472D8884440F1BED195 /* Build configuration list for PBXNativeTarget "VinnyfinUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6F53A65F92511F2FCBE3C5E1 /* Debug */,
+				DC7247B4FEAF1B077B81636B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A1E7E1A1E7E1A1E7E1A1E701 /* XCRemoteSwiftPackageReference "AetherEngine" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/superuser404notfound/AetherEngine";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 7.54.0;
+			};
+		};
+		A1E7E1A1E7E1A1E7E1A1E702 /* XCRemoteSwiftPackageReference "Nuke" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kean/Nuke";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 13.2.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A1E7E1A1E7E1A1E7E1A1E703 /* AetherEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1E7E1A1E7E1A1E7E1A1E701 /* XCRemoteSwiftPackageReference "AetherEngine" */;
+			productName = AetherEngine;
+		};
+		A1E7E1A1E7E1A1E7E1A1E704 /* Nuke */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1E7E1A1E7E1A1E7E1A1E702 /* XCRemoteSwiftPackageReference "Nuke" */;
+			productName = Nuke;
+		};
+		A1E7E1A1E7E1A1E7E1A1E705 /* NukeUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1E7E1A1E7E1A1E7E1A1E702 /* XCRemoteSwiftPackageReference "Nuke" */;
+			productName = NukeUI;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A391A1819DA1A6FCC0276006 /* Project object */;
+}

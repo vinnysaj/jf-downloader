@@ -1,0 +1,115 @@
+import AetherEngine
+import Foundation
+import Observation
+
+/// Starts playbacks and owns the one playback engine, which is built once and reused for every
+/// title, as the engine expects. On iPhone, iPad, Apple TV and Vision Pro the player covers the
+/// app; on the Mac it opens in a window of its own.
+@Observable
+final class PlayerCoordinator {
+    /// The playback on screen, for the full-screen player.
+    var presented: PlayerModel?
+    /// A playback waiting for the Mac's root view to open its window.
+    var pendingWindowRequest: PlaybackRequest?
+    /// Why the engine couldn't be built, to show instead of playing.
+    var problem: String?
+
+    @ObservationIgnored private let accounts: AccountStore
+    @ObservationIgnored private let settings: AppSettings
+    @ObservationIgnored private let history: WatchHistory
+    @ObservationIgnored private var engine: AetherEngine?
+    @ObservationIgnored private let lease = EngineLease()
+    #if !os(tvOS)
+    @ObservationIgnored private let downloads: DownloadManager
+    @ObservationIgnored private let smartDownloads: SmartDownloads
+    @ObservationIgnored private let localLibrary: LocalLibrary
+
+    init(accounts: AccountStore, settings: AppSettings, history: WatchHistory,
+         downloads: DownloadManager, smartDownloads: SmartDownloads, localLibrary: LocalLibrary) {
+        self.accounts = accounts
+        self.settings = settings
+        self.history = history
+        self.downloads = downloads
+        self.smartDownloads = smartDownloads
+        self.localLibrary = localLibrary
+    }
+    #else
+    init(accounts: AccountStore, settings: AppSettings, history: WatchHistory) {
+        self.accounts = accounts
+        self.settings = settings
+        self.history = history
+    }
+    #endif
+
+    func play(_ request: PlaybackRequest) {
+        #if os(macOS)
+        pendingWindowRequest = request
+        #else
+        Task { await present(request) }
+        #endif
+    }
+
+    /// Plays a file the user picked, remembering it among the recent files. The caller holds
+    /// access to the file while this runs.
+    func playFile(_ url: URL) {
+        do {
+            let request = try PlaybackRequest.file(url)
+            #if !os(tvOS)
+            localLibrary.noteOpened(url, request: request)
+            #endif
+            play(request)
+        } catch {
+            problem = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    private func present(_ request: PlaybackRequest) async {
+        if let presented { await presented.close() }
+        presented = makeModel(for: request)
+    }
+
+    func dismiss() async {
+        guard let model = presented else { return }
+        presented = nil
+        await model.close()
+    }
+
+    /// A model for `request`, on the shared engine. Nil when the engine can't be built.
+    func makeModel(for request: PlaybackRequest) -> PlayerModel? {
+        guard let engine = sharedEngine() else { return nil }
+        #if os(tvOS)
+        let resolver = PlaybackResolver(accounts: accounts, settings: settings, history: history) { _, _ in nil }
+        let model = PlayerModel(request: request, engine: engine, lease: lease, resolver: resolver, accounts: accounts,
+                                history: history, settings: settings) { _ in nil }
+        #else
+        let resolver = PlaybackResolver(accounts: accounts, settings: settings, history: history) { [downloads] itemId, mediaSourceId in
+            downloads.playableFile(itemId: itemId, mediaSourceId: mediaSourceId)
+        }
+        let model = PlayerModel(request: request, engine: engine, lease: lease, resolver: resolver, accounts: accounts,
+                                history: history, settings: settings) { [downloads] episode in
+            downloads.downloadedEpisode(after: episode)
+        }
+        model.onPlaybackEnded = { [smartDownloads] item in smartDownloads.playbackEnded(item) }
+        #endif
+        return model
+    }
+
+    private func sharedEngine() -> AetherEngine? {
+        if let engine { return engine }
+        do {
+            let engine = try AetherEngine()
+            // The player draws its own controls, so the engine owns the system's Now Playing
+            // card and remote commands on both of its decode paths.
+            #if os(iOS) || os(tvOS)
+            engine.ownsVideoNowPlayingSession = true
+            #endif
+            engine.ownsSoftwareNowPlaying = true
+            engine.remoteSkipInterval = PlayerModel.skipInterval
+            self.engine = engine
+            return engine
+        } catch {
+            problem = "The player couldn't start: \(error.localizedDescription)"
+            return nil
+        }
+    }
+}
