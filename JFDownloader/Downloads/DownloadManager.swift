@@ -1,0 +1,620 @@
+import Foundation
+import Network
+import Observation
+import OSLog
+
+/// Runs the download queue on a background `URLSession`.
+///
+/// Transfers run in the system's download daemon, not in this process, so they continue while
+/// the app is suspended or after the system has terminated it; the system relaunches the app in
+/// the background to hand over finished transfers. Files are fetched in byte-range chunks that
+/// are written into a sparse partial file as they arrive, so a dropped connection costs at most
+/// one chunk, whatever the server sends. (Gelato's streams come through Jellyfin without ETag or
+/// Last-Modified, which the system needs for its own resume data.)
+///
+/// Every transfer's purpose is in its `taskDescription` (`TransferTag`), so the queue rebuilds
+/// itself from the session after a relaunch.
+@Observable
+final class DownloadManager {
+    static let sessionIdentifier = "com.vinnysaj.jfdownloader.transfers"
+    /// Transfers handed to the system at once, across all jobs; the session runs
+    /// `connectionsPerHost` of them at a time. The queue is deep because transfers created while
+    /// the app is open start right away, while ones created on a background wake may be held
+    /// back by the system (until Wi-Fi or charging, say): queued from the foreground, a whole
+    /// file or several keep downloading after the phone goes in a pocket.
+    static let maxQueuedTransfers = 128
+    static let connectionsPerHost = 4
+    /// While the app is open, a transfer the session should be running that moved no bytes for
+    /// this long is replaced. The daemon retries a dropped transfer by itself, doubling its wait
+    /// each time up to many minutes; a new transfer starts over without that wait.
+    static let stallLimit: TimeInterval = 45
+    /// Visible in Console.app (subsystem com.vinnysaj.jfdownloader) for following a download.
+    private static let log = Logger(subsystem: "com.vinnysaj.jfdownloader", category: "downloads")
+
+    private(set) var jobs: [DownloadJob] = []
+    /// Bytes on disk plus bytes running transfers have received, by job. Refreshed by `trackProgress()`.
+    private(set) var receivedBytes: [UUID: Int64] = [:]
+    private(set) var bytesPerSecond: [UUID: Double] = [:]
+    private(set) var isNetworkReachable = true
+    /// A local problem (storage, the saved queue) to show until dismissed.
+    var problem: String?
+
+    private struct RunningTransfer {
+        let tag: TransferTag
+        let task: URLSessionDownloadTask
+        var received: Int64
+        /// When bytes last arrived, or when the app started or adopted the transfer.
+        var lastProgress = Date.now
+        /// Started from a stalled transfer's resume data.
+        var resumed = false
+    }
+
+    @ObservationIgnored private let accounts: AccountStore
+    @ObservationIgnored private let storage: DownloadStorage
+    @ObservationIgnored private let delegate: TransferDelegate
+    @ObservationIgnored private let session: URLSession
+    @ObservationIgnored private var running: [Int: RunningTransfer] = [:]
+    /// Tasks this app cancelled (pause, remove, restart); whatever they deliver is dropped.
+    @ObservationIgnored private var cancelledByUs: Set<Int> = []
+    @ObservationIgnored private var backgroundCompletion: (() -> Void)?
+    @ObservationIgnored private var backgroundEventsDelivered = false
+    /// False until `run()` has adopted the session's existing transfers; scheduling before that
+    /// would request ranges that are already in flight.
+    @ObservationIgnored private var hasAdoptedTransfers = false
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
+    @ObservationIgnored private var lastSample: (date: Date, bytes: [UUID: Int64])?
+    @ObservationIgnored private var lastStallCheck = Date.now
+
+    init(accounts: AccountStore, storage: DownloadStorage = .standard) {
+        self.accounts = accounts
+        self.storage = storage
+        do {
+            try storage.prepare()
+            try storage.clearStaging()
+        } catch {
+            problem = "Couldn't prepare the downloads folder: \(error.localizedDescription)"
+        }
+        do {
+            jobs = try storage.loadJobs()
+        } catch {
+            problem = Self.setAsideUnreadableJobs(storage, error: error)
+        }
+
+        delegate = TransferDelegate(stagingDirectory: storage.staging)
+        let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
+        configuration.sessionSendsLaunchEvents = true
+        configuration.isDiscretionary = false
+        configuration.allowsCellularAccess = true
+        configuration.allowsExpensiveNetworkAccess = true
+        configuration.allowsConstrainedNetworkAccess = true
+        configuration.httpMaximumConnectionsPerHost = Self.connectionsPerHost
+        // A connection that delivers nothing for a minute is dropped and its chunk retried.
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 7 * 24 * 60 * 60
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    }
+
+    private static func setAsideUnreadableJobs(_ storage: DownloadStorage, error: any Error) -> String {
+        let aside = storage.root.appending(path: "jobs-unreadable-\(Int(Date.now.timeIntervalSince1970)).json")
+        do {
+            try FileManager.default.moveItem(at: storage.jobsFile, to: aside)
+            return "The saved download list couldn't be read (\(error.localizedDescription)). It was kept as \(aside.lastPathComponent)."
+        } catch let moveError {
+            return "The saved download list couldn't be read (\(error.localizedDescription)) or set aside (\(moveError.localizedDescription))."
+        }
+    }
+
+    // MARK: Running
+
+    /// Adopts the transfers the session still has, then handles its events for the life of the app.
+    func run() async {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let reachable = path.status == .satisfied
+            Task { @MainActor in self?.networkChanged(reachable: reachable) }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.vinnysaj.jfdownloader.path"))
+
+        for task in await session.allTasks {
+            guard let download = task as? URLSessionDownloadTask,
+                  let tag = TransferTag(encoded: task.taskDescription),
+                  let job = jobs.first(where: { $0.id == tag.jobId }), job.status == .active
+            else {
+                Self.log.info("Cancelling task \(task.taskIdentifier) of no active job: \(task.taskDescription ?? "untagged")")
+                cancelledByUs.insert(task.taskIdentifier)
+                task.cancel()
+                continue
+            }
+            Self.log.info("Adopted task \(task.taskIdentifier) [\(tag.encoded)] state \(task.state.rawValue), \(task.countOfBytesReceived) bytes in")
+            running[task.taskIdentifier] = RunningTransfer(tag: tag, task: download, received: task.countOfBytesReceived)
+        }
+        hasAdoptedTransfers = true
+        pump()
+
+        for await event in delegate.events {
+            switch event {
+            case .progress(let taskIdentifier, let received):
+                guard let transfer = running[taskIdentifier] else { continue }
+                running[taskIdentifier]?.received = received
+                running[taskIdentifier]?.lastProgress = .now
+                if received < transfer.received { restarted(taskIdentifier, after: transfer.received) }
+            case .finished(let finished):
+                await handle(finished)
+                pump()
+            case .backgroundEventsDelivered:
+                if let completion = backgroundCompletion {
+                    backgroundCompletion = nil
+                    completion()
+                } else {
+                    backgroundEventsDelivered = true
+                }
+            }
+        }
+    }
+
+    /// The system's handler for a background launch; called once the launch's events are handled.
+    func handleBackgroundEvents(completion: @escaping () -> Void) {
+        if backgroundEventsDelivered {
+            backgroundEventsDelivered = false
+            completion()
+        } else {
+            backgroundCompletion = completion
+        }
+    }
+
+    /// Publishes progress and speed twice a second for as long as the caller's task runs, and
+    /// replaces stalled transfers meanwhile. Runs while the app is open.
+    func trackProgress() async {
+        while !Task.isCancelled {
+            refreshLiveProgress()
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
+    // MARK: Commands
+
+    func enqueue(_ item: JellyfinItem, source: MediaSource) {
+        let unfinished = jobs.contains {
+            $0.itemId == item.id && $0.mediaSourceId == source.id && $0.status != .completed
+        }
+        guard !unfinished else { return }
+        jobs.append(DownloadJob(item: item, source: source))
+        save()
+        pump()
+    }
+
+    func pause(_ id: UUID) {
+        guard let index = index(of: id), jobs[index].status == .active else { return }
+        cancelTransfers(of: id)
+        jobs[index].status = .paused
+        save()
+    }
+
+    /// Continues a paused job, or retries a failed one from where it got to.
+    func resume(_ id: UUID) {
+        guard let index = index(of: id), jobs[index].status == .paused || jobs[index].status == .failed else { return }
+        jobs[index].status = .active
+        jobs[index].networkFailures = 0
+        jobs[index].serverFailures = 0
+        jobs[index].retryAt = nil
+        save()
+        pump()
+    }
+
+    /// Starts over from the first byte, for a source that changed on the server.
+    func restart(_ id: UUID) {
+        guard let index = index(of: id), jobs[index].status != .completed else { return }
+        cancelTransfers(of: id)
+        removePartial(of: id)
+        jobs[index].resetProgress()
+        save()
+        pump()
+    }
+
+    func remove(_ id: UUID, deletingFile: Bool = false) {
+        guard let index = index(of: id) else { return }
+        cancelTransfers(of: id)
+        removePartial(of: id)
+        if deletingFile, let savedPath = jobs[index].savedPath {
+            let file = storage.documents.appending(path: savedPath)
+            do {
+                if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+            } catch {
+                problem = "Couldn't delete \(file.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+        jobs.remove(at: index)
+        save()
+        pump()
+    }
+
+    func removeCompleted() {
+        jobs.removeAll { $0.status == .completed }
+        save()
+    }
+
+    /// Stops and forgets every unfinished job, for signing out. Finished files stay.
+    func removeUnfinished() {
+        for job in jobs where job.status != .completed {
+            cancelTransfers(of: job.id)
+            removePartial(of: job.id)
+        }
+        jobs.removeAll { $0.status != .completed }
+        save()
+    }
+
+    func savedFileURL(of job: DownloadJob) -> URL? {
+        job.savedPath.map { storage.documents.appending(path: $0) }
+    }
+
+    var documentsURL: URL { storage.documents }
+
+    // MARK: Scheduling
+
+    /// Hands the session as many transfers as the budget allows, oldest job first.
+    private func pump() {
+        guard hasAdoptedTransfers, let client = accounts.client else { return }
+        var budget = Self.maxQueuedTransfers - running.count
+        for index in jobs.indices where jobs[index].status == .active {
+            if jobs[index].isTransferComplete {
+                publish(index)
+                save()
+                continue
+            }
+            guard budget > 0 else { continue }
+            let jobId = jobs[index].id
+            let tags = running.values.filter { $0.tag.jobId == jobId }.map(\.tag)
+            for range in jobs[index].nextRequests(running: tags, limit: budget) {
+                start(TransferTag(jobId: jobId, range: range), for: jobs[index], client: client)
+                budget -= 1
+            }
+        }
+    }
+
+    /// Starts a transfer, from `resumeData` when there is some: the bytes a cut-off transfer
+    /// already received (only servers that send ETag or Last-Modified allow it).
+    private func start(_ tag: TransferTag, for job: DownloadJob, client: JellyfinClient, resumeData: Data? = nil) {
+        let task: URLSessionDownloadTask
+        if let resumeData = resumeData ?? (tag.range == nil ? takeResumeData(of: job.id) : nil) {
+            task = session.downloadTask(withResumeData: resumeData)
+        } else {
+            var request = URLRequest(url: client.streamURL(itemId: job.itemId, mediaSourceId: job.mediaSourceId))
+            // Byte offsets have to be offsets into the file itself, not into a compressed body.
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+            if let header = tag.rangeHeader { request.setValue(header, forHTTPHeaderField: "Range") }
+            task = session.downloadTask(with: request)
+            if let range = tag.range { task.countOfBytesClientExpectsToReceive = range.upperBound - range.lowerBound }
+        }
+        task.taskDescription = tag.encoded
+        if let retryAt = job.retryAt, retryAt > .now { task.earliestBeginDate = retryAt }
+        running[task.taskIdentifier] = RunningTransfer(tag: tag, task: task, received: 0, resumed: resumeData != nil)
+        task.resume()
+        Self.log.debug("Started task \(task.taskIdentifier) [\(tag.encoded)]\(task.earliestBeginDate.map { " from \($0)" } ?? "")")
+    }
+
+    /// Cancels the job's transfers, or only those whose range `matching` accepts.
+    private func cancelTransfers(of jobId: UUID, matching: (Range<Int64>) -> Bool = { _ in true }) {
+        for (identifier, transfer) in running where transfer.tag.jobId == jobId {
+            // A whole-file transfer has no range and only goes with the whole job.
+            guard transfer.tag.range.map(matching) ?? true else { continue }
+            cancelledByUs.insert(identifier)
+            transfer.task.cancel()
+            running[identifier] = nil
+        }
+    }
+
+    /// The daemon retries a dropped transfer by itself, without telling the app. Where the server
+    /// gives no validators to resume with (Gelato's streams), the retry starts the range over, and
+    /// a link that drops more often than a chunk takes would never finish one. So a byte count
+    /// going backwards counts as a dropped connection: the job's chunks shrink, and a transfer now
+    /// far bigger than a chunk is replaced by smaller ones.
+    private func restarted(_ taskIdentifier: Int, after lostBytes: Int64) {
+        guard let transfer = running[taskIdentifier], let index = index(of: transfer.tag.jobId),
+              jobs[index].status == .active
+        else { return }
+        jobs[index].recordCut(receivedBytes: lostBytes)
+        Self.log.notice("Task \(taskIdentifier) [\(transfer.tag.encoded)] restarted after \(lostBytes) bytes; chunks now \(self.jobs[index].chunkSize)")
+        if let range = transfer.tag.range, range.count64 > 2 * jobs[index].chunkSize {
+            cancelledByUs.insert(taskIdentifier)
+            transfer.task.cancel()
+            running[taskIdentifier] = nil
+        }
+        save()
+        pump()
+    }
+
+    /// Replaces the transfers the session should be running that moved no bytes for
+    /// `stallLimit`. The session runs `connectionsPerHost` at a time, oldest first, so those are
+    /// the oldest ones due to start; the rest wait their turn and aren't stalled. A replaced
+    /// transfer that received nothing loses nothing.
+    private func replaceStalledTransfers(now: Date) {
+        guard isNetworkReachable else { return }
+        let due = running
+            .filter { ($0.value.task.earliestBeginDate ?? .distantPast) <= now }
+            .sorted { $0.key < $1.key }
+            .prefix(Self.connectionsPerHost)
+        for (identifier, transfer) in due where now.timeIntervalSince(transfer.lastProgress) > Self.stallLimit {
+            Self.log.notice("Task \(identifier) [\(transfer.tag.encoded)]: no bytes for \(Int(now.timeIntervalSince(transfer.lastProgress)))s, replacing it")
+            // Stuck partway: the link can't carry a chunk this big between drops.
+            if let index = index(of: transfer.tag.jobId) { jobs[index].recordCut(receivedBytes: transfer.received) }
+            cancelledByUs.insert(identifier)
+            if transfer.resumed {
+                // Resuming didn't get it going either (the daemon can carry its wait over into the
+                // resume data): the range goes back to be planned again in today's chunk size.
+                transfer.task.cancel()
+                running[identifier] = nil
+                pump()
+                continue
+            }
+            // The transfer keeps its range until the replacement starts, so nothing else claims it.
+            running[identifier]?.lastProgress = now
+            transfer.task.cancel(byProducingResumeData: { [weak self] resumeData in
+                Task { @MainActor in self?.replace(identifier, resumeData: resumeData) }
+            })
+        }
+    }
+
+    /// Continues a stalled transfer from the bytes it has, or, without resume data, hands its
+    /// range back to be planned again in today's chunk size.
+    private func replace(_ identifier: Int, resumeData: Data?) {
+        guard let transfer = running.removeValue(forKey: identifier) else { return }
+        guard let resumeData, let client = accounts.client,
+              let job = jobs.first(where: { $0.id == transfer.tag.jobId }), job.status == .active,
+              !(transfer.tag.range.map(job.completed.covers) ?? false)
+        else { return pump() }
+        start(transfer.tag, for: job, client: client, resumeData: resumeData)
+    }
+
+    private func networkChanged(reachable: Bool) {
+        isNetworkReachable = reachable
+        if reachable { pump() }
+    }
+
+    // MARK: Finished transfers
+
+    private func handle(_ finished: TransferDelegate.Finished) async {
+        let transfer = running.removeValue(forKey: finished.taskIdentifier)
+        let cancelled = cancelledByUs.remove(finished.taskIdentifier) != nil
+        guard !cancelled, let tag = transfer?.tag ?? finished.tag,
+              let index = index(of: tag.jobId), jobs[index].status != .completed
+        else {
+            discard(finished.stagedFile)
+            return
+        }
+        let received = transfer?.received ?? 0
+        Self.log.info("""
+            Task \(finished.taskIdentifier) [\(tag.encoded)] finished: HTTP \(finished.response?.statusCode ?? 0), \
+            Content-Range \(finished.response?.contentRange ?? "none"), \(finished.stagedSize ?? -1) bytes, \
+            error \(finished.error.map { String(describing: $0) } ?? "none")
+            """)
+
+        if let error = finished.error {
+            discard(finished.stagedFile)
+            if tag.range == nil, let resumeData = finished.resumeData { keepResumeData(resumeData, of: tag.jobId) }
+            guard jobs[index].status == .active else { return }
+            // Stopped by the system, e.g. when the app was force quit, says nothing about the
+            // connection: no backoff, and the range is asked for again right away.
+            if (error as? URLError)?.code != .cancelled {
+                jobs[index].recordFailure(.network(Self.describe(error)), receivedBytes: received)
+                save()
+            }
+            // A range that can resume carries on from its bytes instead of waiting to be planned again.
+            if tag.range != nil, let resumeData = finished.resumeData, let client = accounts.client {
+                start(tag, for: jobs[index], client: client, resumeData: resumeData)
+            }
+            return
+        }
+
+        let outcome = jobs[index].evaluate(finished.response, stagedSize: finished.stagedSize, tag: tag)
+        if case .chunk = outcome {} else { Self.log.notice("Task \(finished.taskIdentifier) [\(tag.encoded)]: \(String(describing: outcome))") }
+        switch outcome {
+        case .chunk(let range, let total):
+            guard let file = finished.stagedFile else { return }
+            await acceptChunk(file, range: range, total: total, jobId: tag.jobId, response: finished.response)
+
+        case .wholeFile(let size):
+            guard let file = finished.stagedFile else { return }
+            do {
+                try storage.adoptWholeFile(file, for: tag.jobId)
+            } catch {
+                discard(file)
+                stop(index, because: "Couldn't save the download: \(error.localizedDescription)")
+                return
+            }
+            jobs[index].rangeSupport = .unsupported
+            jobs[index].totalBytes = size
+            jobs[index].completed = ByteRanges([0..<size])
+            noteFileExtension(from: finished.response, at: index)
+            jobs[index].recordSuccess()
+            publish(index)
+            save()
+
+        case .switchToWholeFile:
+            discard(finished.stagedFile)
+            jobs[index].rangeSupport = .unsupported
+            save()
+
+        case .retry(let failure):
+            discard(finished.stagedFile)
+            guard jobs[index].status == .active else { return }
+            jobs[index].recordFailure(failure, receivedBytes: max(received, finished.stagedSize ?? 0))
+            if jobs[index].status == .failed { cancelTransfers(of: tag.jobId) }
+            save()
+
+        case .giveUp(let message):
+            discard(finished.stagedFile)
+            stop(index, because: message)
+        }
+    }
+
+    private func acceptChunk(_ file: URL, range: Range<Int64>, total: Int64, jobId: UUID, response: ResponseInfo?) async {
+        guard let index = index(of: jobId) else { return discard(file) }
+        if jobs[index].rangeSupport == .unknown {
+            jobs[index].rangeSupport = .supported
+            jobs[index].totalBytes = total
+            noteFileExtension(from: response, at: index)
+            if let available = storage.availableCapacity(), available < total - range.count64 {
+                discard(file)
+                stop(index, because: "Not enough free space: this needs \(Self.bytes(total)), \(Self.bytes(available)) is free.")
+                return
+            }
+        }
+
+        do {
+            try await storage.writeChunk(file, into: jobId, at: range.lowerBound)
+        } catch {
+            discard(file)
+            if let index = self.index(of: jobId) {
+                stop(index, because: "Couldn't write the download to storage: \(error.localizedDescription)")
+            }
+            return
+        }
+
+        // The job may have been removed or restarted while the chunk was being written.
+        guard let index = self.index(of: jobId), jobs[index].totalBytes == total else {
+            if self.index(of: jobId) == nil { removePartial(of: jobId) }
+            return
+        }
+        jobs[index].completed.insert(range)
+        cancelTransfers(of: jobId) { jobs[index].completed.covers($0) }
+        if jobs[index].status == .active { jobs[index].recordSuccess() }
+        if jobs[index].isTransferComplete, jobs[index].status == .active { publish(index) }
+        save()
+    }
+
+    /// Moves the finished file into Documents.
+    private func publish(_ index: Int) {
+        // Ranges another transfer already delivered can still be in flight.
+        cancelTransfers(of: jobs[index].id)
+        do {
+            jobs[index].savedPath = try storage.publish(jobs[index])
+            jobs[index].status = .completed
+            jobs[index].completedAt = .now
+            jobs[index].lastError = nil
+            jobs[index].retryAt = nil
+        } catch {
+            jobs[index].status = .failed
+            jobs[index].lastError = "Couldn't move the finished file into place: \(error.localizedDescription)"
+        }
+    }
+
+    private func stop(_ index: Int, because message: String) {
+        Self.log.error("Stopping \(self.jobs[index].title): \(message)")
+        cancelTransfers(of: jobs[index].id)
+        jobs[index].status = .failed
+        jobs[index].lastError = message
+        jobs[index].retryAt = nil
+        save()
+    }
+
+    private func noteFileExtension(from response: ResponseInfo?, at index: Int) {
+        guard jobs[index].fileExtension == nil, let response else { return }
+        jobs[index].fileExtension = response.videoExtension
+    }
+
+    // MARK: Files
+
+    private func save() {
+        do {
+            try storage.saveJobs(jobs)
+        } catch {
+            problem = "Couldn't save the download list: \(error.localizedDescription)"
+        }
+    }
+
+    private func discard(_ file: URL?) {
+        guard let file, FileManager.default.fileExists(atPath: file.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: file)
+        } catch {
+            problem = "Couldn't clean up a temporary file: \(error.localizedDescription)"
+        }
+    }
+
+    private func removePartial(of jobId: UUID) {
+        do {
+            try storage.removePartial(for: jobId)
+        } catch {
+            problem = "Couldn't delete a partial download: \(error.localizedDescription)"
+        }
+    }
+
+    private func keepResumeData(_ data: Data, of jobId: UUID) {
+        do {
+            try data.write(to: storage.resumeDataFile(for: jobId), options: .atomic)
+        } catch {
+            problem = "Couldn't keep a download's resume data: \(error.localizedDescription)"
+        }
+    }
+
+    /// Resume data is used once: a resumed transfer that fails again leaves new resume data.
+    private func takeResumeData(of jobId: UUID) -> Data? {
+        let file = storage.resumeDataFile(for: jobId)
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        defer { discard(file) }
+        do {
+            return try Data(contentsOf: file)
+        } catch {
+            problem = "Couldn't read a download's resume data, so it starts over: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    // MARK: Progress
+
+    private func refreshLiveProgress() {
+        var bytes: [UUID: Int64] = [:]
+        for job in jobs where job.status != .completed {
+            bytes[job.id] = job.completed.byteCount
+        }
+        for transfer in running.values where bytes[transfer.tag.jobId] != nil {
+            bytes[transfer.tag.jobId, default: 0] += transfer.received
+        }
+        let now = Date.now
+        if let lastSample, now.timeIntervalSince(lastSample.date) > 5 {
+            // The app was suspended: transfers carried on without reporting, so that time
+            // says nothing about stalls.
+            for identifier in running.keys { running[identifier]?.lastProgress = now }
+        }
+        var speeds: [UUID: Double] = [:]
+        if let lastSample, now > lastSample.date {
+            let interval = now.timeIntervalSince(lastSample.date)
+            for (id, value) in bytes {
+                let instant = max(0, Double(value - (lastSample.bytes[id] ?? value)) / interval)
+                speeds[id] = (bytesPerSecond[id] ?? instant) * 0.7 + instant * 0.3
+            }
+        }
+        lastSample = (now, bytes)
+        if receivedBytes != bytes { receivedBytes = bytes }
+        if bytesPerSecond != speeds { bytesPerSecond = speeds }
+        if now.timeIntervalSince(lastStallCheck) > 10 {
+            lastStallCheck = now
+            replaceStalledTransfers(now: now)
+        }
+    }
+
+    // MARK: Helpers
+
+    private func index(of id: UUID) -> Int? {
+        jobs.firstIndex { $0.id == id }
+    }
+
+    private static func describe(_ error: any Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet: return "No internet connection."
+            case .timedOut: return "The connection stalled."
+            case .networkConnectionLost: return "The connection dropped."
+            case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed: return "Couldn't reach the server."
+            case .cancelled: return "The system stopped the transfer."
+            default: break
+            }
+        }
+        return error.localizedDescription
+    }
+
+    static func bytes(_ count: Int64) -> String {
+        count.formatted(.byteCount(style: .file))
+    }
+}

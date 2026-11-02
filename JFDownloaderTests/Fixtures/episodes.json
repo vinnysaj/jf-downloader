@@ -1,0 +1,151 @@
+{
+    "Items": [
+        {
+            "Name": "Test Show",
+            "ServerId": "eacd3d6e3b164b749641781cf182bf50",
+            "Id": "46e7b600dd04a4267b80134d1024c5ce",
+            "Container": "mkv",
+            "ChannelId": null,
+            "RunTimeTicks": 120210000,
+            "ProductionYear": 2020,
+            "IndexNumber": 1,
+            "ParentIndexNumber": 1,
+            "IsFolder": false,
+            "Type": "Episode",
+            "SeriesName": "Test Show",
+            "SeriesId": "8f2631f8932c4abeaa169667076e1657",
+            "SeasonId": "2a6b868f27a6f37046797081237efcdf",
+            "SeasonName": "Season 1",
+            "VideoType": "VideoFile",
+            "ImageTags": {
+                "Primary": "619effd315cf823f7d495f6d63f89354"
+            },
+            "BackdropImageTags": [],
+            "ImageBlurHashes": {
+                "Primary": {
+                    "619effd315cf823f7d495f6d63f89354": "WTATi+9Ft7j[WBt7}NALslj?WYoI@8GknSjbX5nl+8O*nmjbbFnm"
+                }
+            },
+            "LocationType": "FileSystem",
+            "MediaType": "Video"
+        },
+        {
+            "Name": "Test Show",
+            "ServerId": "eacd3d6e3b164b749641781cf182bf50",
+            "Id": "a3b4c99bfc3ccb516a30dc3703aca9b1",
+            "Container": "mkv",
+            "ChannelId": null,
+            "RunTimeTicks": 140210000,
+            "ProductionYear": 2020,
+            "IndexNumber": 2,
+            "ParentIndexNumber": 1,
+            "IsFolder": false,
+            "Type": "Episode",
+            "SeriesName": "Test Show",
+            "SeriesId": "8f2631f8932c4abeaa169667076e1657",
+            "SeasonId": "2a6b868f27a6f37046797081237efcdf",
+            "SeasonName": "Season 1",
+            "VideoType": "VideoFile",
+            "ImageTags": {
+                "Primary": "a1e15a84f7b350344ab471d2d7918e35"
+            },
+            "BackdropImageTags": [],
+            "ImageBlurHashes": {
+                "Primary": {
+                    "a1e15a84f7b350344ab471d2d7918e35": "WTATi+9Ft7j[WBt7}NALslj?WYoI@8GknSjbX5nl+8O*nmjbbFnm"
+                }
+            },
+            "LocationType": "FileSystem",
+            "MediaType": "Video"
+        },
+        {
+            "Name": "Test Show",
+            "ServerId": "eacd3d6e3b164b749641781cf182bf50",
+            "Id": "065a1b0b6dfd9730cf319476795639ed",
+            "Container": "mkv",
+            "ChannelId": null,
+            "RunTimeTicks": 160210000,
+            "ProductionYear": 2020,
+            "IndexNumber": 3,
+            "ParentIndexNumber": 1,
+            "IsFolder": false,
+            "Type": "Episode",
+            "SeriesName": "Test Show",
+            "SeriesId": "8f2631f8932c4abeaa169667076e1657",
+            "SeasonId": "2a6b868f27a6f37046797081237efcdf",
+            "SeasonName": "Season 1",
+            "VideoType": "VideoFile",
+            "ImageTags": {
+                "Primary": "4ba7df99d9881928f364aae4ed9a0cea"
+            },
+            "BackdropImageTags": [],
+            "ImageBlurHashes": {
+                "Primary": {
+                    "4ba7df99d9881928f364aae4ed9a0cea": "WTATi+9Ft7j[WBt7}NALslj?WYoI@8GknSjbX5nl+8O*nmjbbFnm"
+                }
+            },
+            "LocationType": "FileSystem",
+            "MediaType": "Video"
+        },
+        {
+            "Name": "Test Show",
+            "ServerId": "eacd3d6e3b164b749641781cf182bf50",
+            "Id": "2848eff4ed56991dbba76dd645b04b9c",
+            "Container": "mkv",
+            "ChannelId": null,
+            "RunTimeTicks": 180210000,
+            "ProductionYear": 2020,
+            "IndexNumber": 4,
+            "ParentIndexNumber": 1,
+            "IsFolder": false,
+            "Type": "Episode",
+            "SeriesName": "Test Show",
+            "SeriesId": "8f2631f8932c4abeaa169667076e1657",
+            "SeasonId": "2a6b868f27a6f37046797081237efcdf",
+            "SeasonName": "Season 1",
+            "VideoType": "VideoFile",
+            "ImageTags": {
+                "Primary": "8c87345522ac7593ac91ddb0fd8fd91b"
+            },
+            "BackdropImageTags": [],
+            "ImageBlurHashes": {
+                "Primary": {
+                    "8c87345522ac7593ac91ddb0fd8fd91b": "WTATi+9Ft7j[WBt7}NALslj?WYoI@8GknSjbX5nl+8O*nmjbbFnm"
+                }
+            },
+            "LocationType": "FileSystem",
+            "MediaType": "Video"
+        },
+        {
+            "Name": "Test Show",
+            "ServerId": "eacd3d6e3b164b749641781cf182bf50",
+            "Id": "3d07c94fe797867bb0b13d062d860237",
+            "Container": "mkv",
+            "ChannelId": null,
+            "RunTimeTicks": 200210000,
+            "ProductionYear": 2020,
+            "IndexNumber": 5,
+            "ParentIndexNumber": 1,
+            "IsFolder": false,
+            "Type": "Episode",
+            "SeriesName": "Test Show",
+            "SeriesId": "8f2631f8932c4abeaa169667076e1657",
+            "SeasonId": "2a6b868f27a6f37046797081237efcdf",
+            "SeasonName": "Season 1",
+            "VideoType": "VideoFile",
+            "ImageTags": {
+                "Primary": "d949bdd0f958ec7601b8e9f8559ea76b"
+            },
+            "BackdropImageTags": [],
+            "ImageBlurHashes": {
+                "Primary": {
+                    "d949bdd0f958ec7601b8e9f8559ea76b": "WTATi+9Ft7j[WBt7}NALslj?WYoI@8GknSjbX5nl+8O*nmjbbFnm"
+                }
+            },
+            "LocationType": "FileSystem",
+            "MediaType": "Video"
+        }
+    ],
+    "TotalRecordCount": 5,
+    "StartIndex": 0
+}
