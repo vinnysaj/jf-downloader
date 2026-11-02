@@ -29,7 +29,9 @@ struct LoginView: View {
                 Section {
                     TextField("Username", text: $username)
                         .textContentType(.username)
+                        #if !os(macOS)
                         .textInputAutocapitalization(.never)
+                        #endif
                         .autocorrectionDisabled()
                         .focused($focus, equals: .username)
                         .submitLabel(.next)
@@ -64,6 +66,7 @@ struct LoginView: View {
                     .accessibilityIdentifier("login.submit")
                 }
             }
+            .formStyle(.grouped)
             .navigationTitle("Add Server")
             .onAppear(perform: prefill)
             .onChange(of: focus) { previous, _ in
@@ -86,8 +89,10 @@ struct LoginView: View {
             LabeledContent("Host") {
                 TextField("Host", text: $address.host, prompt: Text("192.168.1.10 or jf.example.com"))
                     .textContentType(.URL)
+                    #if !os(macOS)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
+                    #endif
                     .autocorrectionDisabled()
                     .focused($focus, equals: .host)
                     .submitLabel(.next)
@@ -96,8 +101,10 @@ struct LoginView: View {
             }
             LabeledContent("Port") {
                 TextField("Port", text: $address.port, prompt: Text(String(address.scheme.defaultPort)))
+                    #if !os(macOS)
                     // Has a return key, unlike the number pad.
                     .keyboardType(.numbersAndPunctuation)
+                    #endif
                     .focused($focus, equals: .port)
                     .submitLabel(.next)
                     .onSubmit { focus = .path }
@@ -105,8 +112,10 @@ struct LoginView: View {
             }
             LabeledContent("Base Path") {
                 TextField("Base Path", text: $address.path, prompt: Text("Optional, e.g. /jellyfin"))
+                    #if !os(macOS)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
+                    #endif
                     .autocorrectionDisabled()
                     .focused($focus, equals: .path)
                     .submitLabel(.next)

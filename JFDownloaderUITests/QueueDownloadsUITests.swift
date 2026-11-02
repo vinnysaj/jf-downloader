@@ -28,15 +28,16 @@ final class QueueDownloadsUITests: XCTestCase {
         signInIfNeeded(app)
 
         open(app, "item.Big Test Movie (2024)")
-        tap(app.buttons["version.1080p"])
-        tap(app.buttons["versions.download"])
-        tap(app.buttons["version.720p"])
-        tap(app.buttons["versions.download"])
+        for version in ["version.1080p", "version.720p"] {
+            // The picker puts the identifier on a button inside each row, with a suffix.
+            let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", version)).firstMatch
+            tap(row)
+            XCTAssertTrue(row.wait(for: \.isSelected, toEqual: true, timeout: timeout), "\(version) wasn't selected")
+            tap(app.buttons["versions.download"])
+        }
 
         open(app, "item.Remote Stream Movie (2023)")
-        let download = app.buttons["versions.download"]
-        XCTAssertTrue(download.wait(for: \.isEnabled, toEqual: true, timeout: timeout))
-        tap(download)
+        tap(app.buttons["versions.download"])
 
         showList(app)
         tap(app.buttons["library.picker"])
@@ -96,9 +97,12 @@ final class QueueDownloadsUITests: XCTestCase {
         if back.exists, back.isHittable { back.tap() }
     }
 
+    /// Taps once the element is there and enabled; buttons wait on loading, like Select on the
+    /// episodes, and a tap before then does nothing.
     @MainActor
     private func tap(_ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(element.waitForExistence(timeout: timeout), "\(element) never appeared", file: file, line: line)
+        XCTAssertTrue(element.wait(for: \.isEnabled, toEqual: true, timeout: timeout), "\(element) never became enabled", file: file, line: line)
         element.tap()
     }
 }

@@ -57,9 +57,12 @@ struct SeriesView: View {
                 if let season = seasons?.first(where: { $0.id == seasonId }) { Text(season.name) }
             }
         }
+        #if !os(macOS)
+        // The Mac's lists always take a selection, with Command- and Shift-click.
         .environment(\.editMode, .constant(isSelecting ? .active : .inactive))
+        #endif
         .navigationTitle(series.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar { toolbar }
         .sheet(item: $batch) { batch in
             BatchDownloadSheet(episodes: batch.episodes, client: client, account: account) {
@@ -72,7 +75,7 @@ struct SeriesView: View {
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarPinnedTrailing) {
+        ToolbarItem(placement: .barPinnedTrailing) {
             if isSelecting {
                 Button("Done", systemImage: "checkmark") {
                     isSelecting = false
@@ -86,18 +89,21 @@ struct SeriesView: View {
             }
         }
         if isSelecting {
-            ToolbarItem(placement: .bottomBar) {
+            ToolbarItem(placement: Self.selectionBar) {
                 let allIds = Set(episodes?.map(\.id) ?? [])
                 if !allIds.isEmpty, selection == allIds {
-                    Button("Deselect All", systemImage: "circle") { selection.removeAll() }
+                    Button("Deselect All") { selection.removeAll() }
                 } else {
-                    Button("Select All", systemImage: "checkmark.circle") { selection = allIds }
+                    Button("Select All") { selection = allIds }
                         .accessibilityIdentifier("series.selectAll")
                 }
             }
+            #if os(iOS)
             ToolbarSpacer(.flexible, placement: .bottomBar)
-            ToolbarItem(placement: .bottomBar) {
-                Button("Download \(selection.count)", systemImage: "arrow.down.circle") {
+            #endif
+            ToolbarItem(placement: Self.selectionBar) {
+                // Text rather than an icon: bars show only the icon, and the count would be lost.
+                Button("Download \(selection.count)") {
                     let chosen = (episodes ?? []).filter { selection.contains($0.id) }
                     batch = Batch(episodes: chosen)
                 }
@@ -105,6 +111,15 @@ struct SeriesView: View {
                 .accessibilityIdentifier("series.download")
             }
         }
+    }
+
+    /// Where Select All and Download go while selecting; the Mac's window has no bottom bar.
+    private static var selectionBar: ToolbarItemPlacement {
+        #if os(macOS)
+        .primaryAction
+        #else
+        .bottomBar
+        #endif
     }
 
     private func loadSeasons() async {

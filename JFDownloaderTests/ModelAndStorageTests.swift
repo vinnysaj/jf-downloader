@@ -99,7 +99,7 @@ struct NamingTests {
     }
 
     @Test func buildsStaticStreamURLs() {
-        let client = JellyfinClient(serverURL: URL(string: "https://jf.example.com/base")!, deviceId: "d", token: "tok")
+        let client = JellyfinClient(serverURL: URL(string: "https://jf.example.com/base")!, deviceId: "d", deviceName: "iPhone", token: "tok")
         let url = client.streamURL(itemId: "item", mediaSourceId: "source")
         #expect(url.absoluteString == "https://jf.example.com/base/Videos/item/stream?ApiKey=tok&mediaSourceId=source&static=true")
     }
@@ -118,7 +118,7 @@ struct NamingTests {
 struct StorageTests {
     private func makeStorage() throws -> DownloadStorage {
         let base = FileManager.default.temporaryDirectory.appending(path: "StorageTests-\(UUID().uuidString)")
-        let storage = DownloadStorage(documents: base.appending(path: "Documents"), root: base.appending(path: "Root"))
+        let storage = DownloadStorage(finished: base.appending(path: "Finished"), root: base.appending(path: "Root"))
         try storage.prepare()
         return storage
     }
@@ -140,7 +140,7 @@ struct StorageTests {
         }
         let path = try storage.publish(job)
         #expect(path == "Big Test Movie (2024).mkv")
-        #expect(try Data(contentsOf: storage.documents.appending(path: path)) == Data(content))
+        #expect(try Data(contentsOf: storage.finished.appending(path: path)) == Data(content))
         #expect(try FileManager.default.contentsOfDirectory(atPath: storage.staging.path).isEmpty)
     }
 
@@ -150,7 +150,7 @@ struct StorageTests {
         job.totalBytes = 10
         try await storage.writeChunk(try chunk(Array(repeating: 7, count: 20), in: storage), into: job.id, at: 0)
         let path = try storage.publish(job)
-        #expect(try Data(contentsOf: storage.documents.appending(path: path)).count == 10)
+        #expect(try Data(contentsOf: storage.finished.appending(path: path)).count == 10)
     }
 
     @Test func picksAFreeNameForASecondCopy() async throws {

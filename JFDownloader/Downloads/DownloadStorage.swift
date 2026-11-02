@@ -2,13 +2,14 @@ import Foundation
 
 /// Where downloads live on disk.
 ///
-/// - `Documents/` holds finished files; the Files app shows it as "On My iPhone › JF Downloader".
+/// - `finished` holds finished files: `Documents/`, which the Files app shows as
+///   "On My iPhone › JF Downloader", or on the Mac `~/Downloads/JF Downloader`.
 /// - `Library/Application Support/Downloads/` holds the job list and the partial files, out of
 ///   the Files app's sight and out of backups.
 /// - `…/Downloads/Staging/` holds bodies the session delegate moved out of the system's
 ///   temporary location, until they are written into their partial file.
 nonisolated struct DownloadStorage: Sendable {
-    let documents: URL
+    let finished: URL
     let root: URL
 
     var jobsFile: URL { root.appending(path: "jobs.json") }
@@ -16,13 +17,22 @@ nonisolated struct DownloadStorage: Sendable {
     var staging: URL { root.appending(path: "Staging", directoryHint: .isDirectory) }
 
     static let standard = DownloadStorage(
-        documents: URL.documentsDirectory,
+        finished: finishedFolder,
         root: URL.applicationSupportDirectory.appending(path: "Downloads", directoryHint: .isDirectory)
     )
 
+    #if os(macOS)
+    /// The real Downloads folder rather than the sandbox container's link to it, so Finder
+    /// shows the path people know.
+    private static let finishedFolder = URL.downloadsDirectory.resolvingSymlinksInPath()
+        .appending(path: "JF Downloader", directoryHint: .isDirectory)
+    #else
+    private static let finishedFolder = URL.documentsDirectory
+    #endif
+
     func prepare() throws {
         let manager = FileManager.default
-        for directory in [documents, partials, staging] {
+        for directory in [finished, partials, staging] {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         var excluded = URLResourceValues()
@@ -99,7 +109,7 @@ nonisolated struct DownloadStorage: Sendable {
         try FileManager.default.moveItem(at: file, to: partial)
     }
 
-    /// Moves the finished partial file into Documents and returns its path relative to Documents.
+    /// Moves the finished partial file into `finished` and returns its path relative to it.
     /// A name already taken gets the version appended, then a number.
     func publish(_ job: DownloadJob) throws -> String {
         // A chunk written for a job that was restarted meanwhile can lie past the new end.
@@ -108,23 +118,26 @@ nonisolated struct DownloadStorage: Sendable {
             try handle.truncate(atOffset: UInt64(totalBytes))
             try handle.close()
         }
-        var destination = freeDestination(for: job)
+        let destination = freeDestination(for: job)
         let manager = FileManager.default
         try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try manager.moveItem(at: partialFile(for: job.id), to: destination)
+        #if !os(macOS)
         // Re-downloadable media; keeping it out of iCloud backups saves the user's quota.
         var excluded = URLResourceValues()
         excluded.isExcludedFromBackup = true
-        try destination.setResourceValues(excluded)
+        var published = destination
+        try published.setResourceValues(excluded)
+        #endif
         if manager.fileExists(atPath: resumeDataFile(for: job.id).path) {
             try manager.removeItem(at: resumeDataFile(for: job.id))
         }
-        return String(destination.path.dropFirst(documents.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return String(destination.path.dropFirst(finished.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     private func freeDestination(for job: DownloadJob) -> URL {
         let ext = job.fileExtension ?? "mkv"
-        let stem = documents.appending(path: job.destinationStem).path
+        let stem = finished.appending(path: job.destinationStem).path
         let version = DownloadJob.sanitize(job.versionName)
         let isFree = { (url: URL) in !FileManager.default.fileExists(atPath: url.path) }
 
@@ -142,7 +155,7 @@ nonisolated struct DownloadStorage: Sendable {
 
     /// Nil when the volume can't say; the caller then doesn't hold the download back.
     func availableCapacity() -> Int64? {
-        let values = try? documents.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        let values = try? finished.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         return values?.volumeAvailableCapacityForImportantUsage
     }
 }

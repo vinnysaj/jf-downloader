@@ -37,7 +37,7 @@ struct BatchDownloadSheet: View {
                 }
             }
             .navigationTitle(episodes.count == 1 ? "Download Episode" : "Download \(episodes.count) Episodes")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .navigationDestination(for: String.self) { episodeId in
                 if case .success(let detail) = details[episodeId] {
                     VersionChoiceList(
@@ -153,20 +153,7 @@ private struct VersionChoiceList: View {
     var body: some View {
         List {
             Section {
-                ForEach(episode.mediaSources ?? []) { source in
-                    Button {
-                        selection = source.id
-                    } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            Image(systemName: source.id == selection ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(source.id == selection ? Color.accentColor : .secondary)
-                            VersionSummary(source: source)
-                        }
-                        .contentShape(.rect)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(source.id == selection ? .isSelected : [])
-                }
+                VersionPicker(sources: episode.mediaSources ?? [], selection: $selection)
             }
             Section {
                 Button("Use the Closest Version for Every Episode", systemImage: "rectangle.stack") {

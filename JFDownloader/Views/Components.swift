@@ -44,6 +44,24 @@ struct VersionSummary: View {
     }
 }
 
+/// The versions of a title as a list of rows, one of them chosen.
+struct VersionPicker: View {
+    let sources: [MediaSource]
+    @Binding var selection: String?
+
+    var body: some View {
+        Picker("Version", selection: $selection) {
+            ForEach(sources) { source in
+                VersionSummary(source: source)
+                    .tag(Optional(source.id))
+                    .accessibilityIdentifier("version.\(source.name ?? source.id)")
+            }
+        }
+        .pickerStyle(.inline)
+        .labelsHidden()
+    }
+}
+
 extension MediaSource {
     /// "1080p H264 SDR · AAC 5.1 +1 · 4.2 GB · MKV"
     var detailLine: String {
@@ -118,7 +136,7 @@ struct JobStatusLine: View {
             Label(job.lastError ?? "Failed", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)
         case .completed:
-            Label("Saved to Files", systemImage: "checkmark.circle.fill")
+            Label("Saved to \(FinishedFiles.place)", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         }
     }

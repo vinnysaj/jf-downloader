@@ -217,7 +217,7 @@ final class DownloadManager {
         cancelTransfers(of: id)
         removePartial(of: id)
         if deletingFile, let savedPath = jobs[index].savedPath {
-            let file = storage.documents.appending(path: savedPath)
+            let file = storage.finished.appending(path: savedPath)
             do {
                 if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
             } catch {
@@ -245,10 +245,10 @@ final class DownloadManager {
     }
 
     func savedFileURL(of job: DownloadJob) -> URL? {
-        job.savedPath.map { storage.documents.appending(path: $0) }
+        job.savedPath.map { storage.finished.appending(path: $0) }
     }
 
-    var documentsURL: URL { storage.documents }
+    var finishedFolder: URL { storage.finished }
 
     // MARK: Scheduling
 

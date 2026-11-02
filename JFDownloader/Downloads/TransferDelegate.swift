@@ -62,7 +62,7 @@ nonisolated final class TransferDelegate: NSObject, URLSessionDownloadDelegate, 
         case nil: break
         }
         let stagedSize = stagedFile.flatMap { url in
-            (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+            (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { $0.map(Int64.init) }
         }
         continuation.yield(.finished(Finished(
             taskIdentifier: task.taskIdentifier,

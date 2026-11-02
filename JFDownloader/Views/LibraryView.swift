@@ -61,7 +61,7 @@ struct LibraryView: View {
                 Task { await accounts.signOut() }
             }
         } message: {
-            Text("Unfinished downloads will be cancelled. Finished files stay in Files.")
+            Text("Unfinished downloads will be cancelled. Finished files stay in \(FinishedFiles.place).")
         }
     }
 
@@ -102,7 +102,7 @@ struct LibraryView: View {
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
+        ToolbarItem(placement: .barLeading) {
             Menu {
                 Section("\(account.userName) on \(account.serverName ?? account.serverURL.host() ?? "Jellyfin")") {
                     Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
@@ -117,7 +117,7 @@ struct LibraryView: View {
                 Label("Account", systemImage: "person.crop.circle")
             }
         }
-        ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItem(placement: .barTrailing) {
             Menu {
                 Picker("Library", selection: $libraryId) {
                     Label("All Libraries", systemImage: "square.stack").tag(String?.none)

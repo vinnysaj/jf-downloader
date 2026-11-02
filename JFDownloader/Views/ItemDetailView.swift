@@ -50,21 +50,7 @@ struct VersionsView: View {
                 } else if sources.isEmpty {
                     Text("The server lists no versions of this title.").foregroundStyle(.secondary)
                 } else {
-                    ForEach(sources) { source in
-                        Button {
-                            selectedSourceId = source.id
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                Image(systemName: source.id == selectedSourceId ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(source.id == selectedSourceId ? Color.accentColor : .secondary)
-                                VersionSummary(source: source)
-                            }
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(source.id == selectedSourceId ? .isSelected : [])
-                        .accessibilityIdentifier("version.\(source.name ?? source.id)")
-                    }
+                    VersionPicker(sources: sources, selection: $selectedSourceId)
                 }
             } header: {
                 Text(sources.count > 1 ? "\(sources.count) Versions" : "Version")
@@ -82,9 +68,9 @@ struct VersionsView: View {
             }
         }
         .navigationTitle(item.isEpisode ? (item.episodeCode ?? item.name) : item.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .topBarPinnedTrailing) {
+            ToolbarItem(placement: .barPinnedTrailing) {
                 Button("Download", systemImage: "arrow.down.circle") { download() }
                     .disabled(selectedSourceId == nil)
                     .accessibilityIdentifier("versions.download")

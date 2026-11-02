@@ -29,7 +29,7 @@ struct DownloadsView: View {
                     } header: {
                         Text("Finished")
                     } footer: {
-                        Text("Finished files are in the Files app under On My iPhone › JF Downloader. Move or share them into Infuse from there.")
+                        Text(FinishedFiles.hint)
                     }
                 }
             }
@@ -44,12 +44,12 @@ struct DownloadsView: View {
             }
             .navigationTitle("Downloads")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Show in Files", systemImage: "folder") {
-                        openURL(Self.filesAppURL(for: downloads.documentsURL))
+                ToolbarItem(placement: .barTrailing) {
+                    Button("Show in \(FinishedFiles.browser)", systemImage: "folder") {
+                        openURL(FinishedFiles.browserURL(for: downloads.finishedFolder))
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .barTrailing) {
                     Menu {
                         Button("Pause All", systemImage: "pause") {
                             for job in unfinished where job.status == .active { downloads.pause(job.id) }
@@ -67,14 +67,6 @@ struct DownloadsView: View {
                 }
             }
         }
-    }
-
-    /// Opens the Files app at a folder of this app's Documents.
-    static func filesAppURL(for folder: URL) -> URL {
-        var components = URLComponents()
-        components.scheme = "shareddocuments"
-        components.path = folder.path
-        return components.url ?? folder
     }
 }
 
@@ -128,7 +120,7 @@ private struct JobRow: View {
         .confirmationDialog("Delete the file?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete File", role: .destructive) { downloads.remove(job.id, deletingFile: true) }
         } message: {
-            Text("This removes \(job.savedPath ?? "the file") from this app's folder in Files.")
+            Text("This deletes \(job.savedPath ?? "the file") from \(FinishedFiles.place).")
         }
     }
 
@@ -143,8 +135,8 @@ private struct JobRow: View {
             Button("Start Over", systemImage: "arrow.counterclockwise") { downloads.restart(job.id) }
         case .completed:
             if let file = downloads.savedFileURL(of: job) {
-                Button("Show in Files", systemImage: "folder") {
-                    openURL(DownloadsView.filesAppURL(for: file.deletingLastPathComponent()))
+                Button("Show in \(FinishedFiles.browser)", systemImage: "folder") {
+                    openURL(FinishedFiles.browserURL(for: file.deletingLastPathComponent()))
                 }
             }
             Button("Remove from List", systemImage: "list.bullet") { downloads.remove(job.id) }

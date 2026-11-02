@@ -30,7 +30,7 @@ final class AccountStore {
            let token = Keychain.token(for: account.serverId)
         {
             self.account = account
-            client = JellyfinClient(serverURL: account.serverURL, deviceId: deviceId, token: token)
+            client = JellyfinClient(serverURL: account.serverURL, deviceId: deviceId, deviceName: Device.name, token: token)
         }
     }
 
@@ -48,11 +48,11 @@ final class AccountStore {
 
     /// Checks that a Jellyfin server answers at the address, without signing in.
     func probe(_ serverURL: URL) async throws -> PublicSystemInfo {
-        try await JellyfinClient(serverURL: serverURL, deviceId: deviceId).publicSystemInfo()
+        try await JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.name).publicSystemInfo()
     }
 
     func signIn(serverURL: URL, username: String, password: String) async throws {
-        var client = JellyfinClient(serverURL: serverURL, deviceId: deviceId)
+        var client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.name)
         let info = try await client.publicSystemInfo()
         let result = try await client.authenticate(username: username, password: password)
         client.token = result.accessToken

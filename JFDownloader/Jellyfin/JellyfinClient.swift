@@ -31,6 +31,8 @@ nonisolated struct JellyfinClient: Sendable {
 
     let serverURL: URL
     let deviceId: String
+    /// What the server's device list calls this device.
+    let deviceName: String
     var token: String?
 
     // MARK: Calls
@@ -132,7 +134,7 @@ nonisolated struct JellyfinClient: Sendable {
     var authorizationHeader: String {
         var fields = [
             "Client": Self.clientName,
-            "Device": "iPhone",
+            "Device": deviceName,
             "DeviceId": deviceId,
             "Version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
         ]
