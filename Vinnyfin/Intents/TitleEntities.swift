@@ -53,11 +53,11 @@ struct ShowQuery: EntityStringQuery {
     func suggestedEntities() async throws -> [ShowEntity] {
         let session = try ServerTitles.session(accounts)
         var seriesIds: [String] = []
-        for episode in try await session.client.nextUp(userId: session.userId, limit: 20) {
+        for episode in try await session.client.nextUp(userId: session.userId, limit: ServerTitles.suggestionLimit).items {
             if let seriesId = episode.seriesId, !seriesIds.contains(seriesId) { seriesIds.append(seriesId) }
         }
         let shows = seriesIds.isEmpty
-            ? try await session.client.latestShows(userId: session.userId, limit: 20)
+            ? try await ServerTitles.newest(.recentlyAddedShows, session: session)
             : try await ServerTitles.items(ids: seriesIds, type: "Series", session: session)
         return shows.map { ShowEntity($0, session: session) }
     }
@@ -82,7 +82,7 @@ struct MovieQuery: EntityStringQuery {
     @MainActor
     func suggestedEntities() async throws -> [MovieEntity] {
         let session = try ServerTitles.session(accounts)
-        return try await session.client.latest(userId: session.userId, types: ["Movie"], limit: 20).map { MovieEntity($0, session: session) }
+        return try await ServerTitles.newest(.recentlyAddedMovies, session: session).map { MovieEntity($0, session: session) }
     }
 }
 
@@ -101,6 +101,7 @@ nonisolated extension MovieEntity {
 /// The signed-in server's titles, as the entity queries ask for them.
 enum ServerTitles {
     static let searchLimit = 25
+    static let suggestionLimit = 20
     /// Small enough for Siri's and Shortcuts' lists.
     nonisolated static let posterWidth = 200
 
@@ -113,6 +114,13 @@ enum ServerTitles {
         guard !ids.isEmpty else { return [] }
         var query = JellyfinClient.ItemQuery(types: [type])
         query.ids = ids
+        return try await session.client.items(userId: session.userId, query).items
+    }
+
+    /// The newest titles of a kind, as many as a list of suggestions shows.
+    static func newest(_ query: JellyfinClient.ItemQuery, session: ServerSession) async throws -> [JellyfinItem] {
+        var query = query
+        query.limit = suggestionLimit
         return try await session.client.items(userId: session.userId, query).items
     }
 

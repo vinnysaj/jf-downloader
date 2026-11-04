@@ -18,10 +18,10 @@ nonisolated final class ContentProvider: TVTopShelfContentProvider {
         do {
             async let resume = client.resumeItems(userId: userId, limit: limit)
             async let nextUp = client.nextUp(userId: userId, limit: limit)
-            async let movies = client.latest(userId: userId, types: ["Movie"], limit: limit)
-            async let shows = client.latestShows(userId: userId, limit: limit)
-            return try await TopShelf.content(resume: resume, nextUp: nextUp, latestMovies: movies,
-                                              latestShows: shows, session: session)
+            async let movies = client.page(of: .items(.recentlyAddedMovies), userId: userId, startIndex: 0, limit: limit)
+            async let shows = client.page(of: .items(.recentlyAddedShows), userId: userId, startIndex: 0, limit: limit)
+            return try await TopShelf.content(resume: resume.items, nextUp: nextUp.items, latestMovies: movies.items,
+                                              latestShows: shows.items, session: session)
         } catch {
             Self.log.error("Couldn't load the Top Shelf from \(client.serverURL, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil

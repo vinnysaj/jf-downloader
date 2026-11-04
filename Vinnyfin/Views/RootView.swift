@@ -115,7 +115,7 @@ struct MainTabs: View {
     /// A title a link asked to open, shown on Home as the page after it.
     @Binding var linkedItem: JellyfinItem?
     @State private var selection = Destination.home
-    @State private var homePath: [JellyfinItem] = []
+    @State private var homePath = NavigationPath()
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
     #endif
@@ -127,14 +127,12 @@ struct MainTabs: View {
             }
             Tab("Movies", systemImage: "film", value: .movies) {
                 NavigationStack {
-                    LibraryGridView(kind: .movies)
-                        .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
+                    LibraryGridView(list: .movies).itemDestinations()
                 }
             }
             Tab("Shows", systemImage: "tv", value: .shows) {
                 NavigationStack {
-                    LibraryGridView(kind: .shows)
-                        .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
+                    LibraryGridView(list: .shows).itemDestinations()
                 }
             }
             #if os(tvOS)
@@ -155,7 +153,7 @@ struct MainTabs: View {
         .onChange(of: linkedItem, initial: true) {
             guard let linkedItem else { return }
             selection = .home
-            homePath = [linkedItem]
+            homePath = NavigationPath([linkedItem])
             self.linkedItem = nil
         }
     }

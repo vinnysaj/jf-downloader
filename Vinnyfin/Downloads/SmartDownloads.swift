@@ -131,7 +131,7 @@ final class SmartDownloads {
                 try await refresh(seriesId: seriesId)
             } catch {
                 // The background refresh ran out of time, or the app is closing.
-                if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+                if error.isCancellation { return }
                 if Self.isOffline(error) {
                     deleteWatchedOffline(seriesId: seriesId)
                     continue
@@ -187,7 +187,7 @@ final class SmartDownloads {
         -> (episodes: [JellyfinItem], states: [SmartDownloadPlanner.Episode], nextUpId: String?) {
         let episodes = try await client.episodes(seriesId: seriesId, seasonId: nil, userId: userId, fields: "MediaSources")
             .filter { $0.parentIndexNumber != 0 }
-        let nextUp = try await client.nextUp(userId: userId, seriesId: seriesId, limit: 1).first?.id
+        let nextUp = try await client.nextUp(userId: userId, seriesId: seriesId, limit: 1).items.first?.id
         let states = episodes.map { episode in
             let downloadedAt = downloads.jobs(forItem: episode.id).compactMap(\.completedAt).min()
             return SmartDownloadPlanner.Episode(

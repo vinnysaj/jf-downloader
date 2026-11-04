@@ -46,14 +46,22 @@ final class LocalLibrary {
         #endif
     }
 
-    /// Remembers a file that was opened, most recent first. The caller holds access to `url`.
+    /// Remembers a file that was opened, most recent first, unless it's in the app's folder,
+    /// where `folderFiles` lists it already. The caller holds access to `url`.
     func noteOpened(_ url: URL, request: PlaybackRequest) {
-        guard case .file(let bookmark, let name) = request.source else { return }
+        guard case .file(let bookmark, let name) = request.source, !isInFolder(url) else { return }
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { $0 }.map(Int64.init) ?? 0
         recents.removeAll { $0.name == name && $0.size == size }
         recents.insert(Recent(name: name, bookmark: bookmark, size: size, openedAt: .now), at: 0)
         if recents.count > Self.maxRecents { recents.removeLast(recents.count - Self.maxRecents) }
         save()
+    }
+
+    private func isInFolder(_ url: URL) -> Bool {
+        guard let folder else { return false }
+        let folderPath = folder.resolvingSymlinksInPath().path(percentEncoded: false)
+        let filePath = url.resolvingSymlinksInPath().path(percentEncoded: false)
+        return filePath.hasPrefix(folderPath.hasSuffix("/") ? folderPath : folderPath + "/")
     }
 
     func remove(_ recent: Recent) {
