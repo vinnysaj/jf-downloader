@@ -305,8 +305,10 @@ struct IntentSummaryTests {
         var job = DownloadJob(item: Samples.movie, source: Samples.source)
         job.status = .completed
         #expect(IntentSummaries.alreadyThere(job) == "\(job.title) is already downloaded.")
-        #expect(IntentSummaries.movieQueued(nil, name: "Big Test Movie", source: Samples.source)
+        #expect(IntentSummaries.movieQueued(nil, name: "Big Test Movie", source: Samples.source, isOneOfSeveral: true)
             == "Downloading Big Test Movie: 1080p, \(DownloadEstimate.text(300_000_000)).")
+        #expect(IntentSummaries.movieQueued(nil, name: "Big Test Movie", source: Samples.source, isOneOfSeveral: false)
+            == "Downloading Big Test Movie: \(DownloadEstimate.text(300_000_000)).")
     }
 }
 #endif

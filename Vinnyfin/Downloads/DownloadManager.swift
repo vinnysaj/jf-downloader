@@ -717,8 +717,11 @@ final class DownloadManager {
     /// Asks the server for a file's first byte through `probeSession`, at the job's retry time
     /// if it has one, and hands the answer to `handle` like a transfer's. A server that ignores
     /// Range answers with the whole file: the probe stops at the headers, and the file comes
-    /// through the background session in one request. A probe the app is suspended or killed
-    /// during fails, or is never sent, and goes again the next time the app runs.
+    /// through the background session in one request. The app asks for background time while
+    /// the probe is out, so one sent just before the app leaves the front, or while Siri, a
+    /// shortcut or a control runs it in the background, still hands its file to the background
+    /// session. A probe the app is suspended or killed during all the same fails, or is never
+    /// sent, and goes again the next time the app runs.
     private func probe(_ job: DownloadJob, client: JellyfinClient) {
         let tag = TransferTag(jobId: job.id, range: DownloadJob.probeRange)
         var request = URLRequest(url: client.streamURL(itemId: job.itemId, mediaSourceId: job.mediaSourceId))
@@ -731,6 +734,10 @@ final class DownloadManager {
         let task = Task { [weak self, probeSession] in
             if let retryAt, retryAt > .now { try? await Task.sleep(for: .seconds(retryAt.timeIntervalSinceNow)) }
             guard !Task.isCancelled else { return }
+            #if !os(macOS)
+            let backgroundTime = BackgroundTime(named: "Download probe")
+            defer { backgroundTime.end() }
+            #endif
             Self.log.debug("Probing [\(tag.encoded)] as \(identifier)")
             let finished = await Self.fetchProbe(request, tag: tag, identifier: identifier, into: staging, using: probeSession)
             guard let self else { return }
@@ -1360,4 +1367,30 @@ final class DownloadManager {
         count.formatted(.byteCount(style: .file))
     }
 }
+
+#if !os(macOS)
+/// Time the system grants the app to finish something it started, in front or in the
+/// background, until `end()` or until the system takes it back.
+@MainActor
+private final class BackgroundTime {
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "downloads")
+    private let name: String
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+
+    init(named name: String) {
+        self.name = name
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            guard let self else { return }
+            Self.log.notice("Background time ran out for \(self.name, privacy: .public)")
+            self.end()
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+#endif
 #endif

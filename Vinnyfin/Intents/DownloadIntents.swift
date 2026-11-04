@@ -58,7 +58,9 @@ struct DownloadMovieIntent: AppIntent {
         downloads.enqueue(detail, source: source, startedByUser: true)
         // Queued, or turned away at once for want of space.
         let job = downloads.jobs(forItem: movie.id).first
-        return .result(dialog: IntentDialog("\(IntentSummaries.movieQueued(job, name: detail.name, source: source))"))
+        let summary = IntentSummaries.movieQueued(job, name: detail.name, source: source,
+                                                  isOneOfSeveral: (detail.mediaSources?.count ?? 0) > 1)
+        return .result(dialog: IntentDialog("\(summary)"))
     }
 }
 
@@ -133,9 +135,12 @@ nonisolated enum IntentSummaries {
         }
     }
 
-    static func movieQueued(_ job: DownloadJob?, name: String, source: MediaSource) -> String {
+    /// The version is named only when it was picked from several: a movie's only version is
+    /// named after the file, which repeats the movie's name.
+    static func movieQueued(_ job: DownloadJob?, name: String, source: MediaSource, isOneOfSeveral: Bool) -> String {
         if let job, job.status == .failed, let error = job.lastError { return "Couldn't download \(name). \(error)" }
-        let details = [source.name, source.plausibleSize.map(DownloadEstimate.text)].compactMap(\.self).joined(separator: ", ")
+        let details = [isOneOfSeveral ? source.name : nil, source.plausibleSize.map(DownloadEstimate.text)]
+            .compactMap(\.self).joined(separator: ", ")
         return details.isEmpty ? "Downloading \(name)." : "Downloading \(name): \(details)."
     }
 
