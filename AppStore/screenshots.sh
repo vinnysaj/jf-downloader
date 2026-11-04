@@ -94,7 +94,7 @@ simulator() {
 prepare() {
   local udid=$1 kind=${2:-phone}
   xcrun simctl ui "$udid" appearance dark
-  xcrun simctl uninstall "$udid" com.vinnysaj.vinnyfin
+  xcrun simctl uninstall "$udid" net.vinnysaj.vinnyfin
   [ "$kind" = tv ] && return
   xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
     --cellularMode active --cellularBars 4 --operatorName "" --batteryState discharging --batteryLevel 100
