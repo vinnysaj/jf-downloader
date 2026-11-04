@@ -18,6 +18,8 @@ struct PlayerView: View {
     @State private var panel: PlayerPanel?
     /// Where the controls' bottom bar starts, in global coordinates.
     @State private var bottomBarTop: CGFloat?
+    /// Where the controls' top bar ends, in global coordinates.
+    @State private var topBarBottom: CGFloat?
     #if !os(tvOS)
     @FocusState private var hasKeyboardFocus: Bool
     #endif
@@ -72,14 +74,14 @@ struct PlayerView: View {
             inPictureArea { statusOverlay }
             if let fold {
                 PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
-                               bottomBarTop: $bottomBarTop,
+                               bottomBarTop: $bottomBarTop, topBarBottom: $topBarBottom,
                                onClose: onClose, onInteraction: {}, pictureInPicture: pictureInPictureAction,
                                isBelowFold: true)
                     .padding(.top, fold.maxY)
                     .ignoresSafeArea(edges: .top)
             } else if controlsVisible {
                 PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
-                               bottomBarTop: $bottomBarTop,
+                               bottomBarTop: $bottomBarTop, topBarBottom: $topBarBottom,
                                onClose: onClose, onInteraction: scheduleHide, pictureInPicture: pictureInPictureAction)
                     .transition(.opacity)
             }
@@ -101,6 +103,12 @@ struct PlayerView: View {
                 .frame(maxHeight: .infinity, alignment: .top)
                 .ignoresSafeArea()
             inPictureArea { extras }
+            if let notice = model.notice {
+                inPictureArea {
+                    PlayerNotice(text: notice, controlsBottom: controlsVisible && fold == nil ? topBarBottom : nil)
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
             if let panel {
                 TrackPanel(model: model, panel: panel) { closePanel() }
                     .padding(Metrics.edge)
@@ -111,6 +119,7 @@ struct PlayerView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: controlsVisible)
         .animation(.snappy, value: panel)
+        .animation(.snappy, value: model.notice)
         #if os(iOS)
         .animation(.snappy, value: orientationLock.isAnnouncing)
         .animation(.smooth, value: fold)
@@ -166,6 +175,9 @@ struct PlayerView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await model.restoreAfterBackground() } }
+        }
+        .onChange(of: model.notice) { _, notice in
+            if let notice { AccessibilityNotification.Announcement(notice).post() }
         }
 
         .task {
@@ -321,6 +333,32 @@ struct PlayerView: View {
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { hideControls() }
         }
+    }
+}
+
+/// A brief word over the picture, such as a move to a lower quality, below the controls' top
+/// bar while they show.
+private struct PlayerNotice: View {
+    let text: String
+    /// The bottom of the controls' top bar in global coordinates while they show.
+    var controlsBottom: CGFloat?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let clearBelow = controlsBottom.map { max(0, $0 - geometry.frame(in: .global).minY) } ?? 0
+            Label(text, systemImage: "wifi.exclamationmark")
+                .font(.callout.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .platformGlass(in: .capsule)
+                .padding(.top, clearBelow + 12)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, Metrics.playerInset)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("player.notice")
     }
 }
 
