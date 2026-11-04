@@ -103,6 +103,9 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored var onUnderwayChanged: ((Bool) -> Void)?
     /// Told once, when the player closes for good.
     @ObservationIgnored var onClose: (() -> Void)?
+    /// Told each time a server title's playback stops, once the server has been told where (or
+    /// couldn't be), so what's up next can be asked for again.
+    @ObservationIgnored var onStopReported: (() -> Void)?
 
     @ObservationIgnored private var request: PlaybackRequest
     @ObservationIgnored private var subscriptions = Set<AnyCancellable>()
@@ -786,6 +789,7 @@ final class PlayerModel: Identifiable {
         // Immediate: the report reads this session's length and pause before the next one starts.
         stopReport = Task.immediate {
             await self.report(.stopped, for: current, position: position, after: previousReport)
+            if current.reporting != nil { self.onStopReported?() }
             guard current.isTranscode, let reporting = current.reporting, let client = self.accounts.client else { return }
             do {
                 try await client.stopTranscoding(playSessionId: reporting.playSessionId)

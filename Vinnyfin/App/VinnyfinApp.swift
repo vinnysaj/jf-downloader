@@ -101,7 +101,11 @@ extension View {
 /// to hand over finished transfers or run a background task, when no window may be shown.
 final class AppDelegate: NSObject {
     let settings = AppSettings()
+    #if os(iOS) || os(macOS)
+    let accounts = AccountStore(movingSignInFrom: .standard)
+    #else
     let accounts = AccountStore()
+    #endif
     let history = WatchHistory()
     let messages = AppMessages()
     #if os(tvOS)
@@ -125,6 +129,9 @@ final class AppDelegate: NSObject {
 
     private func launched() {
         ImageCache.configure()
+        #if os(iOS) || os(macOS)
+        if let problem = accounts.sharingProblem { messages.show(problem) }
+        #endif
         #if !os(tvOS)
         downloadNotifications.start()
         let downloads = downloads
@@ -167,6 +174,11 @@ final class AppDelegate: NSObject {
 extension AppDelegate: NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         launched()
+    }
+
+    /// The desktop's widgets come into view as another app takes over.
+    func applicationDidResignActive(_ notification: Notification) {
+        UpNextWidgets.reload()
     }
 }
 #else

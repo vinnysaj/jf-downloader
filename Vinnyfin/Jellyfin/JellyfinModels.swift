@@ -149,6 +149,18 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var titleId: String { isEpisode ? (seriesId ?? id) : id }
     var titleName: String { isEpisode ? (seriesName ?? name) : name }
 
+    /// What a landscape card says under the title's name: an episode's number and name, the time
+    /// left in a film partway through, or its year.
+    var cardDetail: String {
+        if isEpisode {
+            return [episodeCode, name].compactMap(\.self).joined(separator: " · ")
+        }
+        if let resume = resumeSeconds, let total = runtimeSeconds, total > resume {
+            return "\(Duration.seconds(total - resume).formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))) left"
+        }
+        return premiereYearText ?? ""
+    }
+
     var premiereYearText: String? {
         productionYear.map(String.init)
     }
