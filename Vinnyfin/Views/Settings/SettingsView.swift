@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(AccountStore.self) private var accounts
+    @Environment(SessionSocket.self) private var socket
     @Environment(\.dismiss) private var dismiss
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
@@ -107,10 +108,12 @@ struct SettingsView: View {
 
     @ViewBuilder private var account: some View {
         if let account = accounts.account {
-            Section("Server") {
+            Section {
                 LabeledContent("Server", value: account.serverName ?? account.serverURL.host() ?? "Jellyfin")
                 LabeledContent("Address", value: account.serverURL.absoluteString)
                 LabeledContent("Signed In As", value: account.userName)
+                LabeledContent("Remote Control", value: socket.state.label)
+                    .accessibilityIdentifier("settings.remoteControl")
                 Button("Sign Out", role: .destructive) { confirmingSignOut = true }
                     .accessibilityIdentifier("settings.signOut")
                     .confirmationDialog("Sign out of \(account.serverName ?? "the server")?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
@@ -128,6 +131,10 @@ struct SettingsView: View {
                         Text("Unfinished downloads are cancelled. Finished downloads stay and still play.")
                         #endif
                     }
+            } header: {
+                Text("Server")
+            } footer: {
+                Text("While vinnyfin is open, your other devices and Jellyfin apps can play to this \(Device.name), as \(Device.ownName), and control what plays.")
             }
         }
     }

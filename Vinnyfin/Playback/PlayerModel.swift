@@ -103,6 +103,8 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored var onUnderwayChanged: ((Bool) -> Void)?
     /// Told once, when the player closes for good.
     @ObservationIgnored var onClose: (() -> Void)?
+    /// The group watching this together, through SharePlay, which the viewer's changes go through.
+    @ObservationIgnored weak var sharing: (any PlaybackSharing)?
 
     @ObservationIgnored private var request: PlaybackRequest
     @ObservationIgnored private var subscriptions = Set<AnyCancellable>()
@@ -124,6 +126,8 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored private var watchTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var isClosed = false
+    /// The streams the request asks to start with, until the playback it started has them.
+    @ObservationIgnored private var askedStreams: PlaybackRequest.StartingPoint?
 
     private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "player")
     static let skipInterval: Double = 10
@@ -220,6 +224,7 @@ final class PlayerModel: Identifiable {
 
     private func load(_ request: PlaybackRequest) async {
         self.request = request
+        askedStreams = request.startingPoint
         status = .preparing
         title = request.title
         subtitle = nil
@@ -259,6 +264,8 @@ final class PlayerModel: Identifiable {
         clock.sourceTime = resolved.startPosition ?? 0
         clock.buffered = 0
         carriedTracks = tracks
+        // A version standing in for another keeps that one's tracks, whatever the request asked.
+        if tracks != nil { askedStreams = nil }
         appliedSubtitlePreference = false
         isLoaded = false
         startedReporting = false
@@ -270,8 +277,12 @@ final class PlayerModel: Identifiable {
         var options = LoadOptions()
         options.externalSubtitles = resolved.externalSubtitles
         options.matchContentEnabled = settings.matchContent
+        options.autoplay = sharing?.startsByItself(resolved.item?.id) ?? true
         var audioStreamIndex: Int32?
-        if let audio = tracks?.audio, !resolved.isTranscode {
+        if let asked = askedStreams?.audioStreamIndex, !resolved.isTranscode {
+            // An audio stream's index in the file is the server's.
+            audioStreamIndex = Int32(asked)
+        } else if let audio = tracks?.audio, !resolved.isTranscode {
             // By the server's list of the version's streams when it has one, else by language.
             let streams = resolved.mediaSource?.audioStreams.compactMap(TrackChooser.Candidate.init) ?? []
             audioStreamIndex = TrackChooser.same(as: audio, in: streams).map(Int32.init)
@@ -424,7 +435,9 @@ final class PlayerModel: Identifiable {
             return
         }
         audioOptions = tracks.map { TrackOption(id: $0.id, title: Self.trackTitle($0), detail: Self.audioDetail($0)) }
+        let previous = selectedAudio
         selectedAudio = active
+        if isLoaded, previous != active { reportProgressNow() }
     }
 
     private func subtitleTracksChanged(_ tracks: [TrackInfo], active: Int?) {
@@ -442,8 +455,12 @@ final class PlayerModel: Identifiable {
             return
         }
         subtitleOptions = tracks.map { TrackOption(id: $0.id, title: Self.trackTitle($0), detail: Self.subtitleDetail($0)) }
+        let previous = selectedSubtitle
         selectedSubtitle = active
-        if isLoaded { applySubtitlePreference(tracks) }
+        if isLoaded {
+            applySubtitlePreference(tracks)
+            if previous != active { reportProgressNow() }
+        }
     }
 
     /// Turns on the subtitle track the subtitle setting asks for, once per playback, after the
@@ -454,7 +471,10 @@ final class PlayerModel: Identifiable {
         appliedSubtitlePreference = true
         let candidates = tracks.map(TrackChooser.Candidate.init)
         let choice: Int?
-        if let carried = carriedTracks, let subtitle = carried.subtitle {
+        if let asked = askedStreams?.subtitleStreamIndex {
+            choice = asked < 0 ? nil : streamMap.trackId(forStream: asked) ?? preferredSubtitle(from: candidates)
+            askedStreams = nil
+        } else if let carried = carriedTracks, let subtitle = carried.subtitle {
             choice = TrackChooser.same(as: subtitle, in: candidates) ?? preferredSubtitle(from: candidates)
         } else if carriedTracks != nil {
             choice = nil
@@ -476,31 +496,55 @@ final class PlayerModel: Identifiable {
 
     // MARK: Commands
 
+    // The viewer's commands, from the controls, the system's remote commands and other devices.
+    // Watched together, the transport goes to the group, which applies it everywhere through the
+    // group commands below.
+
     func togglePlayPause() {
         switch status {
         case .ended:
+            // The group starts over together; a stream that ended plays again from a new load.
+            if sharing?.share(.seek(0)) == true { return }
             Task { await load(PlaybackRequest(source: request.source, title: request.title, startFromBeginning: true)) }
         case .failed:
             return
         default:
+            if sharing?.share(.rate(isPlaying ? 0 : rate)) == true { return }
             engine.togglePlayPause()
         }
+    }
+
+    func play() {
+        guard status != .ended else { return }
+        if sharing?.share(.rate(rate)) == true { return }
+        engine.play()
+    }
+
+    func pause() {
+        if sharing?.share(.rate(0)) == true { return }
+        engine.pause()
     }
 
     func seek(to seconds: Double) {
         let target = max(0, duration > 0 ? min(seconds, duration - 1) : seconds)
         clock.time = target
+        if sharing?.share(.seek(target)) == true { return }
         connectionWatch.restart()
         nowPlayingChanged()
-        Task { await engine.seek(to: target) }
+        Task {
+            await engine.seek(to: target)
+            reportProgressNow()
+        }
     }
 
     func skip(by seconds: Double) {
         seek(to: clock.time + seconds)
     }
 
+    /// Paused, the speed waits for the next play, here and in a group.
     func setRate(_ newRate: Float) {
         rate = newRate
+        if isPlaying, sharing?.share(.rate(newRate)) == true { return }
         engine.setRate(newRate)
         nowPlayingChanged()
     }
@@ -530,6 +574,110 @@ final class PlayerModel: Identifiable {
         countdownTask?.cancel()
         upNextCountdown = nil
         upNextDismissed = true
+    }
+
+    func playNextEpisode() async {
+        guard let nextEpisode else { return }
+        await play(nextEpisode)
+    }
+
+    /// The episode before this one; the start of this one when there's none before it.
+    func playPreviousEpisode() async {
+        guard let item, item.isEpisode, let seriesId = item.seriesId, let client = accounts.client,
+              let account = accounts.account else {
+            seek(to: 0)
+            return
+        }
+        do {
+            if let previous = try await client.episode(before: item.id, seriesId: seriesId, userId: account.userId) {
+                await play(previous)
+            } else {
+                seek(to: 0)
+            }
+        } catch {
+            guard !error.isCancellation else { return }
+            show("Couldn't find the episode before this one: \(error.localizedDescription)", for: 6)
+        }
+    }
+
+    // MARK: Streams by the server's numbers
+
+    /// The server's index of the audio stream playing; nil for a file of this device's.
+    var audioStreamIndex: Int? {
+        guard let current, current.reporting != nil, let selectedAudio else { return nil }
+        return current.isTranscode ? selectedAudio : streamMap.streamIndex(forTrack: selectedAudio)
+    }
+
+    /// The server's index of the subtitle stream showing, -1 with subtitles off; nil for a file of
+    /// this device's.
+    var subtitleStreamIndex: Int? {
+        guard let current, current.reporting != nil else { return nil }
+        guard let selectedSubtitle else { return -1 }
+        return current.isTranscode ? selectedSubtitle : streamMap.streamIndex(forTrack: selectedSubtitle)
+    }
+
+    /// Plays the audio stream the server numbers `index`, as another device asks.
+    func chooseAudio(streamIndex index: Int) {
+        if isTranscoding {
+            chooseAudio(index)
+        } else if let track = streamMap.trackId(forStream: index) {
+            chooseAudio(track)
+        } else {
+            show("This version has no audio track \(index), which another device asked for.", for: 4)
+        }
+    }
+
+    /// Shows the subtitle stream the server numbers `index`, or none, as another device asks.
+    func chooseSubtitle(streamIndex index: Int?) {
+        guard let index else {
+            chooseSubtitle(nil)
+            return
+        }
+        if isTranscoding {
+            chooseSubtitle(index)
+        } else if let track = streamMap.trackId(forStream: index) {
+            chooseSubtitle(track)
+        } else {
+            show("These subtitles, which another device asked for, didn't load here.", for: 4)
+        }
+    }
+
+    private var streamMap: StreamIndexMap {
+        StreamIndexMap(streams: current?.mediaSource?.mediaStreams ?? [], tracks: engine.audioTracks + engine.subtitleTracks)
+    }
+
+    // MARK: Group commands
+
+    /// The server item asked for, while it loads and once it plays.
+    var requestedItemId: String? {
+        if case .item(let id, _) = request.source { id } else { nil }
+    }
+    /// Plays at `rate`, or pauses at 0, as the group watching together asks.
+    func applyRate(_ newRate: Float) {
+        guard newRate != 0 else {
+            engine.pause()
+            return
+        }
+        if rate != newRate {
+            rate = newRate
+            engine.setRate(newRate)
+        }
+        engine.play()
+        nowPlayingChanged()
+    }
+
+    /// Moves to `seconds` exactly, as the group asks. A stream that ended plays again from there.
+    func applySeek(to seconds: Double) async {
+        if status == .ended {
+            await load(PlaybackRequest(source: request.source, title: request.title, startingPoint: .init(position: seconds)))
+            return
+        }
+        let target = max(0, duration > 0 ? min(seconds, duration - 1) : seconds)
+        clock.time = target
+        connectionWatch.restart()
+        nowPlayingChanged()
+        await engine.seek(to: target, exact: true)
+        reportProgressNow()
     }
 
     /// A transcode carries its audio and subtitles in the stream, so changing them asks the
@@ -754,8 +902,15 @@ final class PlayerModel: Identifiable {
     }
 
     private func reportPauseChange(paused: Bool) {
-        guard let current, startedReporting, lastReportedPaused != paused else { return }
+        guard startedReporting, lastReportedPaused != paused else { return }
         lastReportedPaused = paused
+        reportProgressNow()
+    }
+
+    /// Tells the server at once, for a remote following this playback: after a pause, a seek or
+    /// a change of track.
+    private func reportProgressNow() {
+        guard let current, startedReporting else { return }
         Task { await report(.progress, for: current, position: clock.time) }
     }
 
@@ -765,6 +920,9 @@ final class PlayerModel: Identifiable {
                         after previous: Task<Void, Never>? = nil) async {
         let total = duration > 0 ? duration : playback.duration
         let isPaused = status == .paused
+        let isCurrent = current?.reporting?.playSessionId == playback.reporting?.playSessionId
+        let audioStream = isCurrent ? audioStreamIndex : nil
+        let subtitleStream = isCurrent ? subtitleStreamIndex : nil
         await previous?.value
         var delivered = false
         if let reporting = playback.reporting, let client = accounts.client {
@@ -774,7 +932,9 @@ final class PlayerModel: Identifiable {
                 PlaySessionId: reporting.playSessionId,
                 PlayMethod: reporting.playMethod,
                 PositionTicks: Int64(max(0, position) * 10_000_000),
-                IsPaused: isPaused
+                IsPaused: isPaused,
+                AudioStreamIndex: audioStream,
+                SubtitleStreamIndex: subtitleStream
             )
             do {
                 switch kind {
@@ -857,9 +1017,9 @@ final class PlayerModel: Identifiable {
             command.isEnabled = true
             commandTargets.append((command, command.addTarget(handler: handler)))
         }
-        add(center.togglePlayPauseCommand) { [weak self] _ in self?.engine.togglePlayPause(); return .success }
-        add(center.playCommand) { [weak self] _ in self?.engine.play(); return .success }
-        add(center.pauseCommand) { [weak self] _ in self?.engine.pause(); return .success }
+        add(center.togglePlayPauseCommand) { [weak self] _ in self?.togglePlayPause(); return .success }
+        add(center.playCommand) { [weak self] _ in self?.play(); return .success }
+        add(center.pauseCommand) { [weak self] _ in self?.pause(); return .success }
         center.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
         center.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
         add(center.skipForwardCommand) { [weak self] _ in self?.skip(by: Self.skipInterval); return .success }

@@ -6,7 +6,12 @@ struct RootView: View {
     @Environment(AppMessages.self) private var messages
     @Environment(WatchHistory.self) private var history
     @Environment(AppSettings.self) private var settings
+    @Environment(SessionSocket.self) private var socket
+    @Environment(SharePlay.self) private var sharePlay
     @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS) || os(macOS)
+    @Environment(RemoteControl.self) private var remote
+    #endif
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -64,6 +69,22 @@ struct RootView: View {
         } message: {
             Text(player.problem ?? "")
         }
+        .alert("Can't Watch Together", isPresented: Binding(get: { sharePlay.problem != nil }, set: { if !$0 { sharePlay.problem = nil } })) {
+            Button("OK") { sharePlay.problem = nil }
+        } message: {
+            Text(sharePlay.problem ?? "")
+        }
+        #if os(iOS) || os(macOS)
+        .sheet(isPresented: showsRemoteScreen) {
+            RemoteScreen()
+                .environment(\.session, session)
+        }
+        #endif
+        // Others can play to this device while it's open, or while it plays in the background.
+        .task(id: socketConnection) {
+            guard socketConnection != nil, let client = accounts.client else { return }
+            await socket.run(client: client)
+        }
         .onOpenURL { url in
             if url.isFileURL {
                 let scoped = url.startAccessingSecurityScopedResource()
@@ -89,6 +110,33 @@ struct RootView: View {
             await smartDownloads.refreshWhileOpen()
             #endif
         }
+    }
+
+    #if os(iOS) || os(macOS)
+    /// The remote's screen. On iPhone and iPad it waits for the player that handed its playback
+    /// over to close: a sheet presented over the full-screen player keeps it from closing.
+    private var showsRemoteScreen: Binding<Bool> {
+        Binding {
+            #if os(iOS)
+            remote.showsScreen && player.presented == nil
+            #else
+            remote.showsScreen
+            #endif
+        } set: {
+            remote.showsScreen = $0
+        }
+    }
+    #endif
+
+    /// The sign-in the socket is open for; nil while it's closed: signed out, or in the background
+    /// with nothing playing, when the server then stops listing this device to play to. On the
+    /// Mac, which doesn't suspend apps, it stays open.
+    private var socketConnection: String? {
+        guard let client = accounts.client, let account = accounts.account else { return nil }
+        #if !os(macOS)
+        if scenePhase == .background, player.presented?.isPlaying != true { return nil }
+        #endif
+        return "\(client.serverURL.absoluteString) \(account.userId) \(client.token ?? "")"
     }
 
     /// Plays the title, or shows its page on Home in place of the player.
@@ -119,8 +167,26 @@ struct MainTabs: View {
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
     #endif
+    #if os(iOS) || os(macOS)
+    @Environment(RemoteControl.self) private var remote
+    #endif
 
     var body: some View {
+        tabs
+            #if os(iOS)
+            .tabViewBottomAccessory(isEnabled: remote.isActive) { RemoteMiniPlayer() }
+            #elseif os(macOS)
+            .safeAreaInset(edge: .bottom) {
+                if remote.isActive {
+                    RemoteMiniPlayer()
+                        .padding(.vertical, 10)
+                        .background(.bar)
+                }
+            }
+            #endif
+    }
+
+    private var tabs: some View {
         TabView(selection: $selection) {
             Tab("Home", systemImage: "house", value: .home) {
                 HomeView(path: $homePath) { selection = .downloads }

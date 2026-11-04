@@ -121,6 +121,7 @@ struct ItemDetailView: View {
         #endif
         WatchedButton(item: shown) { detail = $0 }
         FavoriteButton(item: shown) { detail = $0 }
+        PlayElsewhereButton(subject: .title(shown, mediaSourceId: pickedSourceId))
     }
 
     private var versions: some View {

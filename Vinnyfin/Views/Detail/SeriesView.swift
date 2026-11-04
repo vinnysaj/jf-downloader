@@ -153,6 +153,9 @@ struct SeriesView: View {
             .focused($focusedAction, equals: .watched)
             #endif
         FavoriteButton(item: shown) { detail = $0 }
+        if let nextUp {
+            PlayElsewhereButton(subject: .title(nextUp, mediaSourceId: nil))
+        }
     }
 
     private func playLabel(for episode: JellyfinItem) -> String {

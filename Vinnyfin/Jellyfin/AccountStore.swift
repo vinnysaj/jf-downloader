@@ -42,7 +42,7 @@ final class AccountStore {
            let token = Keychain.token(for: account.serverId)
         {
             self.account = account
-            client = JellyfinClient(serverURL: account.serverURL, deviceId: deviceId, deviceName: Device.name, token: token)
+            client = JellyfinClient(serverURL: account.serverURL, deviceId: deviceId, deviceName: Device.ownName, token: token)
         }
     }
 
@@ -66,11 +66,11 @@ final class AccountStore {
 
     /// Checks that a Jellyfin server answers at the address, without signing in.
     func probe(_ serverURL: URL) async throws -> PublicSystemInfo {
-        try await JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.name).publicSystemInfo()
+        try await JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName).publicSystemInfo()
     }
 
     func signIn(serverURL: URL, username: String, password: String) async throws {
-        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.name)
+        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName)
         let info = try await client.publicSystemInfo()
         let result = try await client.authenticate(username: username, password: password)
         try adopt(result, serverURL: serverURL, info: info, client: client)
@@ -79,14 +79,14 @@ final class AccountStore {
 
     /// Starts a Quick Connect sign-in: the code is entered in an app that is already signed in.
     func startQuickConnect(serverURL: URL) async throws -> QuickConnectState {
-        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.name)
+        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName)
         guard try await client.quickConnectEnabled() else { throw JellyfinError.quickConnectDisabled }
         return try await client.initiateQuickConnect()
     }
 
     /// Waits for the code to be approved, then signs in. Ends when the calling task is cancelled.
     func finishQuickConnect(serverURL: URL, secret: String) async throws {
-        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.name)
+        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName)
         let info = try await client.publicSystemInfo()
         while try await !client.quickConnectState(secret: secret).authenticated {
             try await Task.sleep(for: .seconds(2))

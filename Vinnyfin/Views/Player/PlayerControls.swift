@@ -19,7 +19,10 @@ struct PlayerControls: View {
     let onInteraction: () -> Void
     /// Nil when Picture in Picture isn't possible right now.
     let pictureInPicture: (() -> Void)?
+    /// Opens Play On and SharePlay; nil when the playback is only this device's, or on Apple TV.
+    let playElsewhere: (() -> Void)?
     var isBelowFold = false
+    @Environment(SharePlay.self) private var sharePlay
     #if os(tvOS)
     /// The controls the remote moves between. Moving counts as using them, so they stay up.
     private enum Control: Hashable {
@@ -138,6 +141,19 @@ struct PlayerControls: View {
             .padding(.top, 6)
             Spacer()
             FormatBadge(model: model).padding(.top, 6)
+            if let playElsewhere {
+                Button {
+                    playElsewhere()
+                    onInteraction()
+                } label: {
+                    Image(systemName: PlayElsewhereSheet.symbol(sharePlay)).font(.headline).frame(width: 22, height: 22)
+                }
+                .buttonStyle(.platformGlass)
+                .buttonBorderShape(.circle)
+                .controlSize(.large)
+                .accessibilityLabel(PlayElsewhereSheet.title)
+                .accessibilityIdentifier("player.playElsewhere")
+            }
             #if os(iOS) || os(macOS)
             RoutePicker()
             if let pictureInPicture {

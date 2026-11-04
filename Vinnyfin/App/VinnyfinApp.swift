@@ -4,6 +4,9 @@ import AppKit
 #else
 import UIKit
 #endif
+#if os(visionOS)
+import GroupActivities
+#endif
 
 @main
 struct VinnyfinApp: App {
@@ -75,18 +78,25 @@ extension View {
             .environment(app.history)
             .environment(app.messages)
             .environment(app.player)
+            .environment(app.socket)
+            .environment(app.sharePlay)
         #else
         environment(app.accounts)
             .environment(app.settings)
             .environment(app.history)
             .environment(app.messages)
             .environment(app.player)
+            .environment(app.socket)
+            .environment(app.sharePlay)
             .environment(app.downloads)
             .environment(app.smartDownloads)
             .environment(app.localLibrary)
             #if os(iOS) || os(visionOS)
             .environment(app.backgroundDownloads)
             .environment(app.diagnostics)
+            #endif
+            #if os(iOS) || os(macOS)
+            .environment(app.remote)
             #endif
         #endif
     }
@@ -112,9 +122,21 @@ final class AppDelegate: NSObject {
     private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads)
     let diagnostics = AppDiagnostics()
     #endif
+    /// Jellyfin's remote control: other devices play to this one, and this one to them.
+    let socket = SessionSocket()
+    private(set) lazy var sharePlay = SharePlay(accounts: accounts, player: player)
+    #if os(iOS) || os(macOS)
+    private(set) lazy var remote = RemoteControl(accounts: accounts, socket: socket, player: player)
+    #endif
 
     private func launched() {
         ImageCache.configure()
+        let player = player
+        player.sharePlay = sharePlay
+        socket.onCommand = { command in player.perform(command) }
+        // From launch, so a session started on FaceTime before the app opened is joined.
+        let sharePlay = sharePlay
+        Task { await sharePlay.run() }
         #if !os(tvOS)
         let downloads = downloads
         Task { await downloads.run() }
@@ -207,6 +229,8 @@ struct PlayerWindow: View {
         // Shaped like the picture, which then fills it edge to edge, at any size it's pulled to.
         .aspectRatio(pictureAspectRatio, contentMode: .fit)
         .frame(minWidth: 640, idealWidth: 1280, maxWidth: 3200)
+        // Watching together, the Spatial Personas gather around this window.
+        .groupActivityAssociation(.primary(PlayerWindow.id))
         #endif
         .navigationTitle(model?.title ?? request?.title ?? "vinnyfin")
         .onAppear {
