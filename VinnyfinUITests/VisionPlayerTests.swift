@@ -40,9 +40,9 @@ final class VisionPlayerTests: XCTestCase {
         waitForPlayer(in: app)
         waitForPlayback(in: app)
         showControls(app)
-        try await Self.snap("movie-playing")
         // Paused, the controls stay up while the panels are worked.
         tap(app.buttons["player.playPause"])
+        try await Self.snap("movie-controls")
 
         tap(app.buttons["player.subtitles"])
         let subtitles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'panel.subtitle.' AND identifier != 'panel.subtitle.off'"))
@@ -161,7 +161,8 @@ final class VisionPlayerTests: XCTestCase {
         try await Self.snap("download-playing")
         close(app, returningTo: downloaded)
 
-        let file = app.buttons["file.Local Clip.mp4"]
+        // Once played, it's among the recent files too.
+        let file = app.buttons.matching(identifier: "file.Local Clip.mp4").firstMatch
         try XCTSkipUnless(file.waitForExistence(timeout: 5), "No Local Clip.mp4 in the app's Documents")
         file.tap()
         waitForPlayer(in: app)
