@@ -833,6 +833,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Vinnyfin/Info.plist;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=xr*]" = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -866,6 +867,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Vinnyfin/Info.plist;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=xr*]" = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

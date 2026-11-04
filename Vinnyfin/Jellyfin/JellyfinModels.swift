@@ -86,6 +86,13 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
 
     var primaryImageTag: String? { imageTags?["Primary"] }
 
+    /// An episode's name, or a film's with its year: "Copperline (2019)". Jellyfin keeps the
+    /// year in the name of a film it didn't match to metadata, so that one isn't given it twice.
+    var titleWithYear: String {
+        guard !isEpisode, let productionYear, !name.contains("(\(productionYear))") else { return name }
+        return "\(name) (\(productionYear))"
+    }
+
     /// "S01E02", or "S01E02-E03" for a multi-episode file.
     var episodeCode: String? {
         guard let indexNumber else { return nil }

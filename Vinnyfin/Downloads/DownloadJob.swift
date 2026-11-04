@@ -67,7 +67,7 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
         id = UUID()
         itemId = item.id
         mediaSourceId = source.id
-        title = item.isEpisode ? item.name : Self.movieTitle(item)
+        title = item.titleWithYear
         subtitle = item.isEpisode ? [item.seriesName, item.episodeCode].compactMap(\.self).joined(separator: " · ") : nil
         versionName = source.name ?? "Default"
         destinationStem = Self.destinationStem(for: item)
@@ -102,7 +102,7 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
 
     /// Names media players such as Infuse recognize: "Movie (2024)" and "Show/Season 01/Show - S01E02 - Title".
     static func destinationStem(for item: JellyfinItem) -> String {
-        guard item.isEpisode else { return sanitize(movieTitle(item)) }
+        guard item.isEpisode else { return sanitize(item.titleWithYear) }
         let series = sanitize(item.seriesName ?? "Unknown Series")
         let season = String(format: "Season %02d", item.parentIndexNumber ?? 0)
         var parts = [series]
@@ -110,11 +110,6 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
         let episodeName = sanitize(item.name)
         if !episodeName.isEmpty, episodeName != series { parts.append(episodeName) }
         return "\(series)/\(season)/\(parts.joined(separator: " - "))"
-    }
-
-    static func movieTitle(_ item: JellyfinItem) -> String {
-        guard let year = item.productionYear, !item.name.contains("(\(year))") else { return item.name }
-        return "\(item.name) (\(year))"
     }
 
     /// Makes a string safe as one path component.

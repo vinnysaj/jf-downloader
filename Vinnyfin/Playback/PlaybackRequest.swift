@@ -210,7 +210,7 @@ struct PlaybackResolver {
         let others = Self.sidecarSubtitles(for: copy.url).filter { !savedFiles.contains($0.url.standardizedFileURL) }
         return ResolvedPlayback(
             url: copy.url,
-            title: item.map(Self.title) ?? request.title,
+            title: item?.titleWithYear ?? request.title,
             subtitle: item.flatMap(Self.subtitle),
             item: item,
             mediaSource: source,
@@ -262,7 +262,7 @@ struct PlaybackResolver {
         guard let client = accounts.client else { throw PlaybackError.notSignedIn }
         return ResolvedPlayback(
             url: client.streamURL(itemId: item.id, mediaSourceId: source.id),
-            title: Self.title(item),
+            title: item.titleWithYear,
             subtitle: Self.subtitle(item),
             item: item,
             mediaSource: source,
@@ -298,7 +298,7 @@ struct PlaybackResolver {
         }
         return ResolvedPlayback(
             url: url,
-            title: Self.title(item),
+            title: item.titleWithYear,
             subtitle: Self.subtitle(item),
             item: item,
             mediaSource: source,
@@ -357,10 +357,6 @@ struct PlaybackResolver {
         let audio = source.audioStreams.first { $0.index == (audioIndex ?? source.defaultAudioStreamIndex) } ?? source.audioStreams.first
         return TrackChooser.subtitle(from: source.subtitleStreams.compactMap(TrackChooser.Candidate.init), audioLanguage: audio?.language,
                                      mode: settings.subtitleMode, language: settings.subtitleLanguage)
-    }
-
-    static func title(_ item: JellyfinItem) -> String {
-        item.isEpisode ? item.name : (item.productionYear.map { "\(item.name) (\($0))" } ?? item.name)
     }
 
     static func subtitle(_ item: JellyfinItem) -> String? {

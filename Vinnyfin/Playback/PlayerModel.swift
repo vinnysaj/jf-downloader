@@ -397,10 +397,18 @@ final class PlayerModel: Identifiable {
         engine.$subtitleTracks.combineLatest(engine.$activeSubtitleTrackIndex).dropFirst().receive(on: RunLoop.main)
             .sink { [weak self] tracks, active in self?.subtitleTracksChanged(tracks, active: active) }
             .store(in: &subscriptions)
-        engine.clock.$currentTime.dropFirst().receive(on: RunLoop.main).sink { [weak self] time in self?.clock.time = time }
-            .store(in: &subscriptions)
-        engine.clock.$sourceTime.dropFirst().receive(on: RunLoop.main).sink { [weak self] time in self?.clock.sourceTime = time }
-            .store(in: &subscriptions)
+        // The engine sets its clock to zero as it loads, before seeking to the start position;
+        // until the load is done the timeline keeps the start position `begin` gave it.
+        engine.clock.$currentTime.dropFirst().receive(on: RunLoop.main).sink { [weak self] time in
+            guard let self, self.isLoaded else { return }
+            self.clock.time = time
+        }
+        .store(in: &subscriptions)
+        engine.clock.$sourceTime.dropFirst().receive(on: RunLoop.main).sink { [weak self] time in
+            guard let self, self.isLoaded else { return }
+            self.clock.sourceTime = time
+        }
+        .store(in: &subscriptions)
         engine.clock.$bufferedPosition.dropFirst().receive(on: RunLoop.main).sink { [weak self] position in self?.clock.buffered = position }
             .store(in: &subscriptions)
     }

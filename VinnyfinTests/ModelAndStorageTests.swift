@@ -57,6 +57,13 @@ struct JellyfinDecodingTests {
         #expect(source.fileExtension == "mkv")
     }
 
+    @Test func titlesFilmsWithTheirYearOnce() {
+        #expect(Samples.movie.titleWithYear == "Big Test Movie (2024)")
+        let named = Samples.item(#"{"Id":"m2","Name":"Heat (1995)","Type":"Movie","ProductionYear":1995}"#)
+        #expect(named.titleWithYear == "Heat (1995)")
+        #expect(Samples.episode.titleWithYear == Samples.episode.name)
+    }
+
     @Test func decodesEpisodes() throws {
         let page = try JSONDecoder().decode(ItemsPage.self, from: Samples.fixture("episodes"))
         #expect(page.items.count == 5)
