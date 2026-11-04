@@ -46,12 +46,12 @@ nonisolated struct JellyfinClient: Sendable {
     var token: String?
 
     /// Fields the browsing screens show, asked for on list calls.
-    static let listFields = "PrimaryImageAspectRatio,SortName,DateCreated,Genres,Overview,ChildCount"
+    static let listFields = "PrimaryImageAspectRatio,SortName,Genres,Overview,ChildCount"
     /// No fields beyond those every item comes with, which are all a card shows: long lists
     /// leave out overviews, the bulk of a list's bytes.
     static let cardFields = ""
     /// Everything a detail screen shows.
-    static let detailFields = "Overview,Genres,People,Taglines,MediaSources,MediaStreams,Chapters,SortName,DateCreated,ChildCount,PrimaryImageAspectRatio"
+    static let detailFields = "Overview,Genres,People,Taglines,MediaSources,MediaStreams,Chapters,SortName,ChildCount,PrimaryImageAspectRatio"
 
     // MARK: Server and sign-in
 

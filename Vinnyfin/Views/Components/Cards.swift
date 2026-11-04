@@ -80,7 +80,8 @@ struct PosterCard: View {
     }
 }
 
-/// Watched, or for a show the episodes left to watch.
+/// Watched, or for a show the episodes left to watch: white on blue, the tint elsewhere. Apple
+/// TV's tint and accent color are white, which hid the badge's white text and checkmark.
 struct WatchBadge: View {
     let item: JellyfinItem
 
@@ -91,12 +92,12 @@ struct WatchBadge: View {
                 .monospacedDigit()
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(.tint, in: .capsule)
+                .background(.blue, in: .capsule)
                 .foregroundStyle(.white)
         } else if item.isPlayed {
             Image(systemName: "checkmark.circle.fill")
                 .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, .tint)
+                .foregroundStyle(.white, .blue)
                 .font(.callout)
                 .accessibilityLabel("Watched")
         }

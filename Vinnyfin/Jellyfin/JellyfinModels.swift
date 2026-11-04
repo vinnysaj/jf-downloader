@@ -12,7 +12,6 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var genres: [String]?
     var productionYear: Int?
     var premiereDate: String?
-    var dateCreated: String?
     var officialRating: String?
     var communityRating: Double?
     var criticRating: Double?
@@ -48,7 +47,7 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id = "Id", name = "Name", type = "Type", sortName = "SortName", overview = "Overview"
         case taglines = "Taglines", genres = "Genres", productionYear = "ProductionYear"
-        case premiereDate = "PremiereDate", dateCreated = "DateCreated", officialRating = "OfficialRating"
+        case premiereDate = "PremiereDate", officialRating = "OfficialRating"
         case communityRating = "CommunityRating", criticRating = "CriticRating", status = "Status"
         case seriesName = "SeriesName", seriesId = "SeriesId", seasonId = "SeasonId", seasonName = "SeasonName"
         case parentIndexNumber = "ParentIndexNumber", indexNumber = "IndexNumber"
@@ -149,7 +148,6 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
         productionYear.map(String.init)
     }
 
-    var addedDate: Date? { dateCreated.flatMap(JellyfinDate.parse) }
     var lastPlayedDate: Date? { userData?.lastPlayedDate.flatMap(JellyfinDate.parse) }
 }
 
