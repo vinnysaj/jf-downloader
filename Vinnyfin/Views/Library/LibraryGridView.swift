@@ -84,8 +84,8 @@ struct LibraryGridView: View {
     @State private var pendingFocus: Int?
     /// Titles a row of the grid holds, once its width is known.
     @State private var columnCount: Int?
-    /// The first position the grid holds; see `grid(_:count:)`.
-    @State private var windowStart = 0
+    /// The positions the grid holds.
+    @State private var focusWindow = FocusWindow()
     #endif
 
     init(list: BrowseList) {
@@ -118,7 +118,9 @@ struct LibraryGridView: View {
         .scrollPosition($position, anchor: .top)
         #if os(tvOS)
         .onScrollPhaseChange { _, phase in
-            if phase == .idle, let count = items?.count { moveWindow(count: count) }
+            if phase == .idle, let index = focusedIndex, let columnCount, let count = items?.count {
+                focusWindow.follow(index, count: count, columns: columnCount)
+            }
         }
         #endif
         // A new sort or filter starts at the top.
@@ -234,13 +236,11 @@ struct LibraryGridView: View {
         #if os(tvOS)
         VStack(alignment: .leading, spacing: Metrics.gridSpacing) {
             // The head goes with the list's first rows.
-            if windowStart == 0 { head }
-            // Each focus move has SwiftUI stand in for every title not yet made in the move's
-            // direction, as far as the grid goes: across a whole big library, seconds a move.
-            // So the grid holds a window of rows around focus, which follows it.
+            if focusWindow.start == 0 { head }
+            // The rows around focus; see `FocusWindow`.
             LazyVGrid(columns: fixedColumns, spacing: Metrics.gridSpacing) {
-                if let window = window(count: count) {
-                    ForEach(window, id: \.self) { cell(items, $0) }
+                if let columnCount {
+                    ForEach(focusWindow.range(count: count, columns: columnCount), id: \.self) { cell(items, $0) }
                 }
             }
             .frame(maxWidth: .infinity)
@@ -272,38 +272,9 @@ struct LibraryGridView: View {
         }
     }
 
-    /// Rows the window holds.
-    private static let windowRows = 60
-    /// Rows from either end of the window at which it moves to put focus back in its middle.
-    private static let windowMargin = 15
-
     /// As many columns as fit, so whole rows leave the window as it moves and the rest stay put.
     private var fixedColumns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: Metrics.gridSpacing, alignment: .top), count: columnCount ?? 1)
-    }
-
-    /// The positions the grid holds, once it knows how many fit in a row.
-    private func window(count: Int) -> Range<Int>? {
-        guard let columnCount else { return nil }
-        return min(windowStart, count)..<min(count, windowStart + Self.windowRows * columnCount)
-    }
-
-    /// With focus near an end of the window that isn't the list's, moves the window to center
-    /// on focus; the scroll position keeps the titles on screen where they are. Called once
-    /// scrolling stops: moved mid-scroll, the window takes the focused title off screen.
-    private func moveWindow(count: Int) {
-        guard let index = focusedIndex, let columnCount, let window = window(count: count) else { return }
-        let nearStart = index - window.lowerBound < Self.windowMargin * columnCount && window.lowerBound > 0
-        let nearEnd = window.upperBound - index <= Self.windowMargin * columnCount && window.upperBound < count
-        guard nearStart || nearEnd else { return }
-        windowStart = windowStart(centeredOn: index, count: count, columnCount: columnCount)
-    }
-
-    /// The start of a window with `index` in its middle row, at the start of a row.
-    private func windowStart(centeredOn index: Int, count: Int, columnCount: Int) -> Int {
-        let lastRow = max(0, (count - 1) / columnCount)
-        let row = min(max(0, index / columnCount - Self.windowRows / 2), max(0, lastRow - Self.windowRows + 1))
-        return row * columnCount
     }
     #endif
 
@@ -314,7 +285,7 @@ struct LibraryGridView: View {
             guard let first = await items.start(of: letter), !Task.isCancelled else { return }
             #if os(tvOS)
             if let columnCount, let count = items.count {
-                windowStart = windowStart(centeredOn: first, count: count, columnCount: columnCount)
+                focusWindow.center(on: first, count: count, columns: columnCount)
             }
             #endif
             position.scrollTo(id: first, anchor: .top)
@@ -418,7 +389,7 @@ struct LibraryGridView: View {
             refreshProblem = nil
             position = ScrollPosition(idType: Int.self)
             #if os(tvOS)
-            windowStart = 0
+            focusWindow = FocusWindow()
             #endif
         }
         await next.load()

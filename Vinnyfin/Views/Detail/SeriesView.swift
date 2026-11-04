@@ -22,7 +22,12 @@ struct SeriesView: View {
     @State private var isSelecting = false
     @State private var selection = Set<String>()
     @State private var batch: Batch?
+    @FocusState private var focusedEpisode: String?
     #if os(tvOS)
+    /// The episodes the list holds.
+    @State private var episodeWindow = FocusWindow()
+    /// The episode at the top of the screen, kept there as the window moves.
+    @State private var position = ScrollPosition(idType: String.self)
     @FocusState private var focusedAction: Action?
     /// Focus has been put on the page's buttons, as it first appeared.
     @State private var placedFocus = false
@@ -66,6 +71,14 @@ struct SeriesView: View {
                 .padding(.bottom, Metrics.edge)
             }
         }
+        #if os(tvOS)
+        .scrollPosition($position, anchor: .top)
+        .onScrollPhaseChange { _, phase in
+            if phase == .idle, let episodes, let index = episodes.firstIndex(where: { $0.id == focusedEpisode }) {
+                episodeWindow.follow(index, count: episodes.count)
+            }
+        }
+        #endif
         .ignoresSafeArea(edges: .top)
         // The page color the hero artwork fades into.
         .background(Color.pageBackground.ignoresSafeArea())
@@ -82,15 +95,17 @@ struct SeriesView: View {
         }
         #else
         // Focus starts on Play, or until the next episode is in, on Watched; also for a page
-        // opened from a link at launch, while focus is still in the sidebar. Coming back to the
-        // page leaves focus where it was.
+        // opened from a link at launch, while focus is still in the sidebar. Play takes focus
+        // when it arrives unless focus has gone down to the episodes, wherever focus was then:
+        // a page still coming on screen hasn't got it yet. Coming back to the page leaves focus
+        // where it was.
         .task {
             guard !placedFocus else { return }
             placedFocus = true
             focusedAction = nextUp == nil ? .watched : .play
         }
         .onChange(of: nextUp?.id) {
-            if nextUp != nil, focusedAction == .watched { focusedAction = .play }
+            if nextUp != nil, focusedEpisode == nil { focusedAction = .play }
         }
         #endif
         .task(id: series.id) { await load() }
@@ -244,28 +259,39 @@ struct SeriesView: View {
     @ViewBuilder private var episodeList: some View {
         if let episodes {
             LazyVStack(alignment: .leading, spacing: 16) {
-                ForEach(episodes) { episode in
-                    EpisodeRow(
-                        episode: episode,
-                        isSelecting: isSelecting,
-                        isSelected: selection.contains(episode.id)
-                    ) {
-                        if isSelecting {
-                            if selection.contains(episode.id) { selection.remove(episode.id) } else { selection.insert(episode.id) }
-                        } else {
-                            player.play(.item(episode))
-                        }
-                    } onChange: { updated in
-                        if let index = self.episodes?.firstIndex(where: { $0.id == updated.id }) { self.episodes?[index] = updated }
-                    }
-                }
+                #if os(tvOS)
+                // The episodes around focus; see `FocusWindow`.
+                ForEach(episodes[episodeWindow.range(count: episodes.count)]) { episodeRow($0) }
+                #else
+                ForEach(episodes) { episodeRow($0) }
+                #endif
             }
+            #if os(tvOS)
+            .scrollTargetLayout()
+            #endif
             .edgePadding()
             #if os(tvOS)
             .focusSection()
             #endif
         } else if loadError == nil {
             ProgressView().frame(maxWidth: .infinity)
+        }
+    }
+
+    private func episodeRow(_ episode: JellyfinItem) -> some View {
+        EpisodeRow(
+            episode: episode,
+            isSelecting: isSelecting,
+            isSelected: selection.contains(episode.id),
+            focus: $focusedEpisode
+        ) {
+            if isSelecting {
+                if selection.contains(episode.id) { selection.remove(episode.id) } else { selection.insert(episode.id) }
+            } else {
+                player.play(.item(episode))
+            }
+        } onChange: { updated in
+            if let index = episodes?.firstIndex(where: { $0.id == updated.id }) { episodes?[index] = updated }
         }
     }
 
@@ -303,6 +329,9 @@ struct SeriesView: View {
         guard let session, let seasonId else { return }
         episodes = nil
         selection.removeAll()
+        #if os(tvOS)
+        episodeWindow = FocusWindow()
+        #endif
         do {
             episodes = try await session.client.episodes(seriesId: series.id, seasonId: seasonId, userId: session.userId,
                                                          fields: "Overview,PrimaryImageAspectRatio")
@@ -339,6 +368,7 @@ private struct EpisodeRow: View {
     let episode: JellyfinItem
     let isSelecting: Bool
     let isSelected: Bool
+    let focus: FocusState<String?>.Binding
     let action: () -> Void
     let onChange: (JellyfinItem) -> Void
 
@@ -387,6 +417,7 @@ private struct EpisodeRow: View {
         }
         .buttonStyle(.artwork)
         .foregroundStyle(.primary)
+        .focused(focus, equals: episode.id)
         .contextMenu {
             ItemContextMenu(item: episode, onChange: onChange)
             NavigationLink("Details", value: episode)

@@ -97,6 +97,44 @@ struct PageWindowTests {
     }
 }
 
+struct FocusWindowTests {
+    @Test func holdsTheFirstRowsAtFirst() {
+        #expect(FocusWindow().range(count: 21_000, columns: 6) == 0..<360)
+        #expect(FocusWindow().range(count: 40) == 0..<40)
+    }
+
+    @Test func staysPutWhileFocusIsAwayFromItsEnds() {
+        var window = FocusWindow()
+        window.follow(200, count: 21_000, columns: 6)
+        #expect(window.start == 0)
+    }
+
+    @Test func centersOnFocusNearItsEndAndComesBackNearItsStart() {
+        var window = FocusWindow()
+        window.follow(300, count: 21_000, columns: 6)
+        // Focus is in row 50; the window starts 30 rows before it.
+        #expect(window.range(count: 21_000, columns: 6) == 120..<480)
+        window.follow(125, count: 21_000, columns: 6)
+        #expect(window.start == 0)
+    }
+
+    @Test func endsWithTheListsLastRow() {
+        var window = FocusWindow()
+        window.follow(50, count: 70)
+        #expect(window.range(count: 70) == 10..<70)
+        // At the list's own end there is nowhere further to go.
+        window.follow(65, count: 70)
+        #expect(window.start == 10)
+    }
+
+    @Test func centersOnAJumpAtTheStartOfARow() {
+        var window = FocusWindow()
+        window.center(on: 5_000, count: 21_000, columns: 6)
+        #expect(window.start == 4_818)
+        #expect(window.range(count: 21_000, columns: 6).contains(5_000))
+    }
+}
+
 @MainActor
 struct LoadQueueTests {
     /// Lets the queue's tasks run until they next wait.
