@@ -193,12 +193,14 @@ struct SchedulingTests {
         #expect(job.nextRequests(running: [], limit: 3, serverTakesRanges: false) == [nil])
     }
 
-    @Test func queuesFilesOldestFirst() {
+    /// The list's order, whatever order the files were queued in: people rearrange it.
+    @Test func queuesFilesInListOrder() {
         let start = Date.now
         var first = DownloadJob(item: Samples.movie, source: Samples.source, now: start)
         var second = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 1)
         let third = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 2)
-        #expect(DownloadJob.queue([second, third, first]) == [first.id, second.id, third.id])
+        #expect(DownloadJob.queue([first, second, third]) == [first.id, second.id, third.id])
+        #expect(DownloadJob.queue([second, third, first]) == [second.id, third.id, first.id])
         first.status = .paused
         #expect(DownloadJob.queue([first, second, third]) == [second.id, third.id])
         // A job whose bytes are all in is being published, not transferred.
@@ -223,7 +225,7 @@ struct SchedulingTests {
 
     @Test func plansOneFileUnlessQueuingAhead() {
         var (first, second) = twoFiles()
-        let alone = DownloadJob.plan([second, first], running: [], budget: 10, queuingAhead: false)
+        let alone = DownloadJob.plan([first, second], running: [], budget: 10, queuingAhead: false)
         #expect(alone.map(\.jobId) == [first.id, first.id, first.id])
         // The first file's last chunk under way: still nothing of the second.
         let tail = [TransferTag(jobId: first.id, range: 200_000_000..<300_000_000)]
