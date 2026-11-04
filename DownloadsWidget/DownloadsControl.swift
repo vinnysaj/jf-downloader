@@ -10,7 +10,7 @@ struct DownloadsControl: ControlWidget {
             ControlWidgetToggle(isOn: snapshot.isRunning, action: SetDownloadsRunningIntent()) {
                 Label("Downloads", systemImage: "arrow.down.circle")
             } valueLabel: { isOn in
-                Label(Self.state(of: snapshot, isOn: isOn), systemImage: isOn ? "arrow.down.circle.fill" : "pause.circle")
+                Label(Self.state(of: snapshot, isOn: isOn), systemImage: Self.symbol(of: snapshot, isOn: isOn))
             }
         }
         .displayName("Downloads")
@@ -20,6 +20,11 @@ struct DownloadsControl: ControlWidget {
     private static func state(of snapshot: DownloadsSnapshot, isOn: Bool) -> String {
         if isOn { return snapshot.activeCount == 1 ? "1 Downloading" : "\(snapshot.activeCount) Downloading" }
         return snapshot.unfinishedCount == 0 ? "None" : "Paused"
+    }
+
+    private static func symbol(of snapshot: DownloadsSnapshot, isOn: Bool) -> String {
+        if isOn { return "arrow.down.circle.fill" }
+        return snapshot.unfinishedCount == 0 ? "arrow.down.circle" : "pause.circle"
     }
 
     struct Provider: ControlValueProvider {
