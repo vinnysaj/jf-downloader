@@ -139,9 +139,9 @@ struct ScheduleRuleTests {
 }
 
 struct StorageBudgetTests {
-    private func plan(_ queue: [DownloadJob], used: Int64 = 0, available: Int64? = nil, limit: Int64? = nil,
-                      deletable: [StorageBudget.Deletable] = []) -> StorageBudget.Outcome {
-        StorageBudget.plan(queue: queue, used: used, available: available, limit: limit, deletable: deletable)
+    private func plan(_ queue: [DownloadJob], bytesSoFar: [UUID: Int64] = [:], used: Int64 = 0, available: Int64? = nil,
+                      limit: Int64? = nil, deletable: [StorageBudget.Deletable] = []) -> StorageBudget.Outcome {
+        StorageBudget.plan(queue: queue, bytesSoFar: bytesSoFar, used: used, available: available, limit: limit, deletable: deletable)
     }
 
     @Test func letsEverythingGoWithoutALimitOrAnAnswer() {
@@ -163,6 +163,15 @@ struct StorageBudgetTests {
         started.completed = ByteRanges([0..<6_000_000_000])
         // Its 6 GB are in `used` already; the 4 GB left fit in 5 GB free.
         #expect(plan([started], used: 6_000_000_000, available: 5_000_000_000, limit: 20_000_000_000).shortfalls.isEmpty)
+    }
+
+    @Test func countsWhatAPausedDownloadHoldsInResumeData() {
+        var paused = job(size: 10_000_000_000)
+        paused.completed = ByteRanges([0..<2_000_000_000])
+        // 2 GB in the partial file and 4 GB in the session's files: 4 GB to go, in 5 GB free.
+        let bytesSoFar = [paused.id: 6_000_000_000 as Int64]
+        #expect(plan([paused], bytesSoFar: bytesSoFar, used: 6_000_000_000, available: 5_000_000_000).shortfalls.isEmpty)
+        #expect(plan([paused], used: 6_000_000_000, available: 5_000_000_000).shortfalls == [paused.id: 3_000_000_000])
     }
 
     @Test func mindsTheDeviceAsWellAsTheLimit() {

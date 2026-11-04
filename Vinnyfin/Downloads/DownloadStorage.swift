@@ -23,7 +23,8 @@ nonisolated struct DownloadStorage: Sendable {
     var staging: URL { root.appending(path: "Staging", directoryHint: .isDirectory) }
     var artwork: URL { root.appending(path: "Artwork", directoryHint: .isDirectory) }
     var extras: URL { root.appending(path: "Extras", directoryHint: .isDirectory) }
-    /// Resume data of ranges cancelled for a playback, one file per range.
+    /// Resume points of ranges set aside, one file per range. A whole-file transfer's sits beside
+    /// its partial file (`resumeDataFile`).
     var held: URL { root.appending(path: "Held", directoryHint: .isDirectory) }
 
     static let standard = DownloadStorage(
@@ -136,17 +137,32 @@ nonisolated struct DownloadStorage: Sendable {
         held.appending(path: tag.encoded.replacing(" ", with: "_") + ".resume")
     }
 
-    func loadHeld() throws -> [TransferTag: Data] {
-        var data: [TransferTag: Data] = [:]
+    func loadHeld() throws -> [TransferTag: ResumePoint] {
+        var points: [TransferTag: ResumePoint] = [:]
         for file in try FileManager.default.contentsOfDirectory(at: held, includingPropertiesForKeys: nil) {
             guard let tag = TransferTag(encoded: file.deletingPathExtension().lastPathComponent.replacing("_", with: " ")) else { continue }
-            data[tag] = try Data(contentsOf: file)
+            points[tag] = try ResumePoint(contentsOf: file)
         }
-        return data
+        return points
     }
 
-    func saveHeld(_ data: Data, for tag: TransferTag) throws {
-        try data.write(to: heldFile(for: tag), options: .atomic)
+    func saveHeld(_ point: ResumePoint, for tag: TransferTag) throws {
+        try point.write(to: heldFile(for: tag))
+    }
+
+    /// The resume points of whole-file transfers, by job.
+    func loadResumePoints() throws -> [UUID: ResumePoint] {
+        var points: [UUID: ResumePoint] = [:]
+        for file in try FileManager.default.contentsOfDirectory(at: partials, includingPropertiesForKeys: nil)
+        where file.pathExtension == "resume" {
+            guard let jobId = UUID(uuidString: file.deletingPathExtension().lastPathComponent) else { continue }
+            points[jobId] = try ResumePoint(contentsOf: file)
+        }
+        return points
+    }
+
+    func saveResumePoint(_ point: ResumePoint, for jobId: UUID) throws {
+        try point.write(to: resumeDataFile(for: jobId))
     }
 
     /// Removes the held resume data of the tags `matching` accepts.
@@ -254,6 +270,37 @@ nonisolated struct DownloadStorage: Sendable {
     func availableCapacity() -> Int64? {
         let values = try? finished.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         return values?.volumeAvailableCapacityForImportantUsage
+    }
+}
+
+/// A cancelled transfer's resume data, with how many bytes of its file it carries. Those bytes
+/// are in the session's files rather than the partial file until a transfer carries on from
+/// them, and they're the download's all the same: in its progress and in the room it takes.
+nonisolated struct ResumePoint: Codable, Equatable, Sendable {
+    let data: Data
+    let bytes: Int64
+
+    init(data: Data, bytes: Int64) {
+        self.data = data
+        self.bytes = bytes
+    }
+
+    /// A file of bare resume data, as builds that didn't count its bytes kept it, still carries
+    /// on, counting no bytes until its transfer reports: refusing it would start those
+    /// downloads over.
+    init(contentsOf file: URL) throws {
+        let contents = try Data(contentsOf: file)
+        do {
+            self = try PropertyListDecoder().decode(Self.self, from: contents)
+        } catch is DecodingError {
+            self.init(data: contents, bytes: 0)
+        }
+    }
+
+    func write(to file: URL) throws {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        try encoder.encode(self).write(to: file, options: .atomic)
     }
 }
 #endif

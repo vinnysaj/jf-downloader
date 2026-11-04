@@ -208,18 +208,41 @@ struct StorageTests {
         #expect(Set(try storage.loadHandedOut()) == tags)
     }
 
-    /// Ranges held for a playback keep their resume data across a kill until released.
+    /// Ranges set aside keep their resume data and the bytes it holds across a kill until released.
     @Test func keepsHeldResumeDataUntilRemoved() throws {
         let storage = try makeStorage()
         let first = TransferTag(jobId: UUID(), range: 0..<100)
         let second = TransferTag(jobId: UUID(), range: 100..<200)
-        try storage.saveHeld(Data([1]), for: first)
-        try storage.saveHeld(Data([2]), for: second)
-        #expect(try storage.loadHeld() == [first: Data([1]), second: Data([2])])
+        let firstPoint = ResumePoint(data: Data([1]), bytes: 40)
+        let secondPoint = ResumePoint(data: Data([2]), bytes: 70)
+        try storage.saveHeld(firstPoint, for: first)
+        try storage.saveHeld(secondPoint, for: second)
+        #expect(try storage.loadHeld() == [first: firstPoint, second: secondPoint])
         try storage.removeHeld { $0.jobId == first.jobId }
-        #expect(try storage.loadHeld() == [second: Data([2])])
+        #expect(try storage.loadHeld() == [second: secondPoint])
         try storage.removeHeld { _ in true }
         #expect(try storage.loadHeld().isEmpty)
+    }
+
+    /// A whole-file transfer's resume point sits beside its partial file and goes with it.
+    @Test func keepsAWholeFileResumePointWithThePartialFile() throws {
+        let storage = try makeStorage()
+        let jobId = UUID()
+        let point = ResumePoint(data: Data([3, 4]), bytes: 5_000_000)
+        try storage.saveResumePoint(point, for: jobId)
+        try Data([9]).write(to: storage.partialFile(for: jobId))
+        #expect(try storage.loadResumePoints() == [jobId: point])
+        try storage.removePartial(for: jobId)
+        #expect(try storage.loadResumePoints().isEmpty)
+    }
+
+    /// Bare resume data, without its bytes, still carries on; it counts none until it reports.
+    @Test func readsBareResumeData() throws {
+        let storage = try makeStorage()
+        let jobId = UUID()
+        let bare = try PropertyListSerialization.data(fromPropertyList: ["NSURLSessionResumeInfoVersion": 2], format: .binary, options: 0)
+        try bare.write(to: storage.resumeDataFile(for: jobId))
+        #expect(try storage.loadResumePoints() == [jobId: ResumePoint(data: bare, bytes: 0)])
     }
 }
 #endif

@@ -205,6 +205,15 @@ nonisolated extension DownloadJob {
         jobs.filter { $0.status == .active && !$0.isTransferComplete }
     }
 
+    /// The bytes each unfinished job has so far: those in its partial file, and those `held`
+    /// says its transfers hold in the session's files, running or set aside with resume data.
+    static func bytesSoFar(_ jobs: [DownloadJob], held: [(jobId: UUID, bytes: Int64)]) -> [UUID: Int64] {
+        var bytes: [UUID: Int64] = [:]
+        for job in jobs where job.status != .completed { bytes[job.id] = job.completed.byteCount }
+        for (jobId, count) in held { bytes[jobId]? += count }
+        return bytes
+    }
+
     /// Whether a one-byte probe has to come first: the server hasn't answered for this file, and
     /// either the listing gave no size or the server hasn't shown yet that it takes ranges.
     /// Chunks planned from the listed size would each fetch the whole file from a server that
