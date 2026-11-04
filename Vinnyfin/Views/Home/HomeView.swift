@@ -59,7 +59,7 @@ struct HomeView: View {
             .task { await load() }
             // A playback started here, from the banner or a card's menu, moved Continue Watching
             // and Next Up.
-            .onChange(of: player.endedPlaybacks) { Task { await load() } }
+            .onChange(of: player.endedPlayback) { Task { await load() } }
         }
     }
 

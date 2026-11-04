@@ -239,8 +239,7 @@ nonisolated struct JellyfinClient: Sendable {
     /// the server lists another version ahead of the item's own (see `JellyfinItem.versionPlayedLast`).
     private func withOwnVersionFirst(_ item: JellyfinItem, userId: String) async throws -> JellyfinItem {
         guard let playedLast = item.versionPlayedLast else { return item }
-        let data: UserItemData = try await get("UserItems/\(playedLast.id)/UserData", query: ["userId": userId])
-        return item.withOwnVersionFirst(positionFrom: data)
+        return item.withOwnVersionFirst(positionFrom: try await userData(itemId: playedLast.id, userId: userId))
     }
 
     /// The page with each item that has versions replaced by the item library lists show for it,
@@ -349,10 +348,14 @@ nonisolated struct JellyfinClient: Sendable {
         try await send("UserItems/\(itemId)/UserData", method: "POST", query: ["userId": userId], body: update)
     }
 
+    func userData(itemId: String, userId: String) async throws -> UserItemData {
+        try await get("UserItems/\(itemId)/UserData", query: ["userId": userId])
+    }
+
     /// Gives an item the position the server keeps for its version `versionId`, which was just
     /// reported (see `UserDataUpdate.init(positionOf:)`).
     func givePosition(ofVersion versionId: String, toItem itemId: String, userId: String) async throws {
-        let version: UserItemData = try await get("UserItems/\(versionId)/UserData", query: ["userId": userId])
+        let version = try await userData(itemId: versionId, userId: userId)
         try await updateUserData(itemId: itemId, userId: userId, UserDataUpdate(positionOf: version))
     }
 

@@ -116,6 +116,9 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored private var startedReporting = false
     /// Telling the server that the last session stopped, and giving the title its position.
     @ObservationIgnored private(set) var stopReport: Task<Void, Never>?
+    /// The server's titles played here, and the shows of the episodes among them, whose watch
+    /// state the playback changed.
+    @ObservationIgnored private(set) var playedTitleIds: Set<String> = []
     /// The title whose next episode and segments were asked for.
     @ObservationIgnored private var extrasRequestedFor: String?
     /// The audio and subtitles chosen in the version this one stands in for.
@@ -746,6 +749,10 @@ final class PlayerModel: Identifiable {
     private func startReporting() {
         reportTask?.cancel()
         guard let current else { return }
+        if let reporting = current.reporting {
+            playedTitleIds.insert(reporting.itemId)
+            if let seriesId = current.item?.seriesId { playedTitleIds.insert(seriesId) }
+        }
         // Read now: the stop `finishSession` makes for this session waits for this task, which
         // would then wait for it in turn and never report again.
         let previousStop = stopReport

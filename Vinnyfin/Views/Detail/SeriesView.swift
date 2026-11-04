@@ -110,7 +110,10 @@ struct SeriesView: View {
         #endif
         .task(id: series.id) { await load() }
         .task(id: seasonId) { await loadEpisodes() }
-        .onChange(of: player.endedPlaybacks) { Task { await reloadWatchState() } }
+        .onChange(of: player.endedPlayback) {
+            similar = player.endedPlayback.applied(to: similar)
+            Task { await reloadWatchState() }
+        }
     }
 
     // MARK: Actions

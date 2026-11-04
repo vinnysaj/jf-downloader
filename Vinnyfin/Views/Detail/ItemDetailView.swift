@@ -84,7 +84,10 @@ struct ItemDetailView: View {
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
         .task(id: item.id) { await load() }
         // A playback that ended moved where the title resumes, or finished it.
-        .onChange(of: player.endedPlaybacks) { Task { await loadDetail() } }
+        .onChange(of: player.endedPlayback) {
+            similar = player.endedPlayback.applied(to: similar)
+            Task { await loadDetail() }
+        }
         #if os(tvOS)
         // Focus starts on Play, also for a page opened from a link at launch, while focus is
         // still in the sidebar. Coming back to the page leaves focus where it was.
