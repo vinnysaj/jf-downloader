@@ -21,12 +21,13 @@ import OSLog
 /// Files download one at a time, oldest first, and none while something plays. Each file is
 /// asked for one byte first, for its size and whether ranges work, until one has shown that the
 /// server takes ranges; after that, chunks are planned from the size Jellyfin lists. While the app
-/// is in front of the user, the session holds the first file's chunks only, and the probe of
-/// the next file that needs one (`DownloadJob.plan`). The session runs `connectionsPerHost`
+/// is in front of the user, the session holds the first file's chunks only, while the files
+/// after it are probed in turn (`DownloadJob.plan`), through an ordinary session so the probes
+/// don't wait behind those chunks for a connection. The session runs `connectionsPerHost`
 /// transfers at a time in no promised order (nor by task priority), so that's what keeps the
-/// server on one file. As the app resigns active, while it's still in the foreground to the system, every
-/// file's chunks go in, up to `maxQueuedTransfers`: the session then works through the queue by
-/// itself with the app suspended or terminated, which it wouldn't promptly otherwise.
+/// server on one file. As the app resigns active, while it's still in the foreground to the
+/// system, every file's chunks go in, up to `maxQueuedTransfers`: the session then works through
+/// the queue by itself with the app suspended or terminated, which it wouldn't promptly otherwise.
 /// Transfers created while the app is in the background start only when the system sees fit,
 /// after a delay that grows with every time the system wakes the app, in a connection pool of
 /// their own; it wakes the app only once every transfer is done. Entering the foreground again,
@@ -115,7 +116,14 @@ final class DownloadManager {
     @ObservationIgnored private let storage: DownloadStorage
     @ObservationIgnored private let delegate: TransferDelegate
     @ObservationIgnored private let session: URLSession
+    /// For probes, which are a byte each: in the background session they would wait behind the
+    /// file in hand for one of its connections, minutes on a slow link.
+    @ObservationIgnored private let probeSession: URLSession
     @ObservationIgnored private var running: [Int: RunningTransfer] = [:]
+    /// Probes under way through `probeSession`, by job, and the identifier their reports carry.
+    @ObservationIgnored private var probes: [UUID: (identifier: Int, task: Task<Void, Never>)] = [:]
+    /// Probes' reports carry identifiers below zero, which no session task has.
+    @ObservationIgnored private var lastProbeIdentifier = 0
     /// The tags of `running` as last saved, so a relaunch knows what was handed to the session.
     @ObservationIgnored private var savedHandedOut: Set<TransferTag> = []
     /// Transfers handed to the session before a relaunch that it neither lists nor has reported
@@ -130,6 +138,10 @@ final class DownloadManager {
     private var hasAdoptedTransfers = false
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
     @ObservationIgnored private var appStateObservations: [NotificationCenter.ObservationToken] = []
+    #if !os(macOS)
+    /// Waits out `settleDelay` after the app becomes active.
+    @ObservationIgnored private var settling: Task<Void, Never>?
+    #endif
     @ObservationIgnored private var lastSample: (date: Date, bytes: [UUID: Int64])?
     @ObservationIgnored private var lastStallCheck = Date.now
     /// The open players, by their model's id, and whether each is playing.
@@ -175,6 +187,12 @@ final class DownloadManager {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+
+        let probing = URLSessionConfiguration.ephemeral
+        probing.timeoutIntervalForRequest = 60
+        probing.requestCachePolicy = .reloadIgnoringLocalCacheData
+        probing.urlCache = nil
+        probeSession = URLSession(configuration: probing)
     }
 
     private static func setAsideUnreadableJobs(_ storage: DownloadStorage, error: any Error) -> String {
@@ -223,6 +241,10 @@ final class DownloadManager {
             }
         }
         hasAdoptedTransfers = true
+        #if !os(macOS)
+        // Opened in front, later files' transfers queued ahead before the relaunch come out.
+        if isInFront { stopQueuingAhead() }
+        #endif
         // Opened to play a file, the player can be up before the session's tasks are adopted.
         // Held ranges left by a run that ended during a playback carry on otherwise.
         if isPausedForPlayback { holdTransfers() } else if !heldResumeData.isEmpty { releaseTransfers() }
@@ -357,8 +379,9 @@ final class DownloadManager {
     /// the foreground before it's active again.
     ///
     /// Only a move away from active queues ahead, or a launch into the background: launching
-    /// in front, the app isn't active yet without having left. A Mac app isn't suspended, so it
-    /// never queues ahead, and there the front is any time the app isn't hidden.
+    /// in front, the app isn't active yet without having left. Becoming active again counts once
+    /// the app has stayed active for `settleDelay`. A Mac app isn't suspended, so it never queues
+    /// ahead, and there the front is any time the app isn't hidden.
     private func followAppState() {
         let center = NotificationCenter.default
         #if os(macOS)
@@ -371,28 +394,48 @@ final class DownloadManager {
         isInFront = UIApplication.shared.applicationState == .active
         isQueuingAhead = UIApplication.shared.applicationState == .background
         appStateObservations = [
-            center.addObserver(of: UIApplication.shared, for: .didBecomeActive) { [weak self] _ in self?.appStateChanged(isInFront: true) },
+            center.addObserver(of: UIApplication.shared, for: .didBecomeActive) { [weak self] _ in self?.becameActive() },
             center.addObserver(of: UIApplication.shared, for: .willResignActive) { [weak self] _ in self?.appStateChanged(isInFront: false) },
+            center.addObserver(of: UIApplication.shared, for: .didEnterBackground) { [weak self] _ in self?.appStateChanged(isInFront: false) },
             center.addObserver(of: UIApplication.shared, for: .willEnterForeground) { [weak self] _ in self?.stopQueuingAhead() },
         ]
         #endif
     }
 
+    #if !os(macOS)
+    /// How long the app stays active before it's back in front. Locking the screen can make it
+    /// active for a fraction of a second on the way (it does in the simulator): taking the queued
+    /// transfers back then and queuing them again a moment later, with the app no longer in the
+    /// foreground to the system, would leave them all at the system's discretion.
+    static let settleDelay: Duration = .seconds(1)
+
+    private func becameActive() {
+        settling?.cancel()
+        settling = Task { [weak self] in
+            try? await Task.sleep(for: Self.settleDelay)
+            guard !Task.isCancelled else { return }
+            self?.appStateChanged(isInFront: true)
+        }
+    }
+    #endif
+
     private func appStateChanged(isInFront: Bool) {
-        guard isInFront != self.isInFront else { return }
-        self.isInFront = isInFront
         #if !os(macOS)
+        settling?.cancel()
+        settling = nil
         if isInFront { stopQueuingAhead() } else { isQueuingAhead = true }
         #endif
-        Self.log.info("App \(isInFront ? "in front" : "leaving the front")")
-        updateHold()
+        if isInFront != self.isInFront {
+            self.isInFront = isInFront
+            Self.log.info("App \(isInFront ? "in front" : "leaving the front")")
+            updateHold()
+        }
         pump()
     }
 
-    /// Back to one file in the session: the later files' transfers that haven't started come out.
-    /// Ones under way finish.
+    /// Back to one file in the session: the later files' transfers that haven't started come out,
+    /// those queued ahead before a relaunch too. Ones under way finish.
     private func stopQueuingAhead() {
-        guard isQueuingAhead else { return }
         isQueuingAhead = false
         let first = DownloadJob.queue(jobs).first
         var count = 0
@@ -400,6 +443,7 @@ final class DownloadManager {
             cancel(identifier, transfer)
             count += 1
         }
+        guard count > 0 else { return }
         saveHandedOut()
         Self.log.info("Took back \(count) transfers queued ahead")
     }
@@ -634,11 +678,85 @@ final class DownloadManager {
         let queue = DownloadJob.queue(jobs)
         if downloadingJobId != queue.first { downloadingJobId = queue.first }
         guard !isPausedForPlayback else { return }
-        let plan = DownloadJob.plan(jobs, running: running.values.map(\.tag) + awaitingReports,
+        let probing = probes.keys.map { TransferTag(jobId: $0, range: DownloadJob.probeRange) }
+        let plan = DownloadJob.plan(jobs, running: running.values.map(\.tag) + awaitingReports + probing,
                                     budget: Self.maxQueuedTransfers - running.count, queuingAhead: isQueuingAhead)
         for tag in plan {
             guard let job = jobs.first(where: { $0.id == tag.jobId }) else { continue }
-            start(tag, for: job, client: client)
+            if job.rangeSupport == .unknown, tag.range == DownloadJob.probeRange {
+                probe(job, client: client)
+            } else {
+                start(tag, for: job, client: client)
+            }
+        }
+    }
+
+    /// Asks the server for a file's first byte through `probeSession`, at the job's retry time
+    /// if it has one, and hands the answer to `handle` like a transfer's. A server that ignores
+    /// Range answers with the whole file: the probe stops at the headers, and the file comes
+    /// through the background session in one request. A probe the app is suspended or killed
+    /// during fails, or is never sent, and goes again the next time the app runs.
+    private func probe(_ job: DownloadJob, client: JellyfinClient) {
+        let tag = TransferTag(jobId: job.id, range: DownloadJob.probeRange)
+        var request = URLRequest(url: client.streamURL(itemId: job.itemId, mediaSourceId: job.mediaSourceId))
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue(tag.rangeHeader, forHTTPHeaderField: "Range")
+        lastProbeIdentifier -= 1
+        let identifier = lastProbeIdentifier
+        let retryAt = job.retryAt
+        let staging = storage.staging
+        let task = Task { [weak self, probeSession] in
+            if let retryAt, retryAt > .now { try? await Task.sleep(for: .seconds(retryAt.timeIntervalSinceNow)) }
+            guard !Task.isCancelled else { return }
+            Self.log.debug("Probing [\(tag.encoded)] as \(identifier)")
+            let finished = await Self.fetchProbe(request, tag: tag, identifier: identifier, into: staging, using: probeSession)
+            guard let self else { return }
+            // Cancelled meanwhile, for a pause, removal or restart.
+            guard self.probes[job.id]?.identifier == identifier else { return self.discard(finished.stagedFile) }
+            self.probes[job.id] = nil
+            if finished.response?.statusCode == 200, let index = self.index(of: job.id), self.jobs[index].status == .active,
+               case .wholeFile = self.jobs[index].evaluate(finished.response, stagedSize: finished.response?.contentLength ?? 1, tag: tag)
+            {
+                Self.log.notice("[\(tag.encoded)] The server ignores Range: downloading the whole file in one request")
+                self.jobs[index].rangeSupport = .unsupported
+                self.jobs[index].recordSuccess()
+                self.save()
+            } else {
+                await self.handle(finished)
+            }
+            self.pump()
+        }
+        probes[job.id] = (identifier, task)
+    }
+
+    /// The probe's answer as a transfer's report: the byte in staging for a 206, the headers
+    /// alone otherwise.
+    @concurrent
+    private nonisolated static func fetchProbe(
+        _ request: URLRequest, tag: TransferTag, identifier: Int, into staging: URL, using session: URLSession
+    ) async -> TransferDelegate.Finished {
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+            let info = (response as? HTTPURLResponse).map(ResponseInfo.init)
+            guard info?.statusCode == 206 else {
+                bytes.task.cancel()
+                return TransferDelegate.Finished(taskIdentifier: identifier, tag: tag, response: info, stagedFile: nil,
+                                                 stagedSize: 0, error: nil, resumeData: nil)
+            }
+            var body = Data()
+            // One byte more than asked for is enough to tell the server sent too much.
+            for try await byte in bytes {
+                body.append(byte)
+                if body.count > tag.range?.count ?? 1 { break }
+            }
+            bytes.task.cancel()
+            let file = staging.appending(path: UUID().uuidString)
+            try body.write(to: file)
+            return TransferDelegate.Finished(taskIdentifier: identifier, tag: tag, response: info, stagedFile: file,
+                                             stagedSize: Int64(body.count), error: nil, resumeData: nil)
+        } catch {
+            return TransferDelegate.Finished(taskIdentifier: identifier, tag: tag, response: nil, stagedFile: nil,
+                                             stagedSize: nil, error: error, resumeData: nil)
         }
     }
 
@@ -676,6 +794,7 @@ final class DownloadManager {
             cancel(identifier, transfer)
         }
         awaitingReports = awaitingReports.filter { !isMatch($0) }
+        if isMatch(TransferTag(jobId: jobId, range: DownloadJob.probeRange)) { probes.removeValue(forKey: jobId)?.task.cancel() }
         guard heldResumeData.keys.contains(where: isMatch) else { return }
         heldResumeData = heldResumeData.filter { !isMatch($0.key) }
         do {

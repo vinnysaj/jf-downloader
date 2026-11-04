@@ -224,8 +224,8 @@ nonisolated extension DownloadJob {
     /// backing off. Off screen it holds every file's transfers, so the system can carry on
     /// without the app. A file backing off gets one transfer, timed for its retry. A file that
     /// needs a probe gets only that, one probe at a time, so the server isn't asked about every
-    /// file at once. In front, the first file after the one in hand that needs a probe gets it,
-    /// so that all its chunks can go in the moment the app leaves the screen.
+    /// file at once. In front, the files after the one in hand that need a probe get it in turn,
+    /// so that all their chunks can go in the moment the app leaves the screen.
     static func plan(_ jobs: [DownloadJob], running: [TransferTag], budget: Int, queuingAhead: Bool, now: Date = .now) -> [TransferTag] {
         let serverTakesRanges = serverTakesRanges(jobs)
         var tags: [TransferTag] = []
