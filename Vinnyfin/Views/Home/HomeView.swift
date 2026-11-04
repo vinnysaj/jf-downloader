@@ -10,6 +10,7 @@ struct HomeView: View {
 
     @Environment(\.session) private var session
     @Environment(AccountStore.self) private var accounts
+    @Environment(PlayerCoordinator.self) private var player
     @State private var feed = HomeFeed()
     #if os(iOS) || os(visionOS)
     @State private var showingSettings = false
@@ -56,6 +57,9 @@ struct HomeView: View {
             .itemDestinations()
             .refreshable { await load(reshuffling: true) }
             .task { await load() }
+            // A playback started here, from the banner or a card's menu, moved Continue Watching
+            // and Next Up.
+            .onChange(of: player.endedPlayback) { Task { await load() } }
         }
     }
 

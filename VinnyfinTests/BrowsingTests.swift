@@ -2,6 +2,29 @@ import Foundation
 import Testing
 @testable import vinnyfin
 
+/// Cards take the watch state a playback that ended left their titles in.
+struct EndedPlaybackTests {
+    @Test func putsInTheWatchStateOfWhatWasPlayedOnly() {
+        var played = JellyfinItem(id: "e1", name: "Episode 1", type: "Episode")
+        played.overview = "Kept as the list loaded it."
+        played.userData = UserItemData(playbackPositionTicks: 0)
+        var show = JellyfinItem(id: "s1", name: "Show", type: "Series")
+        show.userData = UserItemData(unplayedItemCount: 8)
+        let other = JellyfinItem(id: "m1", name: "Movie", type: "Movie")
+        let ended = EndedPlayback(count: 1, userData: [
+            "e1": UserItemData(playbackPositionTicks: 1_260_000_000, playedPercentage: 33),
+            "s1": UserItemData(unplayedItemCount: 7),
+        ])
+
+        let cards = ended.applied(to: [played, show, other])
+        #expect(cards.map(\.id) == ["e1", "s1", "m1"])
+        #expect(cards[0].resumeSeconds == 126)
+        #expect(cards[0].overview == "Kept as the list loaded it.")
+        #expect(cards[1].userData?.unplayedItemCount == 7)
+        #expect(cards[2] == other)
+    }
+}
+
 struct LibraryIndexTests {
     /// The server's counts for a list with `leading` titles before "a", `letters` titles under
     /// each letter, and `trailing` after "z".
