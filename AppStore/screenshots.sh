@@ -158,7 +158,15 @@ if wants duo; then
   build_for iOS "id=$duo"
   # Its own agent-device session, so one bound to another simulator doesn't get in the way.
   agent-device open --session vinnyfin-screenshots --platform ios --udid "$duo" >/dev/null
-  fold() { agent-device fold "$1" --session vinnyfin-screenshots >/dev/null; }
+  # A just-booted Duo can take a while to report its hinge angle, which the fold is checked by.
+  fold() {
+    local attempt
+    for attempt in 1 2 3 4 5; do
+      agent-device fold "$1" --session vinnyfin-screenshots >/dev/null 2>&1 && return
+      sleep 5
+    done
+    agent-device fold "$1" --session vinnyfin-screenshots >/dev/null
+  }
   fold closed
   shoot "iPhone Duo outer" testDuoOuter "id=$duo"
   fold open
