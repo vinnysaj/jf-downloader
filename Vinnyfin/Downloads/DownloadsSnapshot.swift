@@ -91,7 +91,7 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
     var summary: String {
         var sentences: [String] = []
         if let current, activeCount > 0 {
-            let progress = current.percent.map { ", \($0)% done" } ?? ""
+            let progress = current.percent.flatMap { $0 > 0 ? ", \($0)% done" : nil } ?? ""
             let behind = activeCount - 1
             let more = behind > 0 ? ", with \(behind) more after it" : ""
             switch current.state {
