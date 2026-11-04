@@ -22,6 +22,7 @@ private func finished(_ original: DownloadJob) -> DownloadJob {
 }
 
 #if os(iOS)
+@MainActor
 struct ContinuedProgressTests {
     @Test func countsBytesDoneOverBytesQueued() {
         let first = job()
@@ -76,19 +77,19 @@ struct ContinuedProgressTests {
         let second = job(at: 1)
         var progress = ContinuedProgress()
         progress.update(jobs: [first, second], receivedBytes: [:])
-        #expect(progress.ending(jobs: [first, second], isPausedForPlayback: false) == nil)
-        #expect(progress.ending(jobs: [first, second], isPausedForPlayback: true) == .heldForPlayback)
-        #expect(progress.ending(jobs: [finished(first), finished(second)], isPausedForPlayback: false) == .finished(count: 2))
+        #expect(progress.ending(jobs: [first, second], isPausedForPlayback: false, waits: [:]) == nil)
+        #expect(progress.ending(jobs: [first, second], isPausedForPlayback: true, waits: [:]) == .heldForPlayback)
+        #expect(progress.ending(jobs: [finished(first), finished(second)], isPausedForPlayback: false, waits: [:]) == .finished(count: 2))
         var failed = second
         failed.status = .failed
-        #expect(progress.ending(jobs: [finished(first), failed], isPausedForPlayback: false) == .failed(count: 1))
+        #expect(progress.ending(jobs: [finished(first), failed], isPausedForPlayback: false, waits: [:]) == .failed(count: 1))
         var paused = second
         paused.status = .paused
-        #expect(progress.ending(jobs: [finished(first), paused], isPausedForPlayback: false) == .paused)
-        #expect(progress.ending(jobs: [], isPausedForPlayback: false) == .cancelled)
+        #expect(progress.ending(jobs: [finished(first), paused], isPausedForPlayback: false, waits: [:]) == .paused)
+        #expect(progress.ending(jobs: [], isPausedForPlayback: false, waits: [:]) == .cancelled)
         // A download finished before the task began isn't one it covered.
         let earlier = finished(job(at: -1))
-        #expect(progress.ending(jobs: [earlier], isPausedForPlayback: false) == .cancelled)
+        #expect(progress.ending(jobs: [earlier], isPausedForPlayback: false, waits: [:]) == .cancelled)
         #expect(ContinuedProgress.Ending.finished(count: 1).isSuccess)
         #expect(!ContinuedProgress.Ending.heldForPlayback.isSuccess)
         #expect(!ContinuedProgress.Ending.paused.isSuccess)
@@ -98,29 +99,63 @@ struct ContinuedProgressTests {
         let mine = job()
         let smart = job(at: 1)
         let jobs = [mine, smart]
-        #expect(ContinuedProgress.shouldStart(jobs: jobs, userStartedJobIds: [mine.id], isInFront: true, isPausedForPlayback: false))
-        #expect(!ContinuedProgress.shouldStart(jobs: jobs, userStartedJobIds: [mine.id], isInFront: false, isPausedForPlayback: false))
-        #expect(!ContinuedProgress.shouldStart(jobs: jobs, userStartedJobIds: [mine.id], isInFront: true, isPausedForPlayback: true))
+        #expect(ContinuedProgress.shouldStart(jobs: jobs, userStartedJobIds: [mine.id], isInFront: true, isPausedForPlayback: false, waits: [:]))
+        #expect(!ContinuedProgress.shouldStart(jobs: jobs, userStartedJobIds: [mine.id], isInFront: false, isPausedForPlayback: false, waits: [:]))
+        #expect(!ContinuedProgress.shouldStart(jobs: jobs, userStartedJobIds: [mine.id], isInFront: true, isPausedForPlayback: true, waits: [:]))
         // Smart downloads topping a show up by themselves don't start one.
-        #expect(!ContinuedProgress.shouldStart(jobs: jobs, userStartedJobIds: [], isInFront: true, isPausedForPlayback: false))
+        #expect(!ContinuedProgress.shouldStart(jobs: jobs, userStartedJobIds: [], isInFront: true, isPausedForPlayback: false, waits: [:]))
         // Nor does work someone started that's done.
-        #expect(!ContinuedProgress.shouldStart(jobs: [finished(mine), smart], userStartedJobIds: [mine.id], isInFront: true, isPausedForPlayback: false))
+        #expect(!ContinuedProgress.shouldStart(jobs: [finished(mine), smart], userStartedJobIds: [mine.id], isInFront: true, isPausedForPlayback: false, waits: [:]))
     }
 
     @Test func saysWhatsDownloadingAndHowMuchIsLeft() {
         let movie = job()
-        let one = ContinuedProgress.text(jobs: [movie], receivedBytes: [movie.id: 100_000_000], isNetworkReachable: true)
+        let one = ContinuedProgress.text(jobs: [movie], receivedBytes: [movie.id: 100_000_000], isNetworkReachable: true, waits: [:])
         #expect(one.title == "Downloading Big Test Movie (2024)")
         #expect(one.subtitle == "\(Int64(200_000_000).formatted(.byteCount(style: .file))) left")
         let episode = job(Samples.episode, at: -1)
-        let two = ContinuedProgress.text(jobs: [movie, episode], receivedBytes: [:], isNetworkReachable: true)
+        let two = ContinuedProgress.text(jobs: [episode, movie], receivedBytes: [:], isNetworkReachable: true, waits: [:])
         #expect(two.title == "Downloading Test Show S01E02 and 1 more")
         #expect(two.subtitle == "\(Int64(600_000_000).formatted(.byteCount(style: .file))) left")
-        #expect(ContinuedProgress.text(jobs: [movie], receivedBytes: [:], isNetworkReachable: false).subtitle == "Waiting for a network connection")
+        #expect(ContinuedProgress.text(jobs: [movie], receivedBytes: [:], isNetworkReachable: false, waits: [:]).subtitle == "Waiting for a network connection")
         var unsized = Samples.source
         unsized.size = nil
         let probing = DownloadJob(item: Samples.movie, source: unsized)
-        #expect(ContinuedProgress.text(jobs: [probing], receivedBytes: [:], isNetworkReachable: true).subtitle == "Starting")
+        #expect(ContinuedProgress.text(jobs: [probing], receivedBytes: [:], isNetworkReachable: true, waits: [:]).subtitle == "Starting")
+    }
+
+    /// Someone's tap doesn't start one for downloads the rules hold back, unless they chose
+    /// Download Now, which lifts the rules (and so the wait) for that download.
+    @Test func startsOnlyForDownloadsThatMayGoOnNow() {
+        let mine = job()
+        let other = job(at: 1)
+        let waiting: [UUID: DownloadWait] = [mine.id: .wifi]
+        #expect(!ContinuedProgress.shouldStart(jobs: [mine, other], userStartedJobIds: [mine.id], isInFront: true,
+                                               isPausedForPlayback: false, waits: waiting))
+        #expect(ContinuedProgress.shouldStart(jobs: [mine, other], userStartedJobIds: [mine.id, other.id], isInFront: true,
+                                              isPausedForPlayback: false, waits: waiting))
+    }
+
+    @Test func endsWhenEverythingLeftWaits() {
+        let first = job()
+        let second = job(at: 1)
+        var progress = ContinuedProgress()
+        progress.update(jobs: [first, second], receivedBytes: [:])
+        let opens = Date(timeIntervalSince1970: 2_000_000)
+        let waits: [UUID: DownloadWait] = [first.id: .overnight(opens: opens), second.id: .power]
+        #expect(progress.ending(jobs: [first, second], isPausedForPlayback: false, waits: waits) == .waiting(.overnight(opens: opens)))
+        #expect(progress.ending(jobs: [first, second], isPausedForPlayback: false, waits: [first.id: .power]) == nil)
+        #expect(ContinuedProgress.Ending.waiting(.power).carriesOnLater)
+        #expect(ContinuedProgress.Ending.heldForPlayback.carriesOnLater)
+        #expect(!ContinuedProgress.Ending.finished(count: 1).carriesOnLater)
+        #expect(!ContinuedProgress.Ending.waiting(.wifi).isSuccess)
+    }
+
+    @Test func saysWhatTheNextDownloadWaitsFor() {
+        let movie = job()
+        let text = ContinuedProgress.text(jobs: [movie], receivedBytes: [:], isNetworkReachable: true, waits: [movie.id: .wifi])
+        #expect(text.subtitle == "Waiting for Wi-Fi")
+        #expect(ContinuedProgress.Ending.waiting(.wifi).text.subtitle == "They carry on over Wi-Fi")
     }
 }
 #endif

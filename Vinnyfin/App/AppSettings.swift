@@ -56,6 +56,16 @@ final class AppSettings {
     var deleteWatchedEpisodes: Bool { didSet { store(deleteWatchedEpisodes, Keys.deleteWatchedEpisodes) } }
     /// How many episodes a new smart download keeps ahead.
     var smartDownloadCount: Int { didSet { store(smartDownloadCount, Keys.smartDownloadCount) } }
+    /// Lets downloads use cellular data and Personal Hotspots.
+    var downloadOverCellular: Bool { didSet { store(downloadOverCellular, Keys.downloadOverCellular) } }
+    /// Downloads wait while the device isn't plugged in.
+    var downloadOnlyWhileCharging: Bool { didSet { store(downloadOnlyWhileCharging, Keys.downloadOnlyWhileCharging) } }
+    /// Downloads wait for the overnight window, `DownloadRules.overnightHours`.
+    var downloadOvernightOnly: Bool { didSet { store(downloadOvernightOnly, Keys.downloadOvernightOnly) } }
+    /// Gigabytes downloads may take up in all, one of `storageLimitChoices`; 0 for no limit.
+    var downloadStorageLimit: Int { didSet { store(downloadStorageLimit, Keys.downloadStorageLimit) } }
+    /// Notifies when downloads are ready to watch offline, and when one needs attention.
+    var downloadNotifications: Bool { didSet { store(downloadNotifications, Keys.downloadNotifications) } }
     var autoplayNextEpisode: Bool { didSet { store(autoplayNextEpisode, Keys.autoplayNextEpisode) } }
     /// Offers to skip intros, recaps, previews and credits the server has marked.
     var showSkipButtons: Bool { didSet { store(showSkipButtons, Keys.showSkipButtons) } }
@@ -78,6 +88,11 @@ final class AppSettings {
         static let downloadQuality = "settings.downloadQuality"
         static let deleteWatchedEpisodes = "settings.deleteWatchedEpisodes"
         static let smartDownloadCount = "settings.smartDownloadCount"
+        static let downloadOverCellular = "settings.downloadOverCellular"
+        static let downloadOnlyWhileCharging = "settings.downloadOnlyWhileCharging"
+        static let downloadOvernightOnly = "settings.downloadOvernightOnly"
+        static let downloadStorageLimit = "settings.downloadStorageLimit"
+        static let downloadNotifications = "settings.downloadNotifications"
         static let autoplayNextEpisode = "settings.autoplayNextEpisode"
         // Named for when it only covered intros; renaming it would reset everyone's choice.
         static let showSkipButtons = "settings.showSkipIntro"
@@ -97,6 +112,11 @@ final class AppSettings {
         downloadQuality = defaults.string(forKey: Keys.downloadQuality).flatMap(VideoQuality.init) ?? .fullHD
         deleteWatchedEpisodes = defaults.object(forKey: Keys.deleteWatchedEpisodes) as? Bool ?? true
         smartDownloadCount = defaults.object(forKey: Keys.smartDownloadCount) as? Int ?? 10
+        downloadOverCellular = defaults.object(forKey: Keys.downloadOverCellular) as? Bool ?? false
+        downloadOnlyWhileCharging = defaults.object(forKey: Keys.downloadOnlyWhileCharging) as? Bool ?? false
+        downloadOvernightOnly = defaults.object(forKey: Keys.downloadOvernightOnly) as? Bool ?? false
+        downloadStorageLimit = defaults.object(forKey: Keys.downloadStorageLimit) as? Int ?? 0
+        downloadNotifications = defaults.object(forKey: Keys.downloadNotifications) as? Bool ?? true
         autoplayNextEpisode = defaults.object(forKey: Keys.autoplayNextEpisode) as? Bool ?? true
         showSkipButtons = defaults.object(forKey: Keys.showSkipButtons) as? Bool ?? true
         audioLanguage = defaults.string(forKey: Keys.audioLanguage) ?? ""
@@ -109,6 +129,9 @@ final class AppSettings {
     private func store(_ value: Any, _ key: String) {
         defaults.set(value, forKey: key)
     }
+
+    /// The storage limits offered, in gigabytes; 0 is no limit.
+    nonisolated static let storageLimitChoices = [0, 10, 25, 50, 100, 250, 500]
 
     /// Languages offered for audio and subtitles, by their ISO 639-2 codes.
     nonisolated static let languages: [(code: String, name: String)] = {
