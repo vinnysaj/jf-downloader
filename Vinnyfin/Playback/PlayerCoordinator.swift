@@ -107,6 +107,9 @@ final class PlayerCoordinator {
             downloads.playerClosed(id)
             smartDownloads.playerClosed(id)
         }
+        #if os(iOS) || os(macOS)
+        model.onStopReported = { UpNextWidgets.reload() }
+        #endif
         #endif
         return model
     }

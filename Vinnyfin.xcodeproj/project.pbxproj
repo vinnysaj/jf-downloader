@@ -86,6 +86,7 @@
 				Jellyfin/AccountStore.swift,
 				Jellyfin/JellyfinClient.swift,
 				Jellyfin/JellyfinModels.swift,
+				Jellyfin/Keychain.swift,
 				Jellyfin/ServerSession.swift,
 			);
 			target = C406F95571791F6DE04B8B0B /* TopShelf */;
@@ -109,9 +110,16 @@
 			membershipExceptions = (
 				App/AppGroup.swift,
 				App/AppLink.swift,
+				App/Device.swift,
+				App/UpNextWidgets.swift,
+				App/WidgetArtwork.swift,
 				Downloads/DownloadsSnapshot.swift,
 				Intents/DownloadsControlIntent.swift,
+				Jellyfin/AccountStore.swift,
+				Jellyfin/JellyfinClient.swift,
 				Jellyfin/JellyfinModels.swift,
+				Jellyfin/Keychain.swift,
+				Jellyfin/ServerSession.swift,
 			);
 			target = D0A1D0A1D0A1D0A1D0A10001 /* DownloadsWidget */;
 		};
@@ -495,6 +503,7 @@
 				DEVELOPMENT_TEAM = T5XCUP79BU;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DownloadsWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
@@ -522,6 +531,7 @@
 				DEVELOPMENT_TEAM = T5XCUP79BU;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DownloadsWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;

@@ -79,6 +79,8 @@ struct RootView: View {
             guard scenePhase != .background else {
                 #if os(tvOS)
                 TopShelf.reload()
+                #elseif os(iOS)
+                UpNextWidgets.reload()
                 #endif
                 return
             }

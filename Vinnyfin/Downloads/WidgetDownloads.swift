@@ -3,7 +3,6 @@ import Foundation
 #if os(iOS) || os(macOS)
 import ImageIO
 import Observation
-import UniformTypeIdentifiers
 import WidgetKit
 #if os(iOS)
 import UIKit
@@ -198,17 +197,9 @@ final class WidgetDownloads: DownloadsRunning {
     /// A small JPEG of a saved picture. Nil when the picture can't be read, which leaves the
     /// widget's placeholder in its place.
     private nonisolated static func thumbnail(of picture: URL) -> Data? {
-        guard let source = CGImageSourceCreateWithURL(picture as CFURL, nil),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                  kCGImageSourceCreateThumbnailFromImageAlways: true,
-                  kCGImageSourceCreateThumbnailWithTransform: true,
-                  kCGImageSourceThumbnailMaxPixelSize: artworkSize,
-              ] as CFDictionary)
-        else { return nil }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
-        return CGImageDestinationFinalize(destination) ? data as Data : nil
+        CGImageSourceCreateWithURL(picture as CFURL, nil).flatMap {
+            WidgetArtwork.jpeg(from: $0, maxPixelSize: artworkSize, quality: 0.8)
+        }
     }
 }
 #endif
