@@ -384,13 +384,11 @@ struct Scrubber: View {
                 .frame(maxHeight: .infinity)
                 .overlay(alignment: .bottomLeading) {
                     if let position {
+                        let center = width * min(1, max(0, position / duration))
                         ScrubPreview(model: model, time: position)
-                            .alignmentGuide(.leading) { preview in
-                                // Centered over the handle, kept within the timeline.
-                                let center = width * min(1, max(0, position / duration))
-                                return -min(max(0, center - preview.width / 2), max(0, width - preview.width))
-                            }
-                            .alignmentGuide(.bottom) { preview in preview.height + 18 }
+                            // Centered over the handle, kept within the timeline, clear of the bar.
+                            .offset(x: min(max(0, center - ScrubPreview.width / 2), max(0, width - ScrubPreview.width)),
+                                    y: -(geometry.size.height + barHeight) / 2 - 8)
                             .allowsHitTesting(false)
                             .transition(.opacity)
                     }
@@ -496,7 +494,8 @@ private struct ScrubPreview: View {
         VStack(spacing: 4) {
             if let tiles = model.trickplay {
                 TrickplayThumbnail(tiles: tiles, time: time)
-                    .frame(width: Self.thumbnailWidth)
+                    .frame(width: Self.thumbnailWidth,
+                           height: Self.thumbnailWidth * CGFloat(tiles.info.height) / CGFloat(max(1, tiles.info.width)))
                     .clipShape(.rect(cornerRadius: 8))
             }
             if let chapter {
@@ -505,10 +504,14 @@ private struct ScrubPreview: View {
             Text(Scrubber.format(time)).font(.caption).monospacedDigit()
         }
         .padding(model.trickplay == nil ? 8 : 4)
-        .frame(maxWidth: Self.thumbnailWidth + 8)
+        .frame(width: Self.width)
+        // Its own height, not the timeline's it's laid over.
+        .fixedSize()
         .platformGlass(in: .rect(cornerRadius: 12))
         .accessibilityHidden(true)
     }
+
+    static var width: CGFloat { thumbnailWidth + 8 }
 
     private static var thumbnailWidth: CGFloat {
         #if os(tvOS)
