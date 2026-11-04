@@ -43,8 +43,8 @@ nonisolated enum HomeRows {
 
     static let continueWatching = row("continueWatching", "Continue Watching", .resume, style: .landscape)
     static let nextUp = row("nextUp", "Next Up", .nextUp, style: .landscape)
-    static let recentMovies = row("recentMovies", "Recently Added Movies", .items(query(["Movie"], sortBy: "DateCreated")))
-    static let recentShows = row("recentShows", "Recently Added Shows", .items(query(["Series"], sortBy: "DateLastContentAdded")))
+    static let recentMovies = row("recentMovies", "Recently Added Movies", .items(.recentlyAddedMovies))
+    static let recentShows = row("recentShows", "Recently Added Shows", .items(.recentlyAddedShows))
     static let newMovies = row("newMovies", "New Releases", .items(query(["Movie"], sortBy: "PremiereDate")))
     static let newShows = row("newShows", "New Shows", .items(query(["Series"], sortBy: "PremiereDate")))
     static let topMovies = row("topMovies", "Top Rated Movies", .items(query(["Movie"], sortBy: "CommunityRating")))

@@ -128,6 +128,19 @@ nonisolated struct JellyfinClient: Sendable {
         var fields = JellyfinClient.listFields
         var startIndex = 0
         var limit: Int?
+
+        /// Movies, the newest added first.
+        static let recentlyAddedMovies = newest(["Movie"], by: "DateCreated")
+        /// Shows, the one with an episode added last first.
+        static let recentlyAddedShows = newest(["Series"], by: "DateLastContentAdded")
+
+        private static func newest(_ types: [String], by field: String) -> Self {
+            var query = Self(types: types)
+            query.sortBy = field
+            query.ascending = false
+            query.fields = JellyfinClient.cardFields
+            return query
+        }
     }
 
     func items(userId: String, _ query: ItemQuery) async throws -> ItemsPage {

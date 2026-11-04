@@ -4,11 +4,12 @@ import SwiftUI
 /// new, then a long run of rows from what was watched and liked, the best and newest, collections
 /// and every genre. Each row's title opens all of its titles.
 struct HomeView: View {
+    /// The pages open on top of Home: titles, and lists in full.
+    @Binding var path: NavigationPath
     var openDownloads: () -> Void = {}
 
     @Environment(\.session) private var session
     @Environment(AccountStore.self) private var accounts
-    @State private var path = NavigationPath()
     @State private var feed = HomeFeed()
     #if os(iOS) || os(visionOS)
     @State private var showingSettings = false

@@ -94,7 +94,8 @@ func image(at url: URL) -> CGImage? {
     return CGImageSourceCreateImageAtIndex(source, 0, nil)
 }
 
-/// An opaque Display P3 canvas with a top-left origin, written as a PNG without alpha.
+/// An opaque Display P3 canvas with a top-left origin, written without alpha as a JPEG or a
+/// PNG by the file's extension.
 func canvas(_ size: CGSize, to url: URL, _ draw: (CGContext) -> Void) throws {
     guard let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpace(name: CGColorSpace.displayP3)!,
@@ -106,11 +107,13 @@ func canvas(_ size: CGSize, to url: URL, _ draw: (CGContext) -> Void) throws {
     draw(context)
     NSGraphicsContext.restoreGraphicsState()
     try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let isJPEG = url.pathExtension == "jpg"
     guard let result = context.makeImage(),
-          let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+          let destination = CGImageDestinationCreateWithURL(url as CFURL, (isJPEG ? "public.jpeg" : "public.png") as CFString, 1, nil) else {
         throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
     }
-    CGImageDestinationAddImage(destination, result, nil)
+    let options = isJPEG ? [kCGImageDestinationLossyCompressionQuality: 0.92] as CFDictionary : nil
+    CGImageDestinationAddImage(destination, result, options)
     guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path]) }
 }
 
@@ -310,7 +313,7 @@ for slot in slots where sets.contains(slot.set) {
     // The slot's images from before go, so one no longer taken doesn't stay behind.
     let destination = outputFolder.appending(path: slot.folder)
     for old in (try? fileManager.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)) ?? []
-    where old.pathExtension == "png" && (slot.prefix.isEmpty || old.lastPathComponent.hasPrefix("\(slot.prefix)-")) {
+    where ["png", "jpg"].contains(old.pathExtension) && (slot.prefix.isEmpty || old.lastPathComponent.hasPrefix("\(slot.prefix)-")) {
         try fileManager.removeItem(at: old)
     }
     for shot in shots.filter({ $0.pathExtension == "png" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
@@ -319,7 +322,8 @@ for slot in slots where sets.contains(slot.set) {
         guard let caption = captions["\(slot.raw)/\(name)"] ?? captions[name] else {
             throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "No caption for \(slot.raw)/\(name)"])
         }
-        let file = (slot.prefix.isEmpty ? name : "\(slot.prefix)-\(name)") + ".png"
+        // Screenshots as high-quality JPEGs, a tenth of a PNG's size in the repo.
+        let file = (slot.prefix.isEmpty ? name : "\(slot.prefix)-\(name)") + ".jpg"
         try frame(picture, caption: caption, slot: slot, to: destination.appending(path: file))
         written += 1
     }
