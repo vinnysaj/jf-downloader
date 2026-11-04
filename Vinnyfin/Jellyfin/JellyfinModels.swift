@@ -355,7 +355,8 @@ nonisolated struct PlaybackInfoResponse: Decodable, Sendable {
 }
 
 /// A stretch of an item the server's media segment providers marked, such as the intro.
-nonisolated struct MediaSegment: Decodable, Sendable, Hashable {
+/// Kept with downloads in the server's own format.
+nonisolated struct MediaSegment: Codable, Sendable, Hashable {
     let type: String
     let startTicks: Int64
     let endTicks: Int64
@@ -366,6 +367,17 @@ nonisolated struct MediaSegment: Decodable, Sendable, Hashable {
 
     var start: Double { Double(startTicks) / 10_000_000 }
     var end: Double { Double(endTicks) / 10_000_000 }
+
+    /// What the button to skip it says, for the kinds worth skipping.
+    var skipTitle: String? {
+        switch type {
+        case "Intro": "Skip Intro"
+        case "Recap": "Skip Recap"
+        case "Preview": "Skip Preview"
+        case "Outro": "Skip Credits"
+        default: nil
+        }
+    }
 }
 
 nonisolated struct MediaSegmentsPage: Decodable, Sendable {

@@ -11,21 +11,12 @@
   },
   "groups" : [
     {
-      "name" : "Play",
+      "name" : "V",
       "layers" : [
-        { "name" : "Play", "image-name" : "Play.svg", "glass" : true }
+        { "name" : "V", "image-name" : "V.svg", "glass" : true }
       ],
       "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
       "translucency" : { "enabled" : true, "value" : 0.15 },
-      "specular" : true
-    },
-    {
-      "name" : "Fin",
-      "layers" : [
-        { "name" : "Fin", "image-name" : "Fin.svg", "glass" : true, "opacity" : 0.6 }
-      ],
-      "shadow" : { "kind" : "neutral", "opacity" : 0.4 },
-      "translucency" : { "enabled" : true, "value" : 0.5 },
       "specular" : true
     }
   ],

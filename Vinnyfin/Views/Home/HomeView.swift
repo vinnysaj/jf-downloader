@@ -1,13 +1,12 @@
 import SwiftUI
 
 /// What to watch next: a featured banner, then shelves of what's in progress, what's new and
-/// what's like what was watched, and downloads worth having.
+/// what's like what was watched.
 struct HomeView: View {
     var openDownloads: () -> Void = {}
 
     @Environment(\.session) private var session
     @Environment(AccountStore.self) private var accounts
-    @Environment(PlayerCoordinator.self) private var player
     @State private var path: [JellyfinItem] = []
     @State private var resume: [JellyfinItem] = []
     @State private var nextUp: [JellyfinItem] = []
@@ -44,17 +43,14 @@ struct HomeView: View {
                     }
                     if !resume.isEmpty {
                         Shelf(title: "Continue Watching", items: resume, cardWidth: Metrics.landscapeWidth) { item in
-                            playableCard(item)
+                            inProgressCard(item)
                         }
                     }
                     if !nextUp.isEmpty {
                         Shelf(title: "Next Up", items: nextUp, cardWidth: Metrics.landscapeWidth) { item in
-                            playableCard(item)
+                            inProgressCard(item)
                         }
                     }
-                    #if !os(tvOS)
-                    SuggestedDownloadsShelf(nextUp: nextUp, resume: resume)
-                    #endif
                     posterShelf("Recently Added Movies", latestMovies)
                     posterShelf("Recently Added Shows", latestShows)
                     if let becauseYouWatched {
@@ -77,30 +73,24 @@ struct HomeView: View {
             .scrollsEdgeToEdge()
             // The page color the hero artwork fades into.
             .background(Color.pageBackground.ignoresSafeArea())
-            #if os(iOS) || os(visionOS)
-            // Over the hero the bar is hidden, so Settings floats in its corner instead.
-            .overlay(alignment: .topTrailing) {
-                if !featured.isEmpty {
-                    settingsButton
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.platformGlass)
-                        .buttonBorderShape(.circle)
-                        .controlSize(.large)
-                        .padding(.trailing, Metrics.edge)
-                }
-            }
-            #endif
             .navigationTitle("Home")
-            #if !os(macOS)
+            #if os(tvOS)
             .toolbarVisibility(featured.isEmpty ? .automatic : .hidden, for: .navigationBar)
+            #elseif os(iOS) || os(visionOS)
+            // Over the hero the bar keeps only Settings, floating on the artwork; on iPhone Duo
+            // it goes in the vertical bar with the rest of the bar's buttons.
+            .navigationBarTitleDisplayMode(featured.isEmpty ? .automatic : .inline)
+            .toolbar(removing: featured.isEmpty ? nil : .title)
+            .toolbarBackgroundVisibility(featured.isEmpty ? .automatic : .hidden, for: .navigationBar)
+            #if os(iOS)
+            .scrollEdgeEffectHidden(!featured.isEmpty, for: .top)
             #endif
-            .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
-            #if os(iOS) || os(visionOS)
             .toolbar {
                 ToolbarItem(placement: .barTrailing) { settingsButton }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             #endif
+            .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
             .refreshable { await load() }
             .task { await load() }
         }
@@ -118,17 +108,14 @@ struct HomeView: View {
         }
     }
 
-    /// A card that plays when chosen, with the way to its page in its menu.
-    private func playableCard(_ item: JellyfinItem) -> some View {
-        Button {
-            player.play(.item(item))
-        } label: {
+    /// A card that opens its page when chosen, with Play in its menu.
+    private func inProgressCard(_ item: JellyfinItem) -> some View {
+        NavigationLink(value: item) {
             LandscapeCard(item: item)
         }
         .buttonStyle(.artwork)
         .contextMenu {
             ItemContextMenu(item: item)
-            Button("Details", systemImage: "info.circle") { path.append(item) }
             if item.isEpisode, let seriesId = item.seriesId {
                 Button("Go to Show", systemImage: "tv") {
                     path.append(JellyfinItem(id: seriesId, name: item.seriesName ?? "", type: "Series"))

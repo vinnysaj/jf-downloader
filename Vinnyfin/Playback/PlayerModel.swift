@@ -46,9 +46,21 @@ final class PlayerModel: Identifiable {
         case buffering
         case ended
         case failed(String)
+
+        /// Getting ready to play or playing: the picture needs the connection.
+        var isUnderway: Bool {
+            switch self {
+            case .preparing, .loading, .playing, .buffering: true
+            case .paused, .ended, .failed: false
+            }
+        }
     }
 
-    private(set) var status = Status.preparing
+    private(set) var status = Status.preparing {
+        didSet {
+            if status.isUnderway != oldValue.isUnderway { onUnderwayChanged?(status.isUnderway) }
+        }
+    }
     private(set) var title: String
     private(set) var subtitle: String?
     private(set) var current: ResolvedPlayback?
@@ -77,8 +89,10 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored private let settings: AppSettings
     /// Finds a downloaded episode to play next when the server can't be reached.
     @ObservationIgnored private let downloadedEpisode: (_ after: JellyfinItem) -> JellyfinItem?
-    /// Told when a playback of a server item ends, with the item, so downloads can follow along.
-    @ObservationIgnored var onPlaybackEnded: ((JellyfinItem) -> Void)?
+    /// Told when playback starts or stops being underway; a new model starts out underway.
+    @ObservationIgnored var onUnderwayChanged: ((Bool) -> Void)?
+    /// Told once, when the player closes for good.
+    @ObservationIgnored var onClose: (() -> Void)?
 
     @ObservationIgnored private var request: PlaybackRequest
     @ObservationIgnored private var subscriptions = Set<AnyCancellable>()
@@ -122,10 +136,10 @@ final class PlayerModel: Identifiable {
     var isPlaying: Bool { status == .playing || status == .buffering }
     var item: JellyfinItem? { current?.item }
 
-    /// The intro or recap being played, which the player offers to skip.
+    /// The intro, recap, preview or credits being played, which the player offers to skip.
     func skippableSegment(at time: Double) -> MediaSegment? {
-        guard settings.showSkipIntro else { return nil }
-        return segments.first { ["Intro", "Recap", "Preview"].contains($0.type) && time >= $0.start && time < $0.end - 1 }
+        guard settings.showSkipButtons else { return nil }
+        return segments.first { $0.skipTitle != nil && time >= $0.start && time < $0.end - 1 }
     }
 
     /// Whether the up-next card belongs on screen at `time`: in the credits, or the last 30 seconds.
@@ -142,11 +156,16 @@ final class PlayerModel: Identifiable {
         await load(request)
     }
 
-    /// Plays the next episode in place of this one.
-    func playNextEpisode() async {
-        guard let next = nextEpisode else { return }
+    /// Plays another episode, such as the next one, in place of this one.
+    func play(_ episode: JellyfinItem) async {
+        countdownTask?.cancel()
+        upNextCountdown = nil
+        await switchTo(episode)
+    }
+
+    private func switchTo(_ episode: JellyfinItem) async {
         await finishSession(reachedEnd: status == .ended)
-        await load(.item(next))
+        await load(.item(episode))
     }
 
     func retry() async {
@@ -215,7 +234,8 @@ final class PlayerModel: Identifiable {
         selectedSubtitle = nil
         cues = []
         nextEpisode = nil
-        segments = []
+        // A download's own copy, until the server's arrive.
+        segments = resolved.segments
         upNextCountdown = nil
         upNextDismissed = false
         clock.time = resolved.startPosition ?? 0
@@ -497,7 +517,7 @@ final class PlayerModel: Identifiable {
                 if Task.isCancelled { return }
             }
             upNextCountdown = nil
-            await playNextEpisode()
+            if let next = nextEpisode { await switchTo(next) }
         }
     }
 
@@ -512,6 +532,7 @@ final class PlayerModel: Identifiable {
             lease.holder = nil
             engine.stop()
         }
+        onClose?()
     }
 
     /// Reports where playback stopped and lets go of the session's resources. Safe to call twice.
@@ -529,7 +550,6 @@ final class PlayerModel: Identifiable {
             try? await client.stopTranscoding(playSessionId: reporting.playSessionId)
         }
         current.scopedURL?.stopAccessingSecurityScopedResource()
-        if let item = current.item { onPlaybackEnded?(item) }
     }
 
     // MARK: Reporting

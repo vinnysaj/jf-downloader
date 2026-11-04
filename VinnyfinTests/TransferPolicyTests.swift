@@ -107,6 +107,12 @@ struct EvaluateTests {
         #expect(outcome == .chunk(0..<50, total: 5000))
     }
 
+    @Test func acceptsMoreThanAskedFor() {
+        // A server that answers a one-byte probe with the whole file.
+        let tag = TransferTag(jobId: UUID(), range: DownloadJob.probeRange)
+        #expect(job().evaluate(partial("bytes 0-4999/5000"), stagedSize: 5000, tag: tag) == .chunk(0..<5000, total: 5000))
+    }
+
     @Test func retriesTheWrongRange() {
         let tag = TransferTag(jobId: UUID(), range: 100..<200)
         let outcome = job(rangeSupport: .supported, total: 5000).evaluate(partial("bytes 0-99/5000"), stagedSize: 100, tag: tag)
@@ -149,9 +155,21 @@ struct EvaluateTests {
 }
 
 struct SchedulingTests {
-    @Test func probesWithOneRequestFirst() {
-        let job = DownloadJob(item: Samples.movie, source: Samples.source)
-        #expect(job.nextRequests(running: [], limit: 10) == [0..<DownloadJob.initialChunkSize])
+    @Test func plansFromTheListedSize() {
+        var job = DownloadJob(item: Samples.movie, source: Samples.source)
+        job.chunkSize = 100_000_000
+        // 300 MB listed: three chunks right away, before the server has said anything.
+        #expect(job.nextRequests(running: [], limit: 10) == [0..<100_000_000, 100_000_000..<200_000_000, 200_000_000..<300_000_000])
+        #expect(!job.needsProbe)
+    }
+
+    @Test func probesWithOneRequestFirstWithoutAListedSize() {
+        var source = Samples.source
+        source.size = nil
+        let job = DownloadJob(item: Samples.movie, source: source)
+        #expect(job.needsProbe)
+        #expect(job.nextRequests(running: [], limit: 10) == [DownloadJob.probeRange])
+        #expect(TransferTag(jobId: job.id, range: DownloadJob.probeRange).rangeHeader == "bytes=0-0")
         #expect(job.nextRequests(running: [TransferTag(jobId: job.id, range: 0..<10)], limit: 10).isEmpty)
     }
 
@@ -170,6 +188,22 @@ struct SchedulingTests {
         var job = DownloadJob(item: Samples.movie, source: Samples.source)
         job.rangeSupport = .unsupported
         #expect(job.nextRequests(running: [], limit: 3) == [nil])
+    }
+
+    @Test func queuesFilesOldestFirst() {
+        let start = Date.now
+        var first = DownloadJob(item: Samples.movie, source: Samples.source, now: start)
+        var second = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 1)
+        let third = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 2)
+        #expect(DownloadJob.queue([second, third, first]) == [first.id, second.id, third.id])
+        first.status = .paused
+        #expect(DownloadJob.queue([first, second, third]) == [second.id, third.id])
+        // A job whose bytes are all in is being published, not transferred.
+        second.rangeSupport = .supported
+        second.totalBytes = 10
+        second.completed = ByteRanges([0..<10])
+        #expect(DownloadJob.queue([first, second, third]) == [third.id])
+        #expect(DownloadJob.queue([first, second]).isEmpty)
     }
 
     @Test func requestsNothingUnlessActive() {

@@ -56,6 +56,8 @@ struct ResolvedPlayback {
     var isTranscode = false
     /// A downloaded copy of a server item.
     var isDownload = false
+    /// The skippable stretches saved with a download.
+    var segments: [MediaSegment] = []
     /// A security-scoped URL to stop accessing when playback ends.
     var scopedURL: URL?
 }
@@ -82,8 +84,15 @@ struct PlaybackResolver {
     let accounts: AccountStore
     let settings: AppSettings
     let history: WatchHistory
-    /// A finished download of the item (and version, when given), with the item as it was saved.
-    let downloadedCopy: (_ itemId: String, _ mediaSourceId: String?) -> (url: URL, item: JellyfinItem?)?
+    /// A finished download of the item (and version, when given), with the item and its segments
+    /// as they were saved.
+    let downloadedCopy: (_ itemId: String, _ mediaSourceId: String?) -> DownloadedCopy?
+
+    struct DownloadedCopy {
+        let url: URL
+        let item: JellyfinItem?
+        let segments: [MediaSegment]
+    }
 
     func resolve(_ request: PlaybackRequest) async throws -> ResolvedPlayback {
         switch request.source {
@@ -152,7 +161,7 @@ struct PlaybackResolver {
 
     // MARK: Downloads
 
-    private func resolveDownload(_ copy: (url: URL, item: JellyfinItem?), itemId: String, request: PlaybackRequest) -> ResolvedPlayback {
+    private func resolveDownload(_ copy: DownloadedCopy, itemId: String, request: PlaybackRequest) -> ResolvedPlayback {
         let item = copy.item
         // The server's position when it was last seen, unless this device has a newer one.
         var start = item?.resumeSeconds
@@ -176,7 +185,8 @@ struct PlaybackResolver {
             externalSubtitles: Self.sidecarSubtitles(for: copy.url),
             historyKey: itemId,
             reporting: reporting,
-            isDownload: true
+            isDownload: true,
+            segments: copy.segments
         )
     }
 

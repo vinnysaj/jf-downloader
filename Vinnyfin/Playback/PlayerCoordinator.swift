@@ -89,7 +89,15 @@ final class PlayerCoordinator {
                                 history: history, settings: settings) { [downloads] episode in
             downloads.downloadedEpisode(after: episode)
         }
-        model.onPlaybackEnded = { [smartDownloads] item in smartDownloads.playbackEnded(item) }
+        // Downloads wait while something plays, and smart downloads while the player is open.
+        let id = model.id
+        downloads.playerChanged(id, isPlaying: true)
+        smartDownloads.playerOpened(id)
+        model.onUnderwayChanged = { [downloads] underway in downloads.playerChanged(id, isPlaying: underway) }
+        model.onClose = { [downloads, smartDownloads] in
+            downloads.playerClosed(id)
+            smartDownloads.playerClosed(id)
+        }
         #endif
         return model
     }

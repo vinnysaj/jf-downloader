@@ -7,3 +7,6 @@ build/
 
 # Local Jellyfin test stack (containers, config, generated media)
 testserver/
+
+# App Store screenshots: the showcase server, builds and captures
+AppStore/Output/

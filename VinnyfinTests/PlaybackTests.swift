@@ -209,11 +209,14 @@ struct JellyfinFormatTests {
 }
 
 struct SmartDownloadPlannerTests {
-    private func episodes(played: Int, total: Int, queued: Set<Int> = [], downloaded: Set<Int> = []) -> [SmartDownloadPlanner.Episode] {
+    /// Downloaded episodes were watched after downloading unless listed in `watchedBefore`.
+    private func episodes(played: Int, total: Int, queued: Set<Int> = [], downloaded: Set<Int> = [],
+                          inProgress: Set<Int> = [], watchedBefore: Set<Int> = []) -> [SmartDownloadPlanner.Episode] {
         (1...total).map { number in
-            SmartDownloadPlanner.Episode(id: "e\(number)", played: number <= played,
+            SmartDownloadPlanner.Episode(id: "e\(number)", played: number <= played, inProgress: inProgress.contains(number),
                                          isQueued: queued.contains(number) || downloaded.contains(number),
-                                         isDownloaded: downloaded.contains(number))
+                                         isDownloaded: downloaded.contains(number),
+                                         watchedSinceDownload: downloaded.contains(number) && !watchedBefore.contains(number))
         }
     }
 
@@ -238,6 +241,22 @@ struct SmartDownloadPlannerTests {
 
     @Test func findsWatchedDownloadsToDelete() {
         #expect(SmartDownloadPlanner.watchedDownloads(episodes(played: 3, total: 5, downloaded: [2, 3, 4])) == ["e2", "e3"])
+    }
+
+    @Test func keepsAnEpisodeDownloadedToWatchAgain() {
+        let list = episodes(played: 3, total: 5, downloaded: [1, 2, 3], watchedBefore: [1, 3])
+        #expect(SmartDownloadPlanner.watchedDownloads(list) == ["e2"])
+    }
+
+    @Test func keepsAnEpisodeBeingWatchedAgain() {
+        let list = episodes(played: 3, total: 6, downloaded: [2, 3], inProgress: [3])
+        #expect(SmartDownloadPlanner.watchedDownloads(list) == ["e2"])
+        #expect(SmartDownloadPlanner.episodesToDownload(list, nextUpId: "e3", count: 2) == ["e4"])
+    }
+
+    @Test func passesOverANextUpFinishedHereFirst() {
+        // The server still says e4 is next; it was finished offline and isn't synced yet.
+        #expect(SmartDownloadPlanner.episodesToDownload(episodes(played: 4, total: 8), nextUpId: "e4", count: 2) == ["e5", "e6"])
     }
 }
 

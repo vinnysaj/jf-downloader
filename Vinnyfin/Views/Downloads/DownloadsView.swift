@@ -46,7 +46,7 @@ struct DownloadsView: View {
                     } header: {
                         Text("Smart Downloads")
                     } footer: {
-                        Text("These shows stay downloaded ahead of where you're watching, wherever you watch.")
+                        Text("These shows stay downloaded ahead of where you're watching, wherever you watch. They're checked whenever vinnyfin opens, regularly while it's open, and every few hours in the background.")
                     }
                 }
                 if !movies.isEmpty {
@@ -82,7 +82,6 @@ struct DownloadsView: View {
             .fileImporter(isPresented: $importing, allowedContentTypes: Self.videoTypes, allowsMultipleSelection: false) { result in
                 openPicked(result)
             }
-            .refreshable { await smartDownloads.refresh() }
             .onAppear { localLibrary.scanFolder(excluding: Set(downloads.jobs.compactMap(\.savedPath))) }
         }
     }
@@ -129,10 +128,6 @@ struct DownloadsView: View {
                     for job in unfinished where job.status != .active { downloads.resume(job.id) }
                 }
                 .disabled(!unfinished.contains { $0.status != .active })
-                Button("Update Smart Downloads", systemImage: "sparkles") {
-                    Task { await smartDownloads.refresh() }
-                }
-                .disabled(smartDownloads.isRefreshing)
             } label: {
                 Label("More", systemImage: "ellipsis")
             }

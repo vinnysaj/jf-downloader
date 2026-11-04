@@ -3,7 +3,9 @@ import AVKit
 import SwiftUI
 
 /// The player: the picture edge to edge, subtitles over it, and controls that fade away while
-/// it plays. Tap (or move the mouse, or press a key) to bring them back.
+/// it plays. Tap (or move the mouse, or press a key) to bring them back; pinch to fill the
+/// screen. On an iPhone Duo standing half open like a laptop the picture takes the top half and
+/// the controls the bottom, with the show's episodes.
 struct PlayerView: View {
     let model: PlayerModel
     let onClose: () -> Void
@@ -22,11 +24,25 @@ struct PlayerView: View {
     #if os(iOS) || os(macOS)
     @State private var pictureInPicture = PictureInPicture()
     #endif
+    #if os(iOS)
+    @State private var orientationLock = PlayerOrientationLock()
+    /// The fold across the screen of an iPhone Duo standing half open, in window coordinates.
+    @State private var fold: CGRect?
+    #else
+    private let fold: CGRect? = nil
+    #endif
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
+                .ignoresSafeArea()
+                #if os(iOS)
+                .onGeometryChange(for: CGRect?.self) { Self.fold(in: $0) } action: { fold = $0 }
+                .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { orientationLock.windowChanged(isWide: $0) }
+                #endif
             AetherPlayerSurface(engine: model.engine)
+                .frame(height: fold?.minY)
+                .frame(maxHeight: .infinity, alignment: .top)
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
             #if os(tvOS)
@@ -45,22 +61,46 @@ struct PlayerView: View {
             // Taps on the picture show and hide the controls; taps on a control stay with it.
             Color.clear
                 .contentShape(.rect)
+                .frame(height: fold?.minY)
+                .frame(maxHeight: .infinity, alignment: .top)
                 .ignoresSafeArea()
                 .onTapGesture { toggleControls() }
+                #if os(iOS)
+                .gesture(MagnifyGesture().onEnded { pinched($0.magnification) })
+                #endif
             #endif
-            statusOverlay
-            if controlsVisible {
+            inPictureArea { statusOverlay }
+            if let fold {
+                PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
+                               bottomBarTop: $bottomBarTop,
+                               onClose: onClose, onInteraction: {}, pictureInPicture: pictureInPictureAction,
+                               isBelowFold: true)
+                    .padding(.top, fold.maxY)
+                    .ignoresSafeArea(edges: .top)
+            } else if controlsVisible {
                 PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
                                bottomBarTop: $bottomBarTop,
                                onClose: onClose, onInteraction: scheduleHide, pictureInPicture: pictureInPictureAction)
                     .transition(.opacity)
             }
+            #if os(iOS)
+            if orientationLock.isAnnouncing, !showsControls {
+                // Where it waits among the controls, so it seems to go back into them.
+                RotateButton(onUse: scheduleHide)
+                    .padding(.horizontal, Metrics.playerInset)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
+            #endif
             // Over the controls' shading so captions stay bright; it takes no touches, and bottom
             // captions move up out of the controls' way.
             SubtitleOverlay(model: model, videoSize: fillsScreen ? nil : model.videoSize,
-                            controlsTop: controlsVisible ? bottomBarTop : nil)
+                            controlsTop: controlsVisible && fold == nil ? bottomBarTop : nil)
+                .frame(height: fold?.minY)
+                .frame(maxHeight: .infinity, alignment: .top)
                 .ignoresSafeArea()
-            extras
+            inPictureArea { extras }
             if let panel {
                 TrackPanel(model: model, panel: panel) { closePanel() }
                     .padding(Metrics.edge)
@@ -71,6 +111,14 @@ struct PlayerView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: controlsVisible)
         .animation(.snappy, value: panel)
+        #if os(iOS)
+        .animation(.snappy, value: orientationLock.isAnnouncing)
+        .animation(.smooth, value: fold)
+        .environment(orientationLock)
+        .onHingeChange { _, context in orientationLock.hingeChanged(isHalfOpen: context.hinge?.status == .partiallyOpen) }
+        .onAppear { orientationLock.start() }
+        .onDisappear { orientationLock.stop() }
+        #endif
         #if os(macOS)
         .onContinuousHover { phase in
             if case .active = phase { showControls() }
@@ -103,8 +151,11 @@ struct PlayerView: View {
         }
         #endif
         #if os(iOS)
-        .statusBarHidden(!controlsVisible)
+        .statusBarHidden(!showsControls)
         .persistentSystemOverlays(.hidden)
+        // On iPhone Duo the controls keep to the middle of the screen, where the picture is,
+        // rather than making room for a vertical bar.
+        .toolbarVerticalBehavior(.disabled)
         #endif
         .onChange(of: fillsScreen) { _, fills in model.engine.videoGravity = fills ? .resizeAspectFill : .resizeAspect }
         .onChange(of: model.status) { _, status in
@@ -126,6 +177,40 @@ struct PlayerView: View {
         .preferredColorScheme(.dark)
     }
 
+    /// Below the fold the controls stay, off the picture.
+    private var showsControls: Bool { controlsVisible || fold != nil }
+
+    /// `content` over the picture: above the fold when there is one, else the whole screen.
+    @ViewBuilder private func inPictureArea(@ViewBuilder _ content: () -> some View) -> some View {
+        if let fold {
+            content()
+                .frame(height: fold.minY)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .ignoresSafeArea()
+        } else {
+            content()
+        }
+    }
+
+    #if os(iOS)
+    /// The fold across the window when an iPhone Duo stands half open like a laptop. Held like
+    /// a book, the fold runs down the middle and the picture spans it.
+    nonisolated private static func fold(in proxy: GeometryProxy) -> CGRect? {
+        proxy.reservedRegions(kind: .division)
+            .first { $0.isActive && $0.frame.width > $0.frame.height }?
+            .frame
+    }
+
+    /// Spreading two fingers fills the screen, cutting the picture's edges; pinching fits it.
+    private func pinched(_ magnification: CGFloat) {
+        if magnification > 1.15 {
+            fillsScreen = true
+        } else if magnification < 0.87 {
+            fillsScreen = false
+        }
+    }
+    #endif
+
     private static var hasNoCenterButton: Bool {
         #if os(tvOS)
         true
@@ -146,7 +231,7 @@ struct PlayerView: View {
         switch model.status {
         case .preparing, .loading, .buffering:
             // With the controls up, the play button shows this instead (on Apple TV there is none).
-            if !controlsVisible || Self.hasNoCenterButton {
+            if !showsControls || Self.hasNoCenterButton {
                 ProgressView()
                     .controlSize(.large)
                     .tint(.white)
@@ -177,26 +262,27 @@ struct PlayerView: View {
     @ViewBuilder private var extras: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { _ in
             let time = model.clock.time
+            // In the credits the up-next card is the way past them, when there's a next episode.
+            let upNext = model.showsUpNext(at: time) ? model.nextEpisode : nil
             VStack {
                 Spacer()
                 HStack(alignment: .bottom) {
                     Spacer()
-                    if let segment = model.skippableSegment(at: time) {
+                    if let upNext {
+                        UpNextCard(model: model, episode: upNext)
+                    } else if let segment = model.skippableSegment(at: time), let title = segment.skipTitle {
                         Button {
                             model.seek(to: segment.end)
                         } label: {
-                            Label(segment.type == "Recap" ? "Skip Recap" : "Skip Intro", systemImage: "forward.end.fill")
+                            Label(title, systemImage: "forward.end.fill")
                         }
                         .buttonStyle(.platformGlassProminent)
                         .controlSize(.large)
-                        .accessibilityIdentifier("player.skipIntro")
-                    }
-                    if model.showsUpNext(at: time), let next = model.nextEpisode {
-                        UpNextCard(model: model, episode: next)
+                        .accessibilityIdentifier("player.skip")
                     }
                 }
                 .padding(.horizontal, Metrics.playerInset)
-                .padding(.bottom, controlsVisible ? 130 : 40)
+                .padding(.bottom, fold != nil ? 16 : controlsVisible ? 130 : 40)
             }
         }
     }
@@ -225,7 +311,7 @@ struct PlayerView: View {
 
     private func hideControls() {
         hideTask?.cancel()
-        guard model.isPlaying, scrubPosition == nil, panel == nil else { return }
+        guard model.isPlaying, scrubPosition == nil, panel == nil, fold == nil else { return }
         controlsVisible = false
     }
 
@@ -256,7 +342,7 @@ private struct UpNextCard: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                 HStack {
-                    Button("Play Now") { Task { await model.playNextEpisode() } }
+                    Button("Play Now") { Task { await model.play(episode) } }
                         .buttonStyle(.platformGlassProminent)
                         .accessibilityIdentifier("player.playNext")
                     Button("Hide") { model.cancelUpNext() }
@@ -383,4 +469,30 @@ private struct RoutePickerRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: AVRoutePickerView, context: Context) {}
 }
 #endif
+#endif
+
+#if os(iOS)
+/// Turns the player the way the phone is turned, while it holds still for watching lying down.
+struct RotateButton: View {
+    var onUse: () -> Void = {}
+    @Environment(PlayerOrientationLock.self) private var lock: PlayerOrientationLock?
+
+    var body: some View {
+        if let lock, let offer = lock.offer {
+            Button {
+                lock.rotate()
+                onUse()
+            } label: {
+                Image(systemName: offer.isPortrait ? "rectangle.portrait.rotate" : "rectangle.landscape.rotate")
+                    .font(.headline)
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.platformGlass)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+            .accessibilityLabel("Rotate")
+            .accessibilityIdentifier("player.rotate")
+        }
+    }
+}
 #endif

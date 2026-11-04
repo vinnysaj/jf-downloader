@@ -14,6 +14,14 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 account
+                #if !os(visionOS)
+                Section {
+                    Picker("Appearance", selection: $settings.appearance) {
+                        ForEach(AppSettings.Appearance.allCases) { Text($0.label).tag($0) }
+                    }
+                    .accessibilityIdentifier("settings.appearance")
+                }
+                #endif
                 Section {
                     Picker("Streaming Quality", selection: $settings.streamingQuality) {
                         ForEach(VideoQuality.allCases) { Text($0.label).tag($0) }
@@ -21,14 +29,14 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.streamingQuality")
                     Toggle("Transcode When No Version Fits", isOn: $settings.allowTranscoding)
                     Toggle("Play the Next Episode Automatically", isOn: $settings.autoplayNextEpisode)
-                    Toggle("Offer to Skip Intros", isOn: $settings.showSkipIntro)
+                    Toggle("Offer to Skip Intros and Credits", isOn: $settings.showSkipButtons)
                     #if os(tvOS)
                     Toggle("Match Frame Rate and Dynamic Range", isOn: $settings.matchContent)
                     #endif
                 } header: {
                     Text("Playback")
                 } footer: {
-                    Text("Plays the best version up to this quality, untouched. When every version is bigger, the server scales one down, unless transcoding is off.")
+                    Text("Plays the best version up to this quality, untouched. When every version is bigger, the server scales one down, unless transcoding is off. Skip buttons appear for the intros, recaps, previews and credits your server has marked, downloads included.")
                 }
                 Section("Audio and Subtitles") {
                     Picker("Audio Language", selection: $settings.audioLanguage) {
@@ -73,6 +81,10 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .navigationTitle("Settings")
+            #if os(macOS)
+            // The Mac's Settings window is a window of its own, outside the root view.
+            .preferredColorScheme(settings.appearance.colorScheme)
+            #endif
             #if os(iOS) || os(visionOS)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

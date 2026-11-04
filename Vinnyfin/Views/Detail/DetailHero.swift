@@ -18,6 +18,7 @@ struct DetailHero<Actions: View>: View {
             Artwork(url: backdropURL, aspectRatio: nil, cornerRadius: 0, placeholder: item.isSeries ? "tv" : "film")
                 .frame(height: heroHeight)
                 .frame(maxWidth: .infinity)
+                .ignoresSafeArea(edges: .horizontal)
                 .clipped()
                 .overlay {
                     LinearGradient(
@@ -117,7 +118,10 @@ extension Color {
     static var pageBackground: Color {
         #if os(macOS)
         Color(nsColor: .windowBackgroundColor)
-        #elseif os(tvOS) || os(visionOS)
+        #elseif os(tvOS)
+        // Black like a theater in the dark, rather than the system's gray.
+        Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? .black : .white })
+        #elseif os(visionOS)
         Color.black
         #else
         Color(uiColor: .systemBackground)

@@ -142,13 +142,24 @@ extension PrimitiveButtonStyle where Self == ArtworkButtonStyle {
 }
 
 extension View {
-    /// Apple TV lays scrolling screens across the whole width, past the overscan margin, so rows
-    /// scroll off the edge of the TV; the content itself keeps to `Metrics.edge`.
+    /// Scrolling screens run the whole width, so artwork and rows go past the TV's overscan
+    /// margin, an iPhone's landscape insets and under iPhone Duo's vertical bar, which floats
+    /// over them like any bar.
     func scrollsEdgeToEdge() -> some View {
-        #if os(tvOS)
-        ignoresSafeArea(edges: .horizontal)
-        #else
+        #if os(macOS)
         self
+        #else
+        ignoresSafeArea(edges: .horizontal)
+        #endif
+    }
+
+    /// A search field that's always on screen. On iPhone, a search tab's field placed
+    /// automatically never appears: neither in the navigation bar nor in the tab bar.
+    func alwaysSearchable(text: Binding<String>, prompt: LocalizedStringKey) -> some View {
+        #if os(iOS)
+        searchable(text: text, placement: .navigationBarDrawer(displayMode: .always), prompt: prompt)
+        #else
+        searchable(text: text, prompt: prompt)
         #endif
     }
 }

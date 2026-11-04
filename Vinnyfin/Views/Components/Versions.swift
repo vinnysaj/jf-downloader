@@ -92,7 +92,10 @@ struct JobStatusLine: View {
     var body: some View {
         switch job.status {
         case .active:
-            if !downloads.isNetworkReachable {
+            if downloads.isPausedForPlayback {
+                Label("Paused while you watch", systemImage: "play.rectangle")
+                    .foregroundStyle(.secondary)
+            } else if !downloads.isNetworkReachable {
                 Label("Waiting for a network connection", systemImage: "wifi.slash")
                     .foregroundStyle(.orange)
             } else if let retryAt = job.retryAt, retryAt > .now {
@@ -102,9 +105,13 @@ struct JobStatusLine: View {
                 }
                 .foregroundStyle(.orange)
             } else if let speed = downloads.bytesPerSecond[job.id], speed >= 1024 {
+                // The next file can start as the one before it finishes its last chunks.
                 Text("\(Int64(speed).formatted(.byteCount(style: .file)))/s")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+            } else if downloads.downloadingJobId != job.id {
+                Label("Queued", systemImage: "clock")
+                    .foregroundStyle(.secondary)
             } else {
                 Text("Waiting for the server…").foregroundStyle(.secondary)
             }

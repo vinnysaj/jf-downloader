@@ -26,6 +26,25 @@ final class AppSettings {
         }
     }
 
+    nonisolated enum Appearance: String, CaseIterable, Identifiable, Sendable {
+        /// Light or dark with the system.
+        case system
+        case light
+        case dark
+
+        var id: Self { self }
+
+        var label: String {
+            switch self {
+            case .system: "Match System"
+            case .light: "Light"
+            case .dark: "Dark"
+            }
+        }
+    }
+
+    /// The browsing screens' look; the player is always dark.
+    var appearance: Appearance { didSet { store(appearance.rawValue, Keys.appearance) } }
     var streamingQuality: VideoQuality { didSet { store(streamingQuality.rawValue, Keys.streamingQuality) } }
     /// Lets the server scale a version down when none matches `streamingQuality`.
     var allowTranscoding: Bool { didSet { store(allowTranscoding, Keys.allowTranscoding) } }
@@ -35,7 +54,8 @@ final class AppSettings {
     /// How many episodes a new smart download keeps ahead.
     var smartDownloadCount: Int { didSet { store(smartDownloadCount, Keys.smartDownloadCount) } }
     var autoplayNextEpisode: Bool { didSet { store(autoplayNextEpisode, Keys.autoplayNextEpisode) } }
-    var showSkipIntro: Bool { didSet { store(showSkipIntro, Keys.showSkipIntro) } }
+    /// Offers to skip intros, recaps, previews and credits the server has marked.
+    var showSkipButtons: Bool { didSet { store(showSkipButtons, Keys.showSkipButtons) } }
     /// ISO 639-2 code, such as "eng"; empty plays the file's default track.
     var audioLanguage: String { didSet { store(audioLanguage, Keys.audioLanguage) } }
     var subtitleLanguage: String { didSet { store(subtitleLanguage, Keys.subtitleLanguage) } }
@@ -48,13 +68,15 @@ final class AppSettings {
     private let defaults: UserDefaults
 
     private enum Keys {
+        static let appearance = "settings.appearance"
         static let streamingQuality = "settings.streamingQuality"
         static let allowTranscoding = "settings.allowTranscoding"
         static let downloadQuality = "settings.downloadQuality"
         static let deleteWatchedEpisodes = "settings.deleteWatchedEpisodes"
         static let smartDownloadCount = "settings.smartDownloadCount"
         static let autoplayNextEpisode = "settings.autoplayNextEpisode"
-        static let showSkipIntro = "settings.showSkipIntro"
+        // Named for when it only covered intros; renaming it would reset everyone's choice.
+        static let showSkipButtons = "settings.showSkipIntro"
         static let audioLanguage = "settings.audioLanguage"
         static let subtitleLanguage = "settings.subtitleLanguage"
         static let subtitleMode = "settings.subtitleMode"
@@ -64,13 +86,14 @@ final class AppSettings {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        appearance = defaults.string(forKey: Keys.appearance).flatMap(Appearance.init) ?? .system
         streamingQuality = defaults.string(forKey: Keys.streamingQuality).flatMap(VideoQuality.init) ?? .original
         allowTranscoding = defaults.object(forKey: Keys.allowTranscoding) as? Bool ?? true
         downloadQuality = defaults.string(forKey: Keys.downloadQuality).flatMap(VideoQuality.init) ?? .fullHD
         deleteWatchedEpisodes = defaults.object(forKey: Keys.deleteWatchedEpisodes) as? Bool ?? true
         smartDownloadCount = defaults.object(forKey: Keys.smartDownloadCount) as? Int ?? 10
         autoplayNextEpisode = defaults.object(forKey: Keys.autoplayNextEpisode) as? Bool ?? true
-        showSkipIntro = defaults.object(forKey: Keys.showSkipIntro) as? Bool ?? true
+        showSkipButtons = defaults.object(forKey: Keys.showSkipButtons) as? Bool ?? true
         audioLanguage = defaults.string(forKey: Keys.audioLanguage) ?? ""
         subtitleLanguage = defaults.string(forKey: Keys.subtitleLanguage) ?? "eng"
         subtitleMode = defaults.string(forKey: Keys.subtitleMode).flatMap(SubtitleMode.init) ?? .forcedOnly

@@ -1,3 +1,4 @@
+#if !os(tvOS)
 import XCTest
 
 /// Drives the app against the local test server: signs in, browses with the A–Z index, plays a
@@ -8,7 +9,7 @@ import XCTest
 /// address comes from `VINNYFIN_TEST_SERVER` (pass `TEST_RUNNER_VINNYFIN_TEST_SERVER` to
 /// xcodebuild) and defaults to http://localhost:8096.
 final class VinnyfinUITests: XCTestCase {
-    private let timeout: TimeInterval = 30
+    private let timeout = uiTimeout
 
     override func setUp() {
         continueAfterFailure = false
@@ -28,7 +29,7 @@ final class VinnyfinUITests: XCTestCase {
     private func launchSignedIn() -> XCUIApplication {
         let app = XCUIApplication()
         app.launch()
-        signInIfNeeded(app)
+        signInIfNeeded(app, server: server, username: "viewer")
         return app
     }
 
@@ -147,40 +148,5 @@ final class VinnyfinUITests: XCTestCase {
         let three = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count >= 3"), object: downloaded)
         XCTAssertEqual(XCTWaiter.wait(for: [three], timeout: 60), .completed, "Smart downloads didn't fetch three episodes")
     }
-
-    @MainActor
-    private func signInIfNeeded(_ app: XCUIApplication) {
-        let connect = app.buttons["welcome.connect"]
-        if connect.waitForExistence(timeout: 5) { connect.tap() }
-        let host = app.textFields["login.host"]
-        guard host.waitForExistence(timeout: 5) else { return }
-        host.tap()
-        // A full address in the host field is split into protocol, host, port and path, and
-        // Return walks the fields: host, port, path, username, password, then signs in.
-        host.typeText(server + "\n")
-        type("\n", into: app.textFields["login.port"])
-        type("\n", into: app.textFields["login.path"])
-        let username = app.textFields["login.username"]
-        type(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20) + "viewer\n", into: username)
-        // A user without a password: typing one would raise the system's Save Password sheet.
-        type("\n", into: app.secureTextFields["login.password"])
-    }
-
-    /// Types once `field` has the keyboard focus that Return moved to it.
-    @MainActor
-    private func type(_ text: String, into field: XCUIElement) {
-        let focused = NSPredicate(format: "hasKeyboardFocus == true")
-        let expectation = XCTNSPredicateExpectation(predicate: focused, object: field)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed, "\(field) never took focus")
-        field.typeText(text)
-    }
-
-    /// Taps once the element is there and enabled; buttons wait on loading, and a tap before
-    /// then does nothing.
-    @MainActor
-    private func tap(_ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertTrue(element.waitForExistence(timeout: timeout), "\(element) never appeared", file: file, line: line)
-        XCTAssertTrue(element.wait(for: \.isEnabled, toEqual: true, timeout: timeout), "\(element) never became enabled", file: file, line: line)
-        element.tap()
-    }
 }
+#endif

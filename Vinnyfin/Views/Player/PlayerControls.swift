@@ -2,7 +2,8 @@ import AetherEngine
 import SwiftUI
 
 /// The player's controls over the picture: close and title along the top, transport in the
-/// middle, the timeline and track menus along the bottom.
+/// middle, the timeline and track menus along the bottom. Below the fold of an iPhone Duo
+/// standing half open they sit under the picture instead, with the show's episodes.
 struct PlayerControls: View {
     let model: PlayerModel
     @Binding var scrubPosition: Double?
@@ -15,6 +16,7 @@ struct PlayerControls: View {
     let onInteraction: () -> Void
     /// Nil when Picture in Picture isn't possible right now.
     let pictureInPicture: (() -> Void)?
+    var isBelowFold = false
     #if os(tvOS)
     /// The controls the remote moves between. Moving counts as using them, so they stay up.
     private enum Control: Hashable {
@@ -26,6 +28,25 @@ struct PlayerControls: View {
     #endif
 
     var body: some View {
+        Group {
+            #if os(iOS)
+            if isBelowFold { belowFold } else { overPicture }
+            #else
+            overPicture
+            #endif
+        }
+        .foregroundStyle(.white)
+        #if os(tvOS)
+        .defaultFocus($focusedControl, .timeline)
+        .onChange(of: focusedControl) { onInteraction() }
+        // Back to the button that opened a panel once it closes.
+        .onChange(of: panel) { closed, opened in
+            if opened == nil, let closed { focusedControl = .panel(closed) }
+        }
+        #endif
+    }
+
+    private var overPicture: some View {
         ZStack {
             // Dark enough behind the timeline to read it over a bright picture.
             LinearGradient(stops: [
@@ -49,16 +70,25 @@ struct PlayerControls: View {
             .padding(.horizontal, Metrics.playerInset)
             .padding(.vertical, 12)
         }
-        .foregroundStyle(.white)
-        #if os(tvOS)
-        .defaultFocus($focusedControl, .timeline)
-        .onChange(of: focusedControl) { onInteraction() }
-        // Back to the button that opened a panel once it closes.
-        .onChange(of: panel) { closed, opened in
-            if opened == nil, let closed { focusedControl = .panel(closed) }
-        }
-        #endif
     }
+
+    #if os(iOS)
+    private var belowFold: some View {
+        VStack(spacing: 16) {
+            VStack(spacing: 12) {
+                topBar
+                bottomBar
+                transport
+            }
+            .padding(.horizontal, Metrics.playerInset)
+            if let item = model.item, item.isEpisode {
+                FoldEpisodes(model: model, playing: item)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 16)
+    }
+    #endif
 
     // MARK: Top
 
@@ -97,6 +127,10 @@ struct PlayerControls: View {
                 .accessibilityLabel("Picture in Picture")
             }
             #endif
+            #if os(iOS)
+            // Last, where it shows by itself as the phone turns.
+            RotateButton(onUse: onInteraction)
+            #endif
         }
     }
 
@@ -104,13 +138,15 @@ struct PlayerControls: View {
 
     #if !os(tvOS)
     private var transport: some View {
-        HStack(spacing: 44) {
-            transportButton("gobackward.10", label: "Back 10 Seconds", size: 30) { model.skip(by: -PlayerModel.skipInterval) }
-            transportButton(playPauseSymbol, label: model.isPlaying ? "Pause" : "Play", size: 44, showsProgress: isWaiting) {
+        // Smaller below the fold, where it shares the half screen with the episodes.
+        let scale: CGFloat = isBelowFold ? 0.75 : 1
+        return HStack(spacing: 44 * scale) {
+            transportButton("gobackward.10", label: "Back 10 Seconds", size: 30 * scale) { model.skip(by: -PlayerModel.skipInterval) }
+            transportButton(playPauseSymbol, label: model.isPlaying ? "Pause" : "Play", size: 44 * scale, showsProgress: isWaiting) {
                 model.togglePlayPause()
             }
             .accessibilityIdentifier("player.playPause")
-            transportButton("goforward.10", label: "Forward 10 Seconds", size: 30) { model.skip(by: PlayerModel.skipInterval) }
+            transportButton("goforward.10", label: "Forward 10 Seconds", size: 30 * scale) { model.skip(by: PlayerModel.skipInterval) }
         }
     }
 
@@ -178,7 +214,7 @@ struct PlayerControls: View {
                 Spacer()
                 if let next = model.nextEpisode {
                     Button {
-                        Task { await model.playNextEpisode() }
+                        Task { await model.play(next) }
                     } label: {
                         Label("Next Episode", systemImage: "forward.end.fill")
                             .labelStyle(.iconOnly)

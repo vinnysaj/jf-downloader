@@ -36,6 +36,7 @@ nonisolated struct TransferTag: Equatable, Sendable {
     var rangeHeader: String? {
         range.map { "bytes=\($0.lowerBound)-\($0.upperBound - 1)" }
     }
+
 }
 
 /// A parsed `Content-Range: bytes 0-99/1234` header, as a half-open range.
@@ -144,8 +145,9 @@ nonisolated extension DownloadJob {
             }
             let sent = contentRange.range
             let requestedEnd = min(requested.upperBound, total)
-            // The body is exactly the range the response names, which lies within the request.
-            if sent.lowerBound >= requested.lowerBound, sent.upperBound <= requestedEnd, stagedSize == sent.count64 {
+            // The body is exactly the range the response names, which starts within the request;
+            // a server can send more than was asked, up to the whole file for a one-byte probe.
+            if sent.lowerBound >= requested.lowerBound, sent.lowerBound < requestedEnd, stagedSize == sent.count64 {
                 return .chunk(sent, total: total)
             }
             // The system's download daemon lost the connection partway, asked for the rest itself
@@ -178,35 +180,54 @@ nonisolated extension DownloadJob {
         }
     }
 
+    /// A single byte: enough for the server to say how big the file is and that ranges work,
+    /// without downloading any of it alongside the file in hand.
+    static let probeRange: Range<Int64> = 0..<1
+
+    /// The active jobs in the order they download: oldest first.
+    static func queue(_ jobs: [DownloadJob]) -> [UUID] {
+        jobs.filter { $0.status == .active && !$0.isTransferComplete }.sorted { $0.createdAt < $1.createdAt }.map(\.id)
+    }
+
+    /// Neither the server nor the listing has said how big the file is, so its chunks wait for
+    /// the answer to a probe.
+    var needsProbe: Bool { rangeSupport == .unknown && sizeHint == nil }
+
     /// The transfers to start, given the ones already running for this job.
     /// Each element is a byte range, or nil for one whole-file request.
     func nextRequests(running: [TransferTag], limit: Int) -> [Range<Int64>?] {
         guard status == .active, limit > 0 else { return [] }
+        let size: Int64
         switch rangeSupport {
         case .unknown:
-            // One request until the first answer shows whether ranges work and how big the file is.
-            return running.isEmpty ? [0..<chunkSize] : []
+            // Chunks from the listed size, which the first answer confirms (Jellyfin takes ranges);
+            // without one, a probe first.
+            guard let sizeHint else { return running.isEmpty ? [Self.probeRange] : [] }
+            size = sizeHint
         case .unsupported:
             return running.isEmpty ? [nil] : []
         case .supported:
             guard let totalBytes else { return [] }
-            var claimed = running.compactMap(\.range)
-            var requests: [Range<Int64>?] = []
-            while requests.count < limit, let gap = completed.firstGap(in: 0..<totalBytes, excluding: claimed) {
-                let range = gap.lowerBound..<min(gap.upperBound, gap.lowerBound + chunkSize)
-                requests.append(range)
-                claimed.append(range)
-            }
-            return requests
+            size = totalBytes
         }
+        var claimed = running.compactMap(\.range)
+        var requests: [Range<Int64>?] = []
+        while requests.count < limit, let gap = completed.firstGap(in: 0..<size, excluding: claimed) {
+            let range = gap.lowerBound..<min(gap.upperBound, gap.lowerBound + chunkSize)
+            requests.append(range)
+            claimed.append(range)
+        }
+        return requests
     }
 
-    mutating func recordSuccess() {
+    /// A transfer came through. Chunks grow back after cuts when it was a whole chunk; a probe
+    /// or a file's last few bytes say nothing about the link.
+    mutating func recordSuccess(growingChunks: Bool = true) {
         networkFailures = 0
         serverFailures = 0
         lastError = nil
         retryAt = nil
-        chunkSize = min(Self.maximumChunkSize, chunkSize + chunkSize / 4)
+        if growingChunks { chunkSize = min(Self.maximumChunkSize, chunkSize + chunkSize / 4) }
     }
 
     /// A transfer lost its connection after `receivedBytes`. Chunks halve, so on a link that

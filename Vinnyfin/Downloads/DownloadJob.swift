@@ -36,6 +36,9 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     /// The item as it was when queued, with only the chosen version, for browsing and playing
     /// it offline.
     var item: JellyfinItem?
+    /// The server's marked intro, credits and the like, for skipping them offline. Nil until
+    /// fetched, and for downloads queued before segments were kept.
+    var segments: [MediaSegment]?
 
     var status = Status.active
     var rangeSupport = RangeSupport.unknown

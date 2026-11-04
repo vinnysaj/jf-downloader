@@ -40,7 +40,7 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            .searchable(text: $text, prompt: "Movies, shows and episodes")
+            .alwaysSearchable(text: $text, prompt: "Movies, shows and episodes")
             .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
             .task(id: text) { await search() }
         }

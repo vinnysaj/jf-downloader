@@ -5,6 +5,7 @@ struct RootView: View {
     @Environment(PlayerCoordinator.self) private var player
     @Environment(AppMessages.self) private var messages
     @Environment(WatchHistory.self) private var history
+    @Environment(AppSettings.self) private var settings
     @Environment(\.scenePhase) private var scenePhase
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
@@ -33,6 +34,7 @@ struct RootView: View {
             }
         }
         .environment(\.session, session)
+        .preferredColorScheme(settings.appearance.colorScheme)
         #if os(macOS)
         .onChange(of: player.pendingWindowRequest) { _, request in
             guard let request else { return }
@@ -63,11 +65,21 @@ struct RootView: View {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             player.playFile(url)
         }
-        .onChange(of: scenePhase, initial: true) { _, phase in
-            guard phase == .active else { return }
-            if let session { Task { await history.syncPending(using: session.client, userId: session.userId) } }
+        // Runs while the app is open, and stops as it goes to the background.
+        .task(id: scenePhase == .background) {
             #if !os(tvOS)
-            smartDownloads.refreshSoon()
+            downloads.sceneChanged(isInBackground: scenePhase == .background)
+            #endif
+            guard scenePhase != .background else {
+                #if os(iOS) || os(visionOS)
+                await SmartDownloads.scheduleBackgroundRefresh()
+                #endif
+                return
+            }
+            // What was watched offline goes to the server first, so smart downloads plan from it.
+            if let session { await history.syncPending(using: session.client, userId: session.userId) }
+            #if !os(tvOS)
+            await smartDownloads.refreshWhileOpen()
             #endif
         }
         #if !os(tvOS)
@@ -118,5 +130,16 @@ struct MainTabs: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+    }
+}
+
+extension AppSettings.Appearance {
+    /// Nil follows the system.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
     }
 }

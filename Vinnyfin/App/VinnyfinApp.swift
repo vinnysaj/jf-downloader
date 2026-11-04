@@ -17,9 +17,12 @@ struct VinnyfinApp: App {
         WindowGroup {
             RootView()
                 .withAppEnvironment(appDelegate)
-                // Dark like a theater: artwork and video read best against it.
-                .preferredColorScheme(.dark)
         }
+        #if os(iOS) || os(visionOS)
+        .backgroundTask(.appRefresh(SmartDownloads.backgroundRefreshIdentifier)) { [smartDownloads = appDelegate.smartDownloads] in
+            await smartDownloads.refreshInBackground()
+        }
+        #endif
         #if os(macOS)
         .defaultSize(width: 1200, height: 800)
         .commands {
@@ -121,6 +124,12 @@ extension AppDelegate: UIApplicationDelegate {
         launched()
         return true
     }
+
+    #if os(iOS)
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        PlayerOrientationLock.allowed
+    }
+    #endif
 
     #if !os(tvOS)
     func application(
