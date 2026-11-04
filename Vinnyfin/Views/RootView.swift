@@ -105,14 +105,12 @@ struct MainTabs: View {
             }
             Tab("Movies", systemImage: "film", value: .movies) {
                 NavigationStack {
-                    LibraryGridView(kind: .movies)
-                        .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
+                    LibraryGridView(list: .movies).itemDestinations()
                 }
             }
             Tab("Shows", systemImage: "tv", value: .shows) {
                 NavigationStack {
-                    LibraryGridView(kind: .shows)
-                        .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
+                    LibraryGridView(list: .shows).itemDestinations()
                 }
             }
             #if os(tvOS)

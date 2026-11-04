@@ -7,7 +7,7 @@ struct AlphabetIndex: View {
     let onSelect: (String) -> Void
 
     @State private var active: String?
-    private let letters = LibraryIndex<JellyfinItem>.alphabet
+    private let letters = LibraryIndex.alphabet
 
     var body: some View {
         #if os(tvOS)

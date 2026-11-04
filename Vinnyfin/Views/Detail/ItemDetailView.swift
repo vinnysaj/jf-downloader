@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Where a title in a list leads: a show's page, or a movie's or episode's.
+/// Where a title in a list leads: a show's page, a collection's titles, or a movie's or episode's page.
 struct ItemDestination: View {
     let item: JellyfinItem
 
@@ -9,9 +9,19 @@ struct ItemDestination: View {
             SeriesView(series: item)
         } else if item.isSeason, let seriesId = item.seriesId {
             SeriesView(series: JellyfinItem(id: seriesId, name: item.seriesName ?? item.name, type: "Series"), initialSeasonId: item.id)
+        } else if item.isCollection {
+            LibraryGridView(list: .collection(item))
         } else {
             ItemDetailView(item: item)
         }
+    }
+}
+
+extension View {
+    /// Where the titles and lists in a navigation stack lead.
+    func itemDestinations() -> some View {
+        navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
+            .navigationDestination(for: BrowseList.self) { LibraryGridView(list: $0) }
     }
 }
 
@@ -51,7 +61,7 @@ struct ItemDetailView: View {
                     if sources.count > 1 { versions }
                     if let people = detail?.people { CastShelf(people: people) }
                     if !similar.isEmpty {
-                        Shelf(title: "More Like This", items: similar, cardWidth: Metrics.posterWidth) { other in
+                        Shelf(title: "More Like This", seeAll: .moreLike(shown), items: similar, cardWidth: Metrics.posterWidth) { other in
                             NavigationLink(value: other) { PosterCard(item: other) }
                                 .buttonStyle(.artwork)
                         }
@@ -116,16 +126,16 @@ struct ItemDetailView: View {
         do {
             detail = try await session.client.item(id: item.id, userId: session.userId)
             loadError = nil
-        } catch is CancellationError {
-            return
         } catch {
+            guard !error.isCancellation else { return }
             loadError = "Couldn't load the details: \(error.localizedDescription)"
         }
         do {
-            similar = try await session.client.similar(to: item.isEpisode ? (item.seriesId ?? item.id) : item.id, userId: session.userId)
+            similar = try await session.client.similar(to: item.titleId, userId: session.userId)
         } catch {
-            // More Like This is extra; the page is complete without it.
+            guard !error.isCancellation else { return }
             similar = []
+            loadError = loadError ?? "Couldn't load titles like this one: \(error.localizedDescription)"
         }
     }
 }

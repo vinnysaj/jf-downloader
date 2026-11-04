@@ -1,125 +1,63 @@
 import SwiftUI
 
-/// What to watch next: a featured banner, then shelves of what's in progress, what's new and
-/// what's like what was watched.
+/// What to watch next, and everything else to find: a featured banner, what's in progress and
+/// new, then a long run of rows from what was watched and liked, the best and newest, collections
+/// and every genre. Each row's title opens all of its titles.
 struct HomeView: View {
     var openDownloads: () -> Void = {}
 
     @Environment(\.session) private var session
     @Environment(AccountStore.self) private var accounts
-    @State private var path: [JellyfinItem] = []
-    @State private var resume: [JellyfinItem] = []
-    @State private var nextUp: [JellyfinItem] = []
-    @State private var latestMovies: [JellyfinItem] = []
-    @State private var latestShows: [JellyfinItem] = []
-    @State private var recentlyWatched: [JellyfinItem] = []
-    @State private var favorites: [JellyfinItem] = []
-    @State private var becauseYouWatched: (title: String, items: [JellyfinItem])?
-    @State private var isLoading = true
-    @State private var loadError: String?
-    /// The server turned the saved sign-in away (HTTP 401), so retrying won't help.
-    @State private var sessionEnded = false
+    @State private var path = NavigationPath()
+    @State private var feed = HomeFeed()
     #if os(iOS) || os(visionOS)
     @State private var showingSettings = false
     #endif
-
-    private var featured: [JellyfinItem] {
-        var seen = Set<String>()
-        let candidates = resume.filter { !$0.isEpisode } + latestMovies + latestShows
-        return candidates.filter { $0.backdropImageTags?.isEmpty == false && seen.insert($0.id).inserted }.prefix(6).map(\.self)
-    }
 
     var body: some View {
         NavigationStack(path: $path) {
             EdgeToEdgeScrollView {
                 LazyVStack(alignment: .leading, spacing: 34) {
-                    if !featured.isEmpty {
-                        HeroBanner(items: featured) { path.append($0) }
+                    if !feed.featured.isEmpty {
+                        HeroBanner(items: feed.featured) { path.append($0) }
                     }
-                    if sessionEnded {
+                    if feed.sessionEnded {
                         sessionEndedNotice
-                    } else if let loadError {
+                    } else if let loadError = feed.loadError {
                         offlineNotice(loadError)
                     }
-                    if !resume.isEmpty {
-                        Shelf(title: "Continue Watching", items: resume, cardWidth: Metrics.landscapeWidth) { item in
-                            inProgressCard(item)
-                        }
-                    }
-                    if !nextUp.isEmpty {
-                        Shelf(title: "Next Up", items: nextUp, cardWidth: Metrics.landscapeWidth) { item in
-                            inProgressCard(item)
-                        }
-                    }
-                    posterShelf("Recently Added Movies", latestMovies)
-                    posterShelf("Recently Added Shows", latestShows)
-                    if let becauseYouWatched {
-                        posterShelf("Because You Watched \(becauseYouWatched.title)", becauseYouWatched.items)
-                    }
-                    posterShelf("Favorites", favorites)
-                    if !recentlyWatched.isEmpty {
-                        Shelf(title: "Recently Watched", items: recentlyWatched, cardWidth: Metrics.landscapeWidth) { item in
-                            NavigationLink(value: item) { LandscapeCard(item: item) }
-                                .buttonStyle(.artwork)
-                        }
+                    ForEach(feed.rows) { row in
+                        HomeRowView(row: row, feed: feed) { path.append($0) }
                     }
                 }
                 .padding(.bottom, Metrics.edge)
             }
             .overlay {
-                if isLoading, resume.isEmpty, latestMovies.isEmpty, latestShows.isEmpty { ProgressView() }
+                if feed.isLoading, feed.rows.isEmpty { ProgressView() }
             }
-            .ignoresSafeArea(edges: featured.isEmpty ? [] : .top)
+            .ignoresSafeArea(edges: feed.featured.isEmpty ? [] : .top)
             // The page color the hero artwork fades into.
             .background(Color.pageBackground.ignoresSafeArea())
             .navigationTitle("Home")
             #if os(tvOS)
-            .toolbarVisibility(featured.isEmpty ? .automatic : .hidden, for: .navigationBar)
+            .toolbarVisibility(feed.featured.isEmpty ? .automatic : .hidden, for: .navigationBar)
             #elseif os(iOS) || os(visionOS)
             // Over the hero the bar keeps only Settings, floating on the artwork; on iPhone Duo
             // it goes in the vertical bar with the rest of the bar's buttons.
-            .navigationBarTitleDisplayMode(featured.isEmpty ? .automatic : .inline)
-            .toolbar(removing: featured.isEmpty ? nil : .title)
-            .toolbarBackgroundVisibility(featured.isEmpty ? .automatic : .hidden, for: .navigationBar)
+            .navigationBarTitleDisplayMode(feed.featured.isEmpty ? .automatic : .inline)
+            .toolbar(removing: feed.featured.isEmpty ? nil : .title)
+            .toolbarBackgroundVisibility(feed.featured.isEmpty ? .automatic : .hidden, for: .navigationBar)
             #if os(iOS)
-            .scrollEdgeEffectHidden(!featured.isEmpty, for: .top)
+            .scrollEdgeEffectHidden(!feed.featured.isEmpty, for: .top)
             #endif
             .toolbar {
                 ToolbarItem(placement: .barTrailing) { settingsButton }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             #endif
-            .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
-            .refreshable { await load() }
+            .itemDestinations()
+            .refreshable { await load(reshuffling: true) }
             .task { await load() }
-        }
-    }
-
-    private func posterShelf(_ title: String, _ items: [JellyfinItem]) -> some View {
-        Group {
-            if !items.isEmpty {
-                Shelf(title: title, items: items, cardWidth: Metrics.posterWidth) { item in
-                    NavigationLink(value: item) { PosterCard(item: item) }
-                        .buttonStyle(.artwork)
-                        .contextMenu { ItemContextMenu(item: item) }
-                }
-            }
-        }
-    }
-
-    /// A card that opens its page when chosen, with Play in its menu.
-    private func inProgressCard(_ item: JellyfinItem) -> some View {
-        NavigationLink(value: item) {
-            LandscapeCard(item: item)
-        }
-        .buttonStyle(.artwork)
-        .contextMenu {
-            ItemContextMenu(item: item)
-            if item.isEpisode, let seriesId = item.seriesId {
-                Button("Go to Show", systemImage: "tv") {
-                    path.append(JellyfinItem(id: seriesId, name: item.seriesName ?? "", type: "Series"))
-                }
-            }
         }
     }
 
@@ -171,65 +109,72 @@ struct HomeView: View {
         .edgePadding()
     }
 
-    private func load() async {
+    private func load(reshuffling: Bool = false) async {
         guard let session else { return }
-        isLoading = true
-        defer { isLoading = false }
-        let client = session.client
-        let userId = session.userId
-        async let resume = client.resumeItems(userId: userId)
-        async let nextUp = client.nextUp(userId: userId)
-        async let movies = client.latest(userId: userId, types: ["Movie"])
-        async let shows = client.latest(userId: userId, types: ["Episode"])
-        async let watched = client.recentlyPlayed(userId: userId)
-        var favoritesQuery = JellyfinClient.ItemQuery(types: ["Movie", "Series"])
-        favoritesQuery.isFavorite = true
-        favoritesQuery.limit = 24
-        async let favorites = client.items(userId: userId, favoritesQuery)
-        do {
-            self.resume = try await resume
-            self.nextUp = try await nextUp
-            self.latestMovies = try await movies
-            self.latestShows = try await shows.map(Self.showFor)
-            self.recentlyWatched = try await watched
-            self.favorites = try await favorites.items
-            loadError = nil
-            sessionEnded = false
-        } catch is CancellationError {
-            return
-        } catch let error as URLError where error.code == .cancelled {
-            return
-        } catch JellyfinError.http(status: 401, _) {
-            sessionEnded = true
-            return
-        } catch {
-            loadError = error.localizedDescription
-            return
+        await feed.load(session: session, reshuffling: reshuffling)
+    }
+}
+
+/// One of Home's rows: its cards once they're in, their shapes until then, or why they couldn't
+/// load. A row with nothing in it isn't there at all.
+private struct HomeRowView: View {
+    let row: HomeRow
+    let feed: HomeFeed
+    let open: (JellyfinItem) -> Void
+
+    var body: some View {
+        Group {
+            if let problem = feed.problems[row.id] {
+                problemRow(problem)
+            } else if let items = feed.items[row.id] {
+                if !items.isEmpty {
+                    Shelf(title: row.list.title, seeAll: row.list, items: items, cardWidth: row.list.style.cardWidth) { item in
+                        card(item)
+                    }
+                }
+            } else {
+                ShelfPlaceholder(title: row.list.title, style: row.list.style)
+            }
         }
-        await loadBecauseYouWatched(client: client, userId: userId)
+        .onAppear { feed.rowAppeared(row.id) }
+        .onDisappear { feed.rowDisappeared(row.id) }
     }
 
-    /// Latest episodes come back grouped by show, but a lone new episode comes back as itself;
-    /// either way the shelf shows the show.
-    private static func showFor(_ item: JellyfinItem) -> JellyfinItem {
-        guard item.isEpisode, let seriesId = item.seriesId else { return item }
-        var show = JellyfinItem(id: seriesId, name: item.seriesName ?? item.name, type: "Series")
-        show.imageTags = item.seriesPrimaryImageTag.map { ["Primary": $0] }
-        show.productionYear = item.productionYear
-        return show
+    @ViewBuilder private func card(_ item: JellyfinItem) -> some View {
+        switch row.list.style {
+        case .poster:
+            NavigationLink(value: item) { PosterCard(item: item) }
+                .buttonStyle(.artwork)
+                .contextMenu { ItemContextMenu(item: item) { feed.replace($0) } }
+        case .landscape:
+            NavigationLink(value: item) { LandscapeCard(item: item) }
+                .buttonStyle(.artwork)
+                .contextMenu {
+                    ItemContextMenu(item: item) { feed.replace($0) }
+                    if item.isEpisode, let seriesId = item.seriesId {
+                        Button("Go to Show", systemImage: "tv") {
+                            open(JellyfinItem(id: seriesId, name: item.seriesName ?? "", type: "Series"))
+                        }
+                    }
+                }
+        }
     }
 
-    private func loadBecauseYouWatched(client: JellyfinClient, userId: String) async {
-        guard let last = recentlyWatched.first else { return }
-        let anchorId = last.isEpisode ? (last.seriesId ?? last.id) : last.id
-        let anchorName = last.isEpisode ? (last.seriesName ?? last.name) : last.name
-        do {
-            let similar = try await client.similar(to: anchorId, userId: userId)
-            becauseYouWatched = similar.isEmpty ? nil : (anchorName, similar)
-        } catch {
-            // An extra shelf; Home is complete without it.
-            becauseYouWatched = nil
+    private func problemRow(_ problem: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(row.list.title)
+                .font(.title3.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+            Label("Couldn't load these: \(problem)", systemImage: "exclamationmark.triangle")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Button("Try Again") { feed.retry(row.id) }
+                .buttonStyle(.platformGlass)
         }
+        .edgePadding()
+        #if os(tvOS)
+        .focusSection()
+        #endif
     }
 }
 

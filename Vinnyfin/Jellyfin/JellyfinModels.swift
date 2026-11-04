@@ -27,6 +27,9 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var collectionType: String?
     var runTimeTicks: Int64?
     var childCount: Int?
+    /// For a genre asked for with its item counts: how many movies and shows have it.
+    var movieCount: Int?
+    var seriesCount: Int?
     var imageTags: [String: String]?
     var backdropImageTags: [String]?
     var parentBackdropItemId: String?
@@ -50,7 +53,8 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
         case seriesName = "SeriesName", seriesId = "SeriesId", seasonId = "SeasonId", seasonName = "SeasonName"
         case parentIndexNumber = "ParentIndexNumber", indexNumber = "IndexNumber"
         case indexNumberEnd = "IndexNumberEnd", collectionType = "CollectionType"
-        case runTimeTicks = "RunTimeTicks", childCount = "ChildCount", imageTags = "ImageTags"
+        case runTimeTicks = "RunTimeTicks", childCount = "ChildCount", movieCount = "MovieCount"
+        case seriesCount = "SeriesCount", imageTags = "ImageTags"
         case backdropImageTags = "BackdropImageTags", parentBackdropItemId = "ParentBackdropItemId"
         case parentBackdropImageTags = "ParentBackdropImageTags", parentLogoItemId = "ParentLogoItemId"
         case parentLogoImageTag = "ParentLogoImageTag", parentThumbItemId = "ParentThumbItemId"
@@ -79,8 +83,9 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var isEpisode: Bool { type == "Episode" }
     var isMovie: Bool { type == "Movie" }
     var isSeason: Bool { type == "Season" }
+    var isCollection: Bool { type == "BoxSet" }
     /// Something with a file of its own to play or download.
-    var isPlayable: Bool { !isSeries && !isSeason && type != "BoxSet" && type != "Folder" && type != "CollectionFolder" }
+    var isPlayable: Bool { !isSeries && !isSeason && !isCollection && type != "Folder" && type != "CollectionFolder" }
 
     var primaryImageTag: String? { imageTags?["Primary"] }
 
@@ -128,8 +133,10 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var isPlayed: Bool { userData?.played == true }
     var isFavorite: Bool { userData?.isFavorite == true }
 
-    /// The name lists sort and index by: Jellyfin's sort name without a leading article.
-    var indexName: String { sortName?.isEmpty == false ? sortName! : name }
+    /// The movie or show it's part of: an episode's show, or itself. Titles like an episode are
+    /// titles like its show.
+    var titleId: String { isEpisode ? (seriesId ?? id) : id }
+    var titleName: String { isEpisode ? (seriesName ?? name) : name }
 
     var premiereYearText: String? {
         productionYear.map(String.init)
@@ -296,6 +303,11 @@ nonisolated struct ItemsPage: Decodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case items = "Items", totalRecordCount = "TotalRecordCount"
+    }
+
+    init(items: [JellyfinItem], totalRecordCount: Int) {
+        self.items = items
+        self.totalRecordCount = totalRecordCount
     }
 
     init(from decoder: any Decoder) throws {

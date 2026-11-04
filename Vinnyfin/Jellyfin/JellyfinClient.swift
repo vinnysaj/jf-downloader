@@ -26,6 +26,13 @@ nonisolated enum JellyfinError: LocalizedError {
     }
 }
 
+nonisolated extension Error {
+    /// The task gave up, or its request was cancelled: nothing to tell anyone about.
+    var isCancellation: Bool {
+        self is CancellationError || (self as? URLError)?.code == .cancelled
+    }
+}
+
 /// The Jellyfin API calls the app makes. Every call authenticates with the
 /// `Authorization: MediaBrowser …` header; media URLs carry the token as `ApiKey`
 /// instead, so a background transfer or the player needs nothing but the URL.
@@ -40,6 +47,9 @@ nonisolated struct JellyfinClient: Sendable {
 
     /// Fields the browsing screens show, asked for on list calls.
     static let listFields = "PrimaryImageAspectRatio,SortName,DateCreated,Genres,Overview,ChildCount"
+    /// No fields beyond those every item comes with, which are all a card shows: long lists
+    /// leave out overviews, the bulk of a list's bytes.
+    static let cardFields = ""
     /// Everything a detail screen shows.
     static let detailFields = "Overview,Genres,People,Taglines,MediaSources,MediaStreams,Chapters,SortName,DateCreated,ChildCount,PrimaryImageAspectRatio"
 
@@ -101,8 +111,10 @@ nonisolated struct JellyfinClient: Sendable {
     /// Collection types that hold movies or episodes. "" stands for a view without one (mixed content).
     static let videoCollectionTypes: Set<String> = ["movies", "tvshows", "homevideos", "musicvideos", "mixed", ""]
 
-    struct ItemQuery: Sendable, Equatable {
+    struct ItemQuery: Sendable, Hashable {
         var types: [String] = ["Movie", "Series"]
+        /// Only these items.
+        var ids: [String] = []
         var parentId: String?
         var searchTerm: String?
         var sortBy = "SortName"
@@ -110,6 +122,9 @@ nonisolated struct JellyfinClient: Sendable {
         var isPlayed: Bool?
         var isFavorite: Bool?
         var genres: [String] = []
+        /// Only titles whose sort name comes before this. The server keeps sort names lowercased,
+        /// without accents or a leading article, and compares them without regard to case.
+        var nameLessThan: String?
         var fields = JellyfinClient.listFields
         var startIndex = 0
         var limit: Int?
@@ -129,12 +144,52 @@ nonisolated struct JellyfinClient: Sendable {
             "startIndex": String(query.startIndex),
         ]
         if let limit = query.limit { parameters["limit"] = String(limit) }
+        if !query.ids.isEmpty { parameters["ids"] = query.ids.joined(separator: ",") }
         if let parentId = query.parentId { parameters["parentId"] = parentId }
         if let term = query.searchTerm, !term.isEmpty { parameters["searchTerm"] = term }
         if let played = query.isPlayed { parameters["isPlayed"] = String(played) }
         if query.isFavorite == true { parameters["isFavorite"] = "true" }
         if !query.genres.isEmpty { parameters["genres"] = query.genres.joined(separator: "|") }
+        if let nameLessThan = query.nameLessThan { parameters["nameLessThan"] = nameLessThan }
         return try await get("Items", query: parameters)
+    }
+
+    /// How many items match, without fetching any.
+    func count(userId: String, _ query: ItemQuery) async throws -> Int {
+        var query = query
+        query.startIndex = 0
+        query.limit = 0
+        return try await items(userId: userId, query).totalRecordCount
+    }
+
+    /// Where a list of items comes from, a page at a time.
+    enum ItemSource: Sendable, Hashable {
+        /// The library, filtered and sorted.
+        case items(ItemQuery)
+        /// What's partway through.
+        case resume
+        /// The next episode of every show in progress.
+        case nextUp
+        /// The titles the server finds most like one, best first.
+        case similar(toItemId: String)
+    }
+
+    func page(of source: ItemSource, userId: String, startIndex: Int, limit: Int) async throws -> ItemsPage {
+        switch source {
+        case .items(var query):
+            query.startIndex = startIndex
+            query.limit = limit
+            return try await items(userId: userId, query)
+        case .resume:
+            return try await resumeItems(userId: userId, startIndex: startIndex, limit: limit)
+        case .nextUp:
+            return try await nextUp(userId: userId, startIndex: startIndex, limit: limit)
+        case .similar(let itemId):
+            // The server ranks similar titles without paging them, so the first page is the list.
+            guard startIndex == 0 else { return ItemsPage(items: [], totalRecordCount: 0) }
+            let items = try await similar(to: itemId, userId: userId, limit: limit)
+            return ItemsPage(items: items, totalRecordCount: items.count)
+        }
     }
 
     /// The item with its media sources. Behind Gelato this is also the call that makes the
@@ -143,43 +198,23 @@ nonisolated struct JellyfinClient: Sendable {
         try await get("Items/\(id)", query: ["userId": userId, "fields": Self.detailFields])
     }
 
-    func resumeItems(userId: String, limit: Int = 20) async throws -> [JellyfinItem] {
-        let page: ItemsPage = try await get("UserItems/Resume", query: [
-            "userId": userId, "limit": String(limit), "mediaTypes": "Video",
+    func resumeItems(userId: String, startIndex: Int = 0, limit: Int = 20) async throws -> ItemsPage {
+        try await get("UserItems/Resume", query: [
+            "userId": userId, "startIndex": String(startIndex), "limit": String(limit), "mediaTypes": "Video",
             "fields": Self.listFields, "enableUserData": "true", "imageTypeLimit": "1",
             "enableImageTypes": "Primary,Backdrop,Thumb,Logo",
         ])
-        return page.items
     }
 
     /// The next episode to watch of every show in progress, or of one show.
-    func nextUp(userId: String, seriesId: String? = nil, limit: Int = 20) async throws -> [JellyfinItem] {
+    func nextUp(userId: String, seriesId: String? = nil, startIndex: Int = 0, limit: Int = 20) async throws -> ItemsPage {
         var query = [
-            "userId": userId, "limit": String(limit), "fields": Self.listFields,
+            "userId": userId, "startIndex": String(startIndex), "limit": String(limit), "fields": Self.listFields,
             "enableUserData": "true", "imageTypeLimit": "1", "enableImageTypes": "Primary,Backdrop,Thumb,Logo",
             "enableResumable": "true", "disableFirstEpisode": "false",
         ]
         if let seriesId { query["seriesId"] = seriesId }
-        let page: ItemsPage = try await get("Shows/NextUp", query: query)
-        return page.items
-    }
-
-    func latest(userId: String, types: [String], limit: Int = 24) async throws -> [JellyfinItem] {
-        try await get("Items/Latest", query: [
-            "userId": userId, "includeItemTypes": types.joined(separator: ","), "limit": String(limit),
-            "fields": Self.listFields, "enableUserData": "true", "groupItems": "true",
-            "imageTypeLimit": "1", "enableImageTypes": "Primary,Backdrop,Thumb,Logo",
-        ])
-    }
-
-    func recentlyPlayed(userId: String, limit: Int = 20) async throws -> [JellyfinItem] {
-        let page: ItemsPage = try await get("Items", query: [
-            "userId": userId, "recursive": "true", "includeItemTypes": "Movie,Episode",
-            "filters": "IsPlayed", "sortBy": "DatePlayed", "sortOrder": "Descending",
-            "limit": String(limit), "fields": Self.listFields, "enableUserData": "true",
-            "imageTypeLimit": "1", "enableImageTypes": "Primary,Backdrop,Thumb,Logo",
-        ])
-        return page.items
+        return try await get("Shows/NextUp", query: query)
     }
 
     func similar(to itemId: String, userId: String, limit: Int = 16) async throws -> [JellyfinItem] {
@@ -189,11 +224,14 @@ nonisolated struct JellyfinClient: Sendable {
         return page.items
     }
 
-    func genres(userId: String, types: [String]) async throws -> [String] {
+    /// The genres of items of `types`, by name; with counts, each says how many movies and
+    /// shows have it.
+    func genres(userId: String, types: [String], withCounts: Bool = false) async throws -> [JellyfinItem] {
         let page: ItemsPage = try await get("Genres", query: [
             "userId": userId, "includeItemTypes": types.joined(separator: ","), "sortBy": "SortName",
+            "fields": withCounts ? "ItemCounts" : "", "enableImages": "false",
         ])
-        return page.items.map(\.name)
+        return page.items
     }
 
     func seasons(seriesId: String, userId: String) async throws -> [JellyfinItem] {
@@ -338,15 +376,15 @@ nonisolated struct JellyfinClient: Sendable {
         return request
     }
 
-    private func get<Response: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> Response {
+    private func get<Response: Decodable & Sendable>(_ path: String, query: [String: String] = [:]) async throws -> Response {
         try await decode(request(for: path, query: query))
     }
 
-    private func post<Response: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> Response {
+    private func post<Response: Decodable & Sendable>(_ path: String, query: [String: String] = [:]) async throws -> Response {
         try await decode(request(for: path, method: "POST", query: query))
     }
 
-    private func post<Response: Decodable>(_ path: String, query: [String: String] = [:], body: some Encodable) async throws -> Response {
+    private func post<Response: Decodable & Sendable>(_ path: String, query: [String: String] = [:], body: some Encodable) async throws -> Response {
         try await decode(request(for: path, method: "POST", query: query, body: body))
     }
 
@@ -365,7 +403,9 @@ nonisolated struct JellyfinClient: Sendable {
         return request
     }
 
-    private func decode<Response: Decodable>(_ request: URLRequest) async throws -> Response {
+    /// Off the caller's actor: decoding a page of a big library on the main actor stalls scrolling.
+    @concurrent
+    private func decode<Response: Decodable & Sendable>(_ request: URLRequest) async throws -> Response {
         let body = try await data(for: request)
         return try JSONDecoder().decode(Response.self, from: body)
     }

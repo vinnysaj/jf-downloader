@@ -47,7 +47,7 @@ struct SeriesView: View {
                     episodeList
                     if let people = detail?.people { CastShelf(people: people) }
                     if !similar.isEmpty {
-                        Shelf(title: "More Like This", items: similar, cardWidth: Metrics.posterWidth) { other in
+                        Shelf(title: "More Like This", seeAll: .moreLike(shown), items: similar, cardWidth: Metrics.posterWidth) { other in
                             NavigationLink(value: other) { PosterCard(item: other) }
                                 .buttonStyle(.artwork)
                         }
@@ -253,21 +253,21 @@ struct SeriesView: View {
             self.detail = try await detail
             let found = try await seasons
             self.seasons = found
-            let next = try await nextUp.first
+            let next = try await nextUp.items.first
             self.nextUp = next
             if seasonId == nil {
                 seasonId = initialSeasonId ?? next?.seasonId ?? found.first { ($0.indexNumber ?? 0) > 0 }?.id ?? found.first?.id
             }
-        } catch is CancellationError {
-            return
         } catch {
+            guard !error.isCancellation else { return }
             loadError = "Couldn't load the show: \(error.localizedDescription)"
         }
         do {
             similar = try await session.client.similar(to: series.id, userId: session.userId)
         } catch {
-            // More Like This is extra; the page is complete without it.
+            guard !error.isCancellation else { return }
             similar = []
+            loadError = loadError ?? "Couldn't load shows like this one: \(error.localizedDescription)"
         }
     }
 
@@ -278,12 +278,8 @@ struct SeriesView: View {
         do {
             episodes = try await session.client.episodes(seriesId: series.id, seasonId: seasonId, userId: session.userId,
                                                          fields: "Overview,PrimaryImageAspectRatio")
-        } catch is CancellationError {
-            return
-        } catch let error as URLError where error.code == .cancelled {
-            return
         } catch {
-            loadError = "Couldn't load the episodes: \(error.localizedDescription)"
+            if !error.isCancellation { loadError = "Couldn't load the episodes: \(error.localizedDescription)" }
         }
     }
 }

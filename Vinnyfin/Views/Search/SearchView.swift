@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// Finds movies, shows and episodes by name as you type.
+/// Finds movies, shows and episodes by name as you type. Each row samples its matches; its title
+/// opens all of them.
 struct SearchView: View {
     @Environment(\.session) private var session
     @State private var text = ""
+    /// What the results on screen were found for.
+    @State private var searched = ""
     @State private var movies: [JellyfinItem] = []
     @State private var shows: [JellyfinItem] = []
     @State private var episodes: [JellyfinItem] = []
@@ -14,10 +17,11 @@ struct SearchView: View {
         NavigationStack {
             EdgeToEdgeScrollView {
                 LazyVStack(alignment: .leading, spacing: 30) {
-                    results("Movies", movies)
-                    results("Shows", shows)
+                    results(list("Movies", types: ["Movie"]), movies)
+                    results(list("Shows", types: ["Series"]), shows)
                     if !episodes.isEmpty {
-                        Shelf(title: "Episodes", items: episodes, cardWidth: Metrics.landscapeWidth) { item in
+                        Shelf(title: "Episodes", seeAll: list("Episodes", types: ["Episode"], style: .landscape),
+                              items: episodes, cardWidth: Metrics.landscapeWidth) { item in
                             NavigationLink(value: item) { LandscapeCard(item: item) }
                                 .buttonStyle(.artwork)
                                 .contextMenu { ItemContextMenu(item: item) }
@@ -40,19 +44,31 @@ struct SearchView: View {
             }
             .navigationTitle("Search")
             .alwaysSearchable(text: $text, prompt: "Movies, shows and episodes")
-            .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
+            .itemDestinations()
             .task(id: text) { await search() }
         }
     }
 
-    @ViewBuilder private func results(_ title: String, _ items: [JellyfinItem]) -> some View {
+    @ViewBuilder private func results(_ list: BrowseList, _ items: [JellyfinItem]) -> some View {
         if !items.isEmpty {
-            Shelf(title: title, items: items, cardWidth: Metrics.posterWidth) { item in
+            Shelf(title: list.title, seeAll: list, items: items, cardWidth: Metrics.posterWidth) { item in
                 NavigationLink(value: item) { PosterCard(item: item) }
                     .buttonStyle(.artwork)
                     .contextMenu { ItemContextMenu(item: item) }
             }
         }
+    }
+
+    /// Every match of one kind, for the row's title to open.
+    private func list(_ title: String, types: [String], style: BrowseList.Style = .poster) -> BrowseList {
+        BrowseList(title: title, source: .items(Self.query(types, term: searched)), style: style)
+    }
+
+    private static func query(_ types: [String], term: String) -> JellyfinClient.ItemQuery {
+        var query = JellyfinClient.ItemQuery(types: types)
+        query.searchTerm = term
+        query.fields = JellyfinClient.cardFields
+        return query
     }
 
     private func search() async {
@@ -73,26 +89,22 @@ struct SearchView: View {
         }
         isSearching = true
         defer { isSearching = false }
-        func query(_ types: [String]) -> JellyfinClient.ItemQuery {
-            var query = JellyfinClient.ItemQuery(types: types)
-            query.searchTerm = term
-            query.limit = 30
+        func page(_ types: [String]) -> JellyfinClient.ItemQuery {
+            var query = Self.query(types, term: term)
+            query.limit = 24
             return query
         }
         do {
-            async let movies = session.client.items(userId: session.userId, query(["Movie"]))
-            async let shows = session.client.items(userId: session.userId, query(["Series"]))
-            async let episodes = session.client.items(userId: session.userId, query(["Episode"]))
+            async let movies = session.client.items(userId: session.userId, page(["Movie"]))
+            async let shows = session.client.items(userId: session.userId, page(["Series"]))
+            async let episodes = session.client.items(userId: session.userId, page(["Episode"]))
             self.movies = try await movies.items
             self.shows = try await shows.items
             self.episodes = try await episodes.items
+            searched = term
             searchError = nil
-        } catch is CancellationError {
-            return
-        } catch let error as URLError where error.code == .cancelled {
-            return
         } catch {
-            searchError = error.localizedDescription
+            if !error.isCancellation { searchError = error.localizedDescription }
         }
     }
 }

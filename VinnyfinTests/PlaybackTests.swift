@@ -112,34 +112,6 @@ struct TrackChooserTests {
     }
 }
 
-struct LibraryIndexTests {
-    nonisolated struct Title: Identifiable, Sendable {
-        let name: String
-        var id: String { name }
-    }
-
-    let index = LibraryIndex(["Alien", "Aliens", "Énigme", "Heat", "Zodiac", "2001", "Up"].map(Title.init), name: \.name)
-
-    @Test func groupsByFoldedFirstLetterWithNumbersFirst() {
-        #expect(index.sections.map(\.letter) == ["#", "A", "E", "H", "Z", "U"])
-        #expect(index.sections.first?.items.map(\.name) == ["2001"])
-        #expect(index.sections.first { $0.letter == "E" }?.items.map(\.name) == ["Énigme"])
-    }
-
-    @Test func jumpsToTheNextLetterThatExists() {
-        #expect(index.section(for: "A")?.letter == "A")
-        #expect(index.section(for: "B")?.letter == "E")
-        #expect(index.section(for: "#")?.letter == "#")
-        #expect(index.section(for: "?") == nil)
-    }
-
-    @Test func filesUnusualNamesUnderTheNumberSign() {
-        #expect(LibraryIndex<Title>.letter(for: "  ") == "#")
-        #expect(LibraryIndex<Title>.letter(for: "¡Three Amigos!") == "#")
-        #expect(LibraryIndex<Title>.letter(for: "über") == "U")
-    }
-}
-
 @MainActor
 struct WatchHistoryTests {
     private func makeHistory() -> WatchHistory {

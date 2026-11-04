@@ -155,17 +155,42 @@ struct LandscapeCard: View {
     }
 }
 
-/// A titled row of cards that scrolls sideways.
+extension BrowseList.Style {
+    var cardWidth: CGFloat { self == .poster ? Metrics.posterWidth : Metrics.landscapeWidth }
+}
+
+/// The shape of a card while its title loads, the size of the card it stands for.
+struct CardPlaceholder: View {
+    let style: BrowseList.Style
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Color.clear
+                .aspectRatio(style == .poster ? 2.0 / 3.0 : 16.0 / 9.0, contentMode: .fit)
+                .background(.quaternary, in: .rect(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("A Title Loading").font(style == .poster ? .caption.weight(.medium) : .subheadline.weight(.medium))
+                Text("2000").font(style == .poster ? .caption2 : .caption)
+            }
+            .redacted(reason: .placeholder)
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Loading")
+    }
+}
+
+/// A titled row of cards that scrolls sideways. With a list to see all of, its title leads
+/// there; on Apple TV, where focus moves along the cards, a card at the row's end does.
 struct Shelf<Item: Identifiable, Card: View>: View {
     let title: String
+    var seeAll: BrowseList?
     let items: [Item]
     let cardWidth: CGFloat
     @ViewBuilder let card: (Item) -> Card
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.title3.weight(.semibold))
+            header
                 .edgePadding()
                 .accessibilityAddTraits(.isHeader)
             ScrollView(.horizontal) {
@@ -173,6 +198,14 @@ struct Shelf<Item: Identifiable, Card: View>: View {
                     ForEach(items) { item in
                         card(item).frame(width: cardWidth)
                     }
+                    #if os(tvOS)
+                    if let seeAll {
+                        NavigationLink(value: seeAll) { SeeAllCard(style: seeAll.style) }
+                            .buttonStyle(.artwork)
+                            .frame(width: cardWidth)
+                            .accessibilityIdentifier("shelf.\(title).all")
+                    }
+                    #endif
                 }
                 .scrollTargetLayout()
                 .edgePadding()
@@ -188,7 +221,71 @@ struct Shelf<Item: Identifiable, Card: View>: View {
             #endif
         }
     }
+
+    @ViewBuilder private var header: some View {
+        let text = Text(title).font(.title3.weight(.semibold))
+        #if os(tvOS)
+        text
+        #else
+        if let seeAll {
+            NavigationLink(value: seeAll) {
+                HStack(spacing: 4) {
+                    text
+                    Image(systemName: "chevron.right")
+                        .font(.title3.weight(.semibold))
+                        .imageScale(.small)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows all of them")
+            .accessibilityIdentifier("shelf.\(title)")
+        } else {
+            text
+        }
+        #endif
+    }
 }
+
+/// A row's title and the shapes of its cards while they load, as tall as the row will be.
+struct ShelfPlaceholder: View {
+    private struct Slot: Identifiable {
+        let id: Int
+    }
+
+    let title: String
+    let style: BrowseList.Style
+
+    var body: some View {
+        Shelf(title: title, items: (0..<8).map(Slot.init), cardWidth: style.cardWidth) { _ in
+            CardPlaceholder(style: style)
+        }
+        .scrollDisabled(true)
+    }
+}
+
+#if os(tvOS)
+/// The end of an Apple TV row: opens the whole list.
+private struct SeeAllCard: View {
+    let style: BrowseList.Style
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Color.clear
+                .aspectRatio(style == .poster ? 2.0 / 3.0 : 16.0 / 9.0, contentMode: .fit)
+                .background(.quaternary, in: .rect(cornerRadius: 10))
+                .overlay {
+                    Image(systemName: "chevron.right.circle.fill")
+                        .font(.system(size: 56))
+                        .foregroundStyle(.secondary)
+                }
+            Text("See All").font(.caption.weight(.medium))
+        }
+        .contentShape(.rect)
+    }
+}
+#endif
 
 /// What a version offers: 4K, HDR, Dolby Vision, Atmos, surround.
 struct MediaBadges: View {
