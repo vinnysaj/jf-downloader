@@ -108,7 +108,7 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored private var startedReporting = false
     @ObservationIgnored private var isClosed = false
 
-    private static let log = Logger(subsystem: "com.vinnysaj.vinnyfin", category: "player")
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "player")
     static let skipInterval: Double = 10
 
     init(

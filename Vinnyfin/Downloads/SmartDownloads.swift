@@ -18,7 +18,7 @@ final class SmartDownloads {
     static let openInterval: Duration = .seconds(15 * 60)
     static let backgroundInterval: TimeInterval = 2 * 60 * 60
     /// Listed under BGTaskSchedulerPermittedIdentifiers in Info.plist.
-    static let backgroundRefreshIdentifier = "com.vinnysaj.vinnyfin.smart-downloads"
+    static let backgroundRefreshIdentifier = "net.vinnysaj.vinnyfin.smart-downloads"
 
     nonisolated struct Rule: Codable, Identifiable, Equatable, Sendable {
         let seriesId: String
@@ -42,7 +42,7 @@ final class SmartDownloads {
     /// The players open, by their model's id.
     @ObservationIgnored private var openPlayers: Set<UUID> = []
 
-    private static let log = Logger(subsystem: "com.vinnysaj.vinnyfin", category: "smart-downloads")
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "smart-downloads")
 
     init(accounts: AccountStore, downloads: DownloadManager, settings: AppSettings, history: WatchHistory,
          file: URL = URL.applicationSupportDirectory.appending(path: "SmartDownloads.json")) {

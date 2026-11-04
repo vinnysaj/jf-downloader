@@ -31,18 +31,18 @@ struct SeriesView: View {
     private var shown: JellyfinItem { detail ?? series }
 
     var body: some View {
-        ScrollView {
+        EdgeToEdgeScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 DetailHero(item: shown) { actions }
                 VStack(alignment: .leading, spacing: 24) {
                     if let loadError {
                         Label(loadError, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
-                            .padding(.horizontal, Metrics.edge)
+                            .edgePadding()
                         Button("Try Again", systemImage: "arrow.clockwise") { Task { await load() } }
-                            .padding(.horizontal, Metrics.edge)
+                            .edgePadding()
                     }
-                    OverviewText(item: shown).padding(.horizontal, Metrics.edge)
+                    OverviewText(item: shown).edgePadding()
                     seasonPicker
                     episodeList
                     if let people = detail?.people { CastShelf(people: people) }
@@ -57,7 +57,6 @@ struct SeriesView: View {
             }
         }
         .ignoresSafeArea(edges: .top)
-        .scrollsEdgeToEdge()
         // The page color the hero artwork fades into.
         .background(Color.pageBackground.ignoresSafeArea())
         .navigationTitle(series.name)
@@ -202,7 +201,7 @@ struct SeriesView: View {
                         .accessibilityIdentifier("season.\(season.name)")
                     }
                 }
-                .padding(.horizontal, Metrics.edge)
+                .edgePadding()
                 #if os(tvOS)
                 .padding(.vertical, 20)
                 #endif
@@ -233,7 +232,7 @@ struct SeriesView: View {
                     }
                 }
             }
-            .padding(.horizontal, Metrics.edge)
+            .edgePadding()
             #if os(tvOS)
             .focusSection()
             #endif

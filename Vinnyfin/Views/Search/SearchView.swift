@@ -12,7 +12,7 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
+            EdgeToEdgeScrollView {
                 LazyVStack(alignment: .leading, spacing: 30) {
                     results("Movies", movies)
                     results("Shows", shows)
@@ -26,7 +26,6 @@ struct SearchView: View {
                 }
                 .padding(.vertical, Metrics.edge)
             }
-            .scrollsEdgeToEdge()
             .overlay {
                 if let searchError {
                     ContentUnavailableView("Search Failed", systemImage: "exclamationmark.magnifyingglass", description: Text(searchError))

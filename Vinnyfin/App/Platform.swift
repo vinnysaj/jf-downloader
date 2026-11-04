@@ -142,17 +142,6 @@ extension PrimitiveButtonStyle where Self == ArtworkButtonStyle {
 }
 
 extension View {
-    /// Scrolling screens run the whole width, so artwork and rows go past the TV's overscan
-    /// margin, an iPhone's landscape insets and under iPhone Duo's vertical bar, which floats
-    /// over them like any bar.
-    func scrollsEdgeToEdge() -> some View {
-        #if os(macOS)
-        self
-        #else
-        ignoresSafeArea(edges: .horizontal)
-        #endif
-    }
-
     /// A search field that's always on screen. On iPhone, a search tab's field placed
     /// automatically never appears: neither in the navigation bar nor in the tab bar.
     func alwaysSearchable(text: Binding<String>, prompt: LocalizedStringKey) -> some View {
@@ -161,5 +150,52 @@ extension View {
         #else
         searchable(text: text, prompt: prompt)
         #endif
+    }
+}
+
+/// A vertical scroll view whose artwork and rows run the whole width: past Apple TV's overscan
+/// margin, and elsewhere under the bars at the sides, like iPad's sidebar and iPhone Duo's
+/// vertical bar. Text and controls keep clear of those bars with `edgePadding()`, and the view
+/// itself takes the safe area's size, so what's laid over it stays clear of them too. Apple TV's
+/// overscan margin isn't a bar: there the content and what's laid over it keep to `Metrics.edge`.
+struct EdgeToEdgeScrollView<Content: View>: View {
+    @ViewBuilder let content: Content
+    #if !os(tvOS)
+    @State private var insets = EdgeInsets()
+    #endif
+
+    var body: some View {
+        #if os(tvOS)
+        ScrollView { content }
+            .ignoresSafeArea(edges: .horizontal)
+        #else
+        Color.clear.overlay {
+            ScrollView { content.environment(\.sideBarInsets, insets) }
+                .ignoresSafeArea(edges: .horizontal)
+                .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: { insets = $0 }
+        }
+        #endif
+    }
+}
+
+extension EnvironmentValues {
+    /// How far the bars at the sides reach over an `EdgeToEdgeScrollView`'s content.
+    @Entry var sideBarInsets = EdgeInsets()
+}
+
+extension View {
+    /// The margin at the screen's sides, `Metrics.edge`, inside any bars there.
+    func edgePadding() -> some View {
+        modifier(EdgePadding())
+    }
+}
+
+private struct EdgePadding: ViewModifier {
+    @Environment(\.sideBarInsets) private var insets
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.leading, Metrics.edge + insets.leading)
+            .padding(.trailing, Metrics.edge + insets.trailing)
     }
 }

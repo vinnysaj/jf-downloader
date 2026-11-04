@@ -26,7 +26,7 @@ final class PlayerOrientationLock {
     @ObservationIgnored private var observer: (any NSObjectProtocol)?
     @ObservationIgnored private var announcing: Task<Void, Never>?
 
-    private static let log = Logger(subsystem: "com.vinnysaj.vinnyfin", category: "player")
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "player")
 
     func start() {
         guard UIDevice.current.userInterfaceIdiom == .phone, observer == nil else { return }

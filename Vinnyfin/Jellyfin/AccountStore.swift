@@ -108,7 +108,7 @@ final class AccountStore {
 }
 
 nonisolated enum Keychain {
-    private static let service = "com.vinnysaj.vinnyfin.token"
+    private static let service = "net.vinnysaj.vinnyfin.token"
 
     static func token(for account: String) -> String? {
         var query = baseQuery(account)

@@ -42,7 +42,7 @@ struct DetailHero<Actions: View>: View {
                 actions()
                     .padding(.top, 4)
             }
-            .padding(.horizontal, Metrics.edge)
+            .edgePadding()
             .padding(.bottom, 8)
             .frame(maxWidth: 900, alignment: .leading)
         }

@@ -27,10 +27,10 @@ final class ScreenshotTests: XCTestCase {
         try await snapHome(app)
         try await startDownloads(app)
         try await snapShow(app, name: "02-show")
-        tap(app.buttons["Movies"].firstMatch)
+        tap(tab("Movies", in: app))
         tap(app.buttons["poster.The Quiet Meridian"])
         try await snap("03-movie", once: app.buttons["detail.play"])
-        tap(app.buttons["Search"].firstMatch)
+        tap(tab("Search", in: app))
         let field = app.searchFields.firstMatch
         tap(field)
         field.typeText("the\n")
@@ -45,7 +45,7 @@ final class ScreenshotTests: XCTestCase {
         try await snapHome(app)
         try await startDownloads(app)
         try await snapShow(app, name: "02-show")
-        tap(app.buttons["Movies"].firstMatch)
+        tap(tab("Movies", in: app))
         try await snap("03-movies", once: app.buttons["poster.The Quiet Meridian"])
         tap(app.buttons["poster.The Quiet Meridian"])
         try await snapPlayer(app, name: "04-player")
@@ -68,7 +68,7 @@ final class ScreenshotTests: XCTestCase {
         let app = launch()
         try await snapHome(app)
         try await snapShow(app, name: "02-show")
-        tap(app.buttons["Movies"].firstMatch)
+        tap(tab("Movies", in: app))
         tap(app.buttons["poster.The Quiet Meridian"])
         try await snapPlayer(app, name: "03-player")
     }
@@ -78,7 +78,7 @@ final class ScreenshotTests: XCTestCase {
     func testDuoLaptop() async throws {
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = launch()
-        tap(app.buttons["Shows"].firstMatch)
+        tap(tab("Shows", in: app))
         tap(app.buttons["poster.Port Ellery"])
         tap(app.buttons["episode.3"])
         XCTAssertTrue(app.buttons["fold.episode.3"].waitForExistence(timeout: uiTimeout), "The player didn't split at the fold")
@@ -135,7 +135,7 @@ final class ScreenshotTests: XCTestCase {
         let app = launch()
         try await snapHome(app)
         try await snapShow(app, name: "02-show")
-        tap(app.buttons["Movies"].firstMatch)
+        tap(tab("Movies", in: app))
         tap(app.buttons["poster.The Quiet Meridian"])
         try await snapPlayer(app, name: "03-player")
     }
@@ -163,7 +163,7 @@ final class ScreenshotTests: XCTestCase {
     #if !os(tvOS)
     @MainActor
     private func snapShow(_ app: XCUIApplication, name: String) async throws {
-        tap(app.buttons["Shows"].firstMatch)
+        tap(tab("Shows", in: app))
         tap(app.buttons["poster.Port Ellery"])
         try await snap(name, once: app.buttons["episode.3"])
     }
@@ -186,23 +186,36 @@ final class ScreenshotTests: XCTestCase {
     /// A film and a smart download for a show, so the Downloads tab has something in it by the end.
     @MainActor
     private func startDownloads(_ app: XCUIApplication) async throws {
-        tap(app.buttons["Movies"].firstMatch)
+        tap(tab("Movies", in: app))
         tap(app.buttons["poster.Saltwater Hymns"])
         tap(app.buttons["detail.download"])
-        tap(app.buttons["Shows"].firstMatch)
+        tap(tab("Shows", in: app))
         tap(app.buttons["poster.Starfall Station"])
         tap(app.descendants(matching: .any)["series.smartDownload"].firstMatch)
         tap(app.buttons["Next 3 Episodes"])
         // Back to each tab's first screen.
-        for tab in ["Movies", "Shows"] {
-            tap(app.buttons[tab].firstMatch)
-            tap(app.buttons[tab].firstMatch)
+        for name in ["Movies", "Shows"] {
+            tap(tab(name, in: app))
+            tap(tab(name, in: app))
         }
+    }
+
+    /// A tab: a button in the tab bar, or a row in iPad's sidebar. Not just any button by that
+    /// name, which can be the back button to the tab's first screen.
+    @MainActor
+    private func tab(_ name: String, in app: XCUIApplication) -> XCUIElement {
+        let places = [app.tabBars.buttons[name], app.cells[name]]
+        let deadline = Date.now.addingTimeInterval(uiTimeout)
+        while Date.now < deadline {
+            if let tab = places.first(where: \.exists) { return tab }
+            RunLoop.current.run(until: .now.addingTimeInterval(0.25))
+        }
+        return places[0]
     }
 
     @MainActor
     private func snapDownloads(_ app: XCUIApplication, name: String) async throws {
-        tap(app.buttons["Downloads"].firstMatch)
+        tap(tab("Downloads", in: app))
         let downloaded = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'downloaded.'"))
         let four = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count >= 4"), object: downloaded)
         XCTAssertEqual(XCTWaiter.wait(for: [four], timeout: 120), .completed, "The downloads didn't finish")

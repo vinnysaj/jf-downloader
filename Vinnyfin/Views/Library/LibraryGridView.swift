@@ -78,14 +78,13 @@ struct LibraryGridView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
+            EdgeToEdgeScrollView {
                 grid
-                    .padding(.horizontal, Metrics.edge)
-                    .padding(.trailing, showsIndex ? indexWidth + indexInset : 0)
+                    .edgePadding()
+                    .padding(Self.indexEdge, showsIndex ? indexWidth + indexInset : 0)
                     .padding(.bottom, Metrics.edge)
             }
-            .scrollsEdgeToEdge()
-            .overlay(alignment: .trailing) {
+            .overlay(alignment: Self.indexEdge == .leading ? .leading : .trailing) {
                 if showsIndex {
                     let index = index
                     AlphabetIndex(available: Set(index.sections.map(\.letter))) { letter in
@@ -101,7 +100,7 @@ struct LibraryGridView: View {
                     }
                     .padding(.vertical, 12)
                     .padding(.top, indexTopInset)
-                    .padding(.trailing, indexInset)
+                    .padding(Self.indexEdge, indexInset)
                 }
             }
             .overlay {
@@ -154,7 +153,17 @@ struct LibraryGridView: View {
         #endif
     }
 
-    /// The index's distance from the trailing edge: on Apple TV, inside the overscan margin.
+    /// The side the index has its column on. Apple TV's is the leading one, where focus goes
+    /// from the grid toward the sidebar.
+    private static var indexEdge: Edge.Set {
+        #if os(tvOS)
+        .leading
+        #else
+        .trailing
+        #endif
+    }
+
+    /// The index's distance from the screen's edge: on Apple TV, inside the overscan margin.
     private var indexInset: CGFloat {
         #if os(tvOS)
         Metrics.edge

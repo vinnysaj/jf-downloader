@@ -295,7 +295,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.uitests;
 				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				TEST_TARGET_NAME = Vinnyfin;
@@ -384,7 +384,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.tests;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vinnyfin.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vinnyfin";
 			};
 			name = Release;
@@ -478,7 +478,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.tests;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vinnyfin.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vinnyfin";
 			};
 			name = Debug;
@@ -498,7 +498,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.vinnysaj.vinnyfin.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.uitests;
 				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				TEST_TARGET_NAME = Vinnyfin;

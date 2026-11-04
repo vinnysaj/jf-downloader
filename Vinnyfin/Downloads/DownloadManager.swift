@@ -27,7 +27,7 @@ import OSLog
 /// itself from the session after a relaunch.
 @Observable
 final class DownloadManager {
-    static let sessionIdentifier = "com.vinnysaj.vinnyfin.transfers"
+    static let sessionIdentifier = "net.vinnysaj.vinnyfin.transfers"
     /// Transfers handed to the system at once, across the queue; the session runs
     /// `connectionsPerHost` of them at a time. The queue is deep because transfers created while
     /// the app is open start right away, while ones created on a background wake may be held
@@ -39,8 +39,8 @@ final class DownloadManager {
     /// this long is replaced. The daemon retries a dropped transfer by itself, doubling its wait
     /// each time up to many minutes; a new transfer starts over without that wait.
     static let stallLimit: TimeInterval = 45
-    /// Visible in Console.app (subsystem com.vinnysaj.vinnyfin) for following a download.
-    private static let log = Logger(subsystem: "com.vinnysaj.vinnyfin", category: "downloads")
+    /// Visible in Console.app (subsystem net.vinnysaj.vinnyfin) for following a download.
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "downloads")
 
     private(set) var jobs: [DownloadJob] = []
     /// Bytes on disk plus bytes running transfers have received, by job. Refreshed by `trackProgress()`.
@@ -136,7 +136,7 @@ final class DownloadManager {
             let reachable = path.status == .satisfied
             Task { @MainActor in self?.networkChanged(reachable: reachable) }
         }
-        pathMonitor.start(queue: DispatchQueue(label: "com.vinnysaj.vinnyfin.path"))
+        pathMonitor.start(queue: DispatchQueue(label: "net.vinnysaj.vinnyfin.path"))
 
         for task in await session.allTasks {
             guard let download = task as? URLSessionDownloadTask,

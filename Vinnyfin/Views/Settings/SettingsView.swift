@@ -16,14 +16,14 @@ struct SettingsView: View {
                 account
                 #if !os(visionOS)
                 Section {
-                    Picker("Appearance", selection: $settings.appearance) {
+                    SettingPicker("Appearance", selection: $settings.appearance) {
                         ForEach(AppSettings.Appearance.allCases) { Text($0.label).tag($0) }
                     }
                     .accessibilityIdentifier("settings.appearance")
                 }
                 #endif
                 Section {
-                    Picker("Streaming Quality", selection: $settings.streamingQuality) {
+                    SettingPicker("Streaming Quality", selection: $settings.streamingQuality) {
                         ForEach(VideoQuality.allCases) { Text($0.label).tag($0) }
                     }
                     .accessibilityIdentifier("settings.streamingQuality")
@@ -39,17 +39,17 @@ struct SettingsView: View {
                     Text("Plays the best version up to this quality, untouched. When every version is bigger, the server scales one down, unless transcoding is off. Skip buttons appear for the intros, recaps, previews and credits your server has marked, downloads included.")
                 }
                 Section("Audio and Subtitles") {
-                    Picker("Audio Language", selection: $settings.audioLanguage) {
+                    SettingPicker("Audio Language", selection: $settings.audioLanguage) {
                         Text("The Video's Default").tag("")
                         ForEach(AppSettings.languages, id: \.code) { Text($0.name).tag($0.code) }
                     }
-                    Picker("Show Subtitles", selection: $settings.subtitleMode) {
+                    SettingPicker("Show Subtitles", selection: $settings.subtitleMode) {
                         ForEach(AppSettings.SubtitleMode.allCases) { Text($0.label).tag($0) }
                     }
-                    Picker("Subtitle Language", selection: $settings.subtitleLanguage) {
+                    SettingPicker("Subtitle Language", selection: $settings.subtitleLanguage) {
                         ForEach(AppSettings.languages, id: \.code) { Text($0.name).tag($0.code) }
                     }
-                    Picker("Subtitle Size", selection: $settings.subtitleScale) {
+                    SettingPicker("Subtitle Size", selection: $settings.subtitleScale) {
                         Text("Small").tag(0.8)
                         Text("Standard").tag(1.0)
                         Text("Large").tag(1.25)
@@ -58,7 +58,7 @@ struct SettingsView: View {
                 }
                 #if !os(tvOS)
                 Section {
-                    Picker("Download Quality", selection: $settings.downloadQuality) {
+                    SettingPicker("Download Quality", selection: $settings.downloadQuality) {
                         ForEach(VideoQuality.allCases) { Text($0.label).tag($0) }
                     }
                     .accessibilityIdentifier("settings.downloadQuality")
@@ -126,6 +126,33 @@ struct SettingsView: View {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
         return "\(version) (\(build))"
+    }
+}
+
+/// A setting chosen from a list. On Apple TV it's the setting's name and a button with the
+/// choice made, which opens a menu of them: a form's picker there lists every choice inline,
+/// with a language list running on for screens.
+struct SettingPicker<Value: Hashable, Choices: View>: View {
+    let title: LocalizedStringKey
+    @Binding var selection: Value
+    @ViewBuilder let choices: Choices
+
+    init(_ title: LocalizedStringKey, selection: Binding<Value>, @ViewBuilder choices: () -> Choices) {
+        self.title = title
+        _selection = selection
+        self.choices = choices()
+    }
+
+    var body: some View {
+        #if os(tvOS)
+        LabeledContent(title) {
+            Picker(title, selection: $selection) { choices }
+                .pickerStyle(.menu)
+                .labelsHidden()
+        }
+        #else
+        Picker(title, selection: $selection) { choices }
+        #endif
     }
 }
 

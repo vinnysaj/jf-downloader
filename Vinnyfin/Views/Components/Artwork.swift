@@ -107,7 +107,7 @@ struct Artwork: View {
 enum ImageCache {
     /// A disk cache for artwork, so lists come back instantly and scroll without refetching.
     static func configure() {
-        var configuration = ImagePipeline.Configuration.withDataCache(name: "com.vinnysaj.vinnyfin.images", sizeLimit: 800 << 20)
+        var configuration = ImagePipeline.Configuration.withDataCache(name: "net.vinnysaj.vinnyfin.images", sizeLimit: 800 << 20)
         configuration.isProgressiveDecodingEnabled = false
         ImagePipeline.shared = ImagePipeline(configuration: configuration)
     }

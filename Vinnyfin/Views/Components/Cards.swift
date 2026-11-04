@@ -166,7 +166,7 @@ struct Shelf<Item: Identifiable, Card: View>: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.title3.weight(.semibold))
-                .padding(.horizontal, Metrics.edge)
+                .edgePadding()
                 .accessibilityAddTraits(.isHeader)
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: Metrics.gridSpacing) {
@@ -175,7 +175,7 @@ struct Shelf<Item: Identifiable, Card: View>: View {
                     }
                 }
                 .scrollTargetLayout()
-                .padding(.horizontal, Metrics.edge)
+                .edgePadding()
                 #if os(tvOS)
                 .padding(.vertical, 30)
                 #endif

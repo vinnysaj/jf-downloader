@@ -1,7 +1,8 @@
 #!/bin/bash
-# Makes vinnyfin's App Store screenshots and marketing images in AppStore/Output:
-#   App Store/   framed and captioned, at the sizes App Store Connect takes, one folder per slot
-#   Raw/         the captures they're made from, one folder per device
+# Makes vinnyfin's App Store screenshots and marketing images in AppStore/Screenshots, framed and
+# captioned at the sizes App Store Connect takes, one folder per slot. What it takes to make them
+# stays out of the repo, in AppStore/Output: the captures in Raw/, one folder per device, the
+# showcase server, the builds and the test results.
 # The app browses a showcase Jellyfin server this runs in Docker, with a library of original
 # titles drawn by Showcase.swift, so nothing on screen belongs to anyone else. The simulators are
 # its own, created on first use, with the status bar at 9:41 and full signal and battery.
@@ -185,5 +186,5 @@ fi
 # MARK: Framing
 
 say "Framing"
-swift "$here/Compose.swift" "$raw" "$output/App Store" "$server/media" "${sets[@]}"
-say "Done: $output/App Store"
+swift "$here/Compose.swift" "$raw" "$here/Screenshots" "$server/media" "${sets[@]}"
+say "Done: $here/Screenshots"

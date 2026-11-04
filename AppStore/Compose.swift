@@ -307,6 +307,12 @@ var written = 0
 for slot in slots where sets.contains(slot.set) {
     let folder = rawFolder.appending(path: slot.raw)
     guard let shots = try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { continue }
+    // The slot's images from before go, so one no longer taken doesn't stay behind.
+    let destination = outputFolder.appending(path: slot.folder)
+    for old in (try? fileManager.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)) ?? []
+    where old.pathExtension == "png" && (slot.prefix.isEmpty || old.lastPathComponent.hasPrefix("\(slot.prefix)-")) {
+        try fileManager.removeItem(at: old)
+    }
     for shot in shots.filter({ $0.pathExtension == "png" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
         let name = shot.deletingPathExtension().lastPathComponent
         guard let picture = image(at: shot) else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: shot.path]) }
@@ -314,7 +320,7 @@ for slot in slots where sets.contains(slot.set) {
             throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "No caption for \(slot.raw)/\(name)"])
         }
         let file = (slot.prefix.isEmpty ? name : "\(slot.prefix)-\(name)") + ".png"
-        try frame(picture, caption: caption, slot: slot, to: outputFolder.appending(path: slot.folder).appending(path: file))
+        try frame(picture, caption: caption, slot: slot, to: destination.appending(path: file))
         written += 1
     }
 }

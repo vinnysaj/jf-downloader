@@ -31,7 +31,7 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ScrollView {
+            EdgeToEdgeScrollView {
                 LazyVStack(alignment: .leading, spacing: 34) {
                     if !featured.isEmpty {
                         HeroBanner(items: featured) { path.append($0) }
@@ -70,7 +70,6 @@ struct HomeView: View {
                 if isLoading, resume.isEmpty, latestMovies.isEmpty, latestShows.isEmpty { ProgressView() }
             }
             .ignoresSafeArea(edges: featured.isEmpty ? [] : .top)
-            .scrollsEdgeToEdge()
             // The page color the hero artwork fades into.
             .background(Color.pageBackground.ignoresSafeArea())
             .navigationTitle("Home")
@@ -150,7 +149,7 @@ struct HomeView: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 16))
-        .padding(.horizontal, Metrics.edge)
+        .edgePadding()
     }
 
     private func offlineNotice(_ message: String) -> some View {
@@ -169,7 +168,7 @@ struct HomeView: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 16))
-        .padding(.horizontal, Metrics.edge)
+        .edgePadding()
     }
 
     private func load() async {
@@ -303,7 +302,7 @@ private struct HeroBanner: View {
                     .accessibilityHidden(true)
                 }
             }
-            .padding(.horizontal, Metrics.edge)
+            .edgePadding()
             .padding(.bottom, 6)
         }
         .animation(.easeInOut(duration: 0.6), value: index)

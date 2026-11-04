@@ -43,7 +43,7 @@
 	</dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.vinnysaj.vinnyfin.smart-downloads</string>
+		<string>net.vinnysaj.vinnyfin.smart-downloads</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
