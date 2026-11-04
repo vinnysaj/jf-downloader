@@ -79,6 +79,8 @@ struct LibraryGridView: View {
     @State private var jumping: Task<Void, Never>?
     @FocusState private var focusedIndex: Int?
     #if os(tvOS)
+    /// Opened from another screen rather than as a tab's first.
+    @Environment(\.isPresented) private var isPresented
     @State private var pendingFocus: Int?
     /// Titles a row of the grid holds, once its width is known.
     @State private var columnCount: Int?
@@ -134,10 +136,14 @@ struct LibraryGridView: View {
         }
         .overlay { status }
         .overlay(alignment: .bottom) { pageProblem }
-        .navigationTitle(list.title)
+        .screenTitle(list.title)
+        #if !os(tvOS)
         .toolbar {
-            if query != nil { sortAndFilter }
+            if query != nil {
+                ToolbarItem(placement: .primaryAction) { sortAndFilter }
+            }
         }
+        #endif
         .task(id: source) { await load(startingOver: true) }
         .task { await loadFilters() }
         .refreshable { await load(startingOver: false) }
@@ -226,19 +232,23 @@ struct LibraryGridView: View {
     /// screen.
     @ViewBuilder private func grid(_ items: PagedItems, count: Int) -> some View {
         #if os(tvOS)
-        // Each focus move has SwiftUI stand in for every title not yet made in the move's
-        // direction, as far as the grid goes: across a whole big library, seconds a move. So
-        // the grid holds a window of rows around focus, which follows it.
-        LazyVGrid(columns: fixedColumns, spacing: Metrics.gridSpacing) {
-            if let window = window(count: count) {
-                ForEach(window, id: \.self) { cell(items, $0) }
+        VStack(alignment: .leading, spacing: Metrics.gridSpacing) {
+            // The head goes with the list's first rows.
+            if windowStart == 0 { head }
+            // Each focus move has SwiftUI stand in for every title not yet made in the move's
+            // direction, as far as the grid goes: across a whole big library, seconds a move.
+            // So the grid holds a window of rows around focus, which follows it.
+            LazyVGrid(columns: fixedColumns, spacing: Metrics.gridSpacing) {
+                if let window = window(count: count) {
+                    ForEach(window, id: \.self) { cell(items, $0) }
+                }
             }
+            .frame(maxWidth: .infinity)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                columnCount = max(1, Int((width + Metrics.gridSpacing) / (list.style.cardWidth + Metrics.gridSpacing)))
+            }
+            .scrollTargetLayout()
         }
-        .frame(maxWidth: .infinity)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-            columnCount = max(1, Int((width + Metrics.gridSpacing) / (list.style.cardWidth + Metrics.gridSpacing)))
-        }
-        .scrollTargetLayout()
         #else
         LazyVGrid(columns: columns, alignment: .leading, spacing: Metrics.gridSpacing) {
             ForEach(0..<count, id: \.self) { cell(items, $0) }
@@ -248,6 +258,20 @@ struct LibraryGridView: View {
     }
 
     #if os(tvOS)
+    /// Above the grid on Apple TV, where the bar stays over what scrolls under it: the title of a
+    /// list opened from another screen, and Sort and Filter.
+    @ViewBuilder private var head: some View {
+        if isPresented || query != nil {
+            HStack {
+                if isPresented {
+                    Text(list.title).font(.title2.bold())
+                }
+                Spacer()
+                if query != nil { sortAndFilter }
+            }
+        }
+    }
+
     /// Rows the window holds.
     private static let windowRows = 60
     /// Rows from either end of the window at which it moves to put focus back in its middle.
@@ -310,41 +334,39 @@ struct LibraryGridView: View {
         #endif
     }
 
-    @ToolbarContentBuilder private var sortAndFilter: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Picker("Sort By", selection: sortSelection) {
-                    ForEach(Sort.allCases) { Text($0.label).tag(Optional($0)) }
-                }
-                if base?.isPlayed == nil, base?.isFavorite == nil {
-                    Picker("Show", selection: filterSelection) {
-                        ForEach(Filter.allCases) { Text($0.label).tag($0) }
-                    }
-                }
-                if !genres.isEmpty {
-                    Picker("Genre", selection: genreSelection) {
-                        Text("All Genres").tag(String?.none)
-                        ForEach(genres, id: \.self) { Text($0).tag(Optional($0)) }
-                    }
-                    .pickerStyle(.menu)
-                }
-                if libraries.count > 1 {
-                    Picker("Library", selection: librarySelection) {
-                        Text("All Libraries").tag(String?.none)
-                        ForEach(libraries) { Text($0.name).tag(Optional($0.id)) }
-                    }
-                    .pickerStyle(.menu)
-                }
-                if let filterProblem {
-                    Section("Genres and libraries couldn't load: \(filterProblem)") {
-                        Button("Try Again", systemImage: "arrow.clockwise") { Task { await loadFilters() } }
-                    }
-                }
-            } label: {
-                Label("Sort and Filter", systemImage: "line.3.horizontal.decrease")
+    private var sortAndFilter: some View {
+        Menu {
+            Picker("Sort By", selection: sortSelection) {
+                ForEach(Sort.allCases) { Text($0.label).tag(Optional($0)) }
             }
-            .accessibilityIdentifier("library.sortFilter")
+            if base?.isPlayed == nil, base?.isFavorite == nil {
+                Picker("Show", selection: filterSelection) {
+                    ForEach(Filter.allCases) { Text($0.label).tag($0) }
+                }
+            }
+            if !genres.isEmpty {
+                Picker("Genre", selection: genreSelection) {
+                    Text("All Genres").tag(String?.none)
+                    ForEach(genres, id: \.self) { Text($0).tag(Optional($0)) }
+                }
+                .pickerStyle(.menu)
+            }
+            if libraries.count > 1 {
+                Picker("Library", selection: librarySelection) {
+                    Text("All Libraries").tag(String?.none)
+                    ForEach(libraries) { Text($0.name).tag(Optional($0.id)) }
+                }
+                .pickerStyle(.menu)
+            }
+            if let filterProblem {
+                Section("Genres and libraries couldn't load: \(filterProblem)") {
+                    Button("Try Again", systemImage: "arrow.clockwise") { Task { await loadFilters() } }
+                }
+            }
+        } label: {
+            Label("Sort and Filter", systemImage: "line.3.horizontal.decrease")
         }
+        .accessibilityIdentifier("library.sortFilter")
     }
 
     private var sortSelection: Binding<Sort?> {

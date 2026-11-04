@@ -78,7 +78,7 @@ struct ItemDetailView: View {
         .ignoresSafeArea(edges: .top)
         // The page color the hero artwork fades into.
         .background(Color.pageBackground.ignoresSafeArea())
-        .navigationTitle(shown.name)
+        .screenTitle(shown.name)
         .inlineNavigationTitle()
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
         .task(id: item.id) { await load() }

@@ -36,7 +36,7 @@ struct HomeView: View {
             .ignoresSafeArea(edges: feed.featured.isEmpty ? [] : .top)
             // The page color the hero artwork fades into.
             .background(Color.pageBackground.ignoresSafeArea())
-            .navigationTitle("Home")
+            .screenTitle("Home")
             #if os(tvOS)
             .toolbarVisibility(feed.featured.isEmpty ? .automatic : .hidden, for: .navigationBar)
             #elseif os(iOS) || os(visionOS)

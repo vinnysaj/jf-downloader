@@ -69,7 +69,7 @@ struct SeriesView: View {
         .ignoresSafeArea(edges: .top)
         // The page color the hero artwork fades into.
         .background(Color.pageBackground.ignoresSafeArea())
-        .navigationTitle(series.name)
+        .screenTitle(series.name)
         .inlineNavigationTitle()
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
         #if !os(tvOS)

@@ -42,7 +42,7 @@ struct SearchView: View {
                     ContentUnavailableView.search(text: text)
                 }
             }
-            .navigationTitle("Search")
+            .screenTitle("Search")
             .alwaysSearchable(text: $text, prompt: "Movies, shows and episodes")
             .itemDestinations()
             .task(id: text) { await search() }
