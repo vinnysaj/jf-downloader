@@ -65,11 +65,13 @@ struct RootView: View {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             player.playFile(url)
         }
+        #if !os(tvOS)
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            downloads.sceneChanged(isActive: phase == .active, isInBackground: phase == .background)
+        }
+        #endif
         // Runs while the app is open, and stops as it goes to the background.
         .task(id: scenePhase == .background) {
-            #if !os(tvOS)
-            downloads.sceneChanged(isInBackground: scenePhase == .background)
-            #endif
             guard scenePhase != .background else {
                 #if os(iOS) || os(visionOS)
                 await SmartDownloads.scheduleBackgroundRefresh()

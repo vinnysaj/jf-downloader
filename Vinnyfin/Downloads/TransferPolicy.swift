@@ -193,6 +193,20 @@ nonisolated extension DownloadJob {
     /// the answer to a probe.
     var needsProbe: Bool { rangeSupport == .unknown && sizeHint == nil }
 
+    /// The transfers to start, up to `budget` of them, oldest file first. Only the first file's
+    /// unless `queuingAhead`, when the files after it get theirs too; then the files after one of
+    /// unknown size wait for its answer, so the server isn't asked about every file at once.
+    static func plan(_ jobs: [DownloadJob], running: [TransferTag], budget: Int, queuingAhead: Bool) -> [TransferTag] {
+        var tags: [TransferTag] = []
+        for id in queue(jobs) {
+            guard tags.count < budget, let job = jobs.first(where: { $0.id == id }) else { break }
+            let ranges = job.nextRequests(running: running.filter { $0.jobId == id }, limit: budget - tags.count)
+            tags += ranges.map { TransferTag(jobId: id, range: $0) }
+            if !queuingAhead || job.needsProbe { break }
+        }
+        return tags
+    }
+
     /// The transfers to start, given the ones already running for this job.
     /// Each element is a byte range, or nil for one whole-file request.
     func nextRequests(running: [TransferTag], limit: Int) -> [Range<Int64>?] {

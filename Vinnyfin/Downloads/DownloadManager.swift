@@ -13,26 +13,28 @@ import OSLog
 /// one chunk, whatever the server sends. (Gelato's streams come through Jellyfin without ETag or
 /// Last-Modified, which the system needs for its own resume data.)
 ///
-/// Files download oldest first, and none while something plays. Their chunks are planned from
-/// the size Jellyfin lists and handed to the session in that order while the app is open, so the
-/// session works through the queue by itself with the app suspended or terminated: transfers
-/// created on a background wake start only when the system sees fit, and the system wakes the
-/// app only once every transfer is done. The session runs `connectionsPerHost` transfers at a
-/// time and doesn't promise an order (nor honors task priority), but takes them about as they
-/// were created, so the server serves one file at a time except as one file hands over to the
-/// next. A file whose size isn't listed is asked for one byte first, and the files after it wait
-/// for the answer.
+/// Files download one at a time, oldest first, and none while something plays. Their chunks are
+/// planned from the size Jellyfin lists. While the app is in front of the user, the session holds
+/// the first file's chunks only, and the next file's go in once it's done. The session runs
+/// `connectionsPerHost` transfers at a time in no promised order (nor by task priority), so
+/// that's what keeps the server on one file. As the app leaves the screen, while it's still in
+/// the foreground to the system, the next files' chunks go in too: the session then works
+/// through the queue by itself with the app suspended or terminated, which it wouldn't promptly
+/// otherwise, since transfers created on a background wake start only when the system sees fit,
+/// and the system wakes the app only once every transfer is done. Back in front, the chunks of
+/// later files that haven't started come out again. A file whose size isn't listed is asked for
+/// one byte first, and the files after it wait for the answer.
 ///
 /// Every transfer's purpose is in its `taskDescription` (`TransferTag`), so the queue rebuilds
 /// itself from the session after a relaunch.
 @Observable
 final class DownloadManager {
     static let sessionIdentifier = "net.vinnysaj.vinnyfin.transfers"
-    /// Transfers handed to the system at once, across the queue; the session runs
-    /// `connectionsPerHost` of them at a time. The queue is deep because transfers created while
-    /// the app is open start right away, while ones created on a background wake may be held
-    /// back by the system (until Wi-Fi or charging, say): queued from the foreground, a whole
-    /// file or several keep downloading after the phone goes in a pocket.
+    /// Transfers handed to the system at once; the session runs `connectionsPerHost` of them at
+    /// a time. The queue is deep because transfers created while the app is open start right
+    /// away, while ones created on a background wake may be held back by the system (until Wi-Fi
+    /// or charging, say): queued from the foreground, a whole file or several keep downloading
+    /// after the phone goes in a pocket.
     static let maxQueuedTransfers = 128
     static let connectionsPerHost = 4
     /// While the app is open, a transfer the session should be running that moved no bytes for
@@ -84,6 +86,8 @@ final class DownloadManager {
     /// The open players, by their model's id, and whether each is playing.
     @ObservationIgnored private var players: [UUID: Bool] = [:]
     @ObservationIgnored private var isInBackground = false
+    /// The app has left the screen, so the session holds the next files' chunks as well.
+    @ObservationIgnored private var isQueuingAhead = false
     /// Resume data of ranges cancelled for a playback, by tag, to carry on from afterwards.
     @ObservationIgnored private var heldResumeData: [String: Data] = [:]
 
@@ -252,9 +256,37 @@ final class DownloadManager {
         updateHold()
     }
 
-    func sceneChanged(isInBackground: Bool) {
+    func sceneChanged(isActive: Bool, isInBackground: Bool) {
         self.isInBackground = isInBackground
         updateHold()
+        // A Mac app isn't suspended: it carries on with the queue itself.
+        #if !os(macOS)
+        guard isActive == isQueuingAhead else { return }
+        isQueuingAhead = !isActive
+        if isQueuingAhead { pump() } else { takeBackQueuedAhead() }
+        #endif
+    }
+
+    /// Back to one file in the session: the later files' transfers that haven't started come out.
+    /// Ones under way finish.
+    private func takeBackQueuedAhead() {
+        let first = DownloadJob.queue(jobs).first
+        var count = 0
+        for (identifier, transfer) in running
+        where transfer.tag.jobId != first && transfer.task.response == nil && transfer.task.countOfBytesReceived == 0 {
+            cancelledByUs.insert(identifier)
+            running[identifier] = nil
+            if transfer.tag.range == nil {
+                transfer.task.cancel(byProducingResumeData: { [weak self] data in
+                    guard let data else { return }
+                    Task { @MainActor in self?.keepResumeData(data, of: transfer.tag.jobId) }
+                })
+            } else {
+                transfer.task.cancel()
+            }
+            count += 1
+        }
+        Self.log.info("Took back \(count) transfers queued ahead")
     }
 
     /// Downloads leave the connection and the server to the picture while something plays, and
@@ -440,8 +472,7 @@ final class DownloadManager {
 
     // MARK: Scheduling
 
-    /// Publishes finished files, then hands the session as many transfers as the budget allows,
-    /// oldest file first.
+    /// Publishes finished files, then hands the session what `DownloadJob.plan` gives.
     private func pump() {
         guard hasAdoptedTransfers, let client = accounts.client else { return }
         var published = false
@@ -453,17 +484,11 @@ final class DownloadManager {
         let queue = DownloadJob.queue(jobs)
         if downloadingJobId != queue.first { downloadingJobId = queue.first }
         guard !isPausedForPlayback else { return }
-        var budget = Self.maxQueuedTransfers - running.count
-        for id in queue {
-            guard budget > 0, let index = index(of: id) else { break }
-            let tags = running.values.filter { $0.tag.jobId == id }.map(\.tag)
-            for range in jobs[index].nextRequests(running: tags, limit: budget) {
-                start(TransferTag(jobId: id, range: range), for: jobs[index], client: client)
-                budget -= 1
-            }
-            // The files after one of unknown size wait for its answer, so the server isn't asked
-            // about every file at once.
-            if jobs[index].needsProbe { break }
+        let plan = DownloadJob.plan(jobs, running: running.values.map(\.tag),
+                                    budget: Self.maxQueuedTransfers - running.count, queuingAhead: isQueuingAhead)
+        for tag in plan {
+            guard let job = jobs.first(where: { $0.id == tag.jobId }) else { continue }
+            start(tag, for: job, client: client)
         }
     }
 
