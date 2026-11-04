@@ -79,7 +79,7 @@ struct ItemContextMenu: View {
                 messages.show("The server lists no versions of \(item.name) to download.")
                 return
             }
-            downloads.enqueue(detail, source: source)
+            downloads.enqueue(detail, source: source, startedByUser: true)
         } catch {
             messages.show("Couldn't start the download of \(item.name): \(error.localizedDescription)")
         }

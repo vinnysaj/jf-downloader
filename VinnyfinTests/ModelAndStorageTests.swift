@@ -190,5 +190,29 @@ struct StorageTests {
         #expect(loaded[0].completed == job.completed)
         #expect(loaded[0].destinationStem == job.destinationStem)
     }
+
+    /// A relaunch reads back what the session was handed, to wait for those transfers' reports.
+    @Test func savesAndLoadsTheTransfersHandedOut() throws {
+        let storage = try makeStorage()
+        #expect(try storage.loadHandedOut().isEmpty)
+        let jobId = UUID()
+        let tags: Set = [TransferTag(jobId: jobId, range: 0..<100), TransferTag(jobId: jobId, range: nil)]
+        try storage.saveHandedOut(tags)
+        #expect(Set(try storage.loadHandedOut()) == tags)
+    }
+
+    /// Ranges held for a playback keep their resume data across a kill until released.
+    @Test func keepsHeldResumeDataUntilRemoved() throws {
+        let storage = try makeStorage()
+        let first = TransferTag(jobId: UUID(), range: 0..<100)
+        let second = TransferTag(jobId: UUID(), range: 100..<200)
+        try storage.saveHeld(Data([1]), for: first)
+        try storage.saveHeld(Data([2]), for: second)
+        #expect(try storage.loadHeld() == [first: Data([1]), second: Data([2])])
+        try storage.removeHeld { $0.jobId == first.jobId }
+        #expect(try storage.loadHeld() == [second: Data([2])])
+        try storage.removeHeld { _ in true }
+        #expect(try storage.loadHeld().isEmpty)
+    }
 }
 #endif

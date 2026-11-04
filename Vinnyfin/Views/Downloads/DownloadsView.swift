@@ -10,6 +10,9 @@ struct DownloadsView: View {
     @Environment(LocalLibrary.self) private var localLibrary
     @Environment(WatchHistory.self) private var history
     @Environment(PlayerCoordinator.self) private var player
+    #if os(iOS) || os(visionOS)
+    @Environment(BackgroundDownloads.self) private var backgroundDownloads
+    #endif
     @Environment(\.openURL) private var openURL
     @State private var importing = false
 
@@ -35,6 +38,9 @@ struct DownloadsView: View {
         NavigationStack {
             List {
                 problems
+                #if os(iOS) || os(visionOS)
+                BackgroundNotices(hasActiveDownloads: unfinished.contains { $0.status == .active })
+                #endif
                 if !unfinished.isEmpty {
                     Section("Downloading") {
                         ForEach(unfinished) { job in JobRow(job: job) }
@@ -86,13 +92,22 @@ struct DownloadsView: View {
         }
     }
 
-    @ViewBuilder private var problems: some View {
-        let messages: [(String, () -> Void)] = [
+    /// Each problem to show, with how to dismiss it.
+    private var problemMessages: [(String, () -> Void)] {
+        var messages: [(String, () -> Void)?] = [
             downloads.problem.map { ($0, { downloads.problem = nil }) },
             smartDownloads.problem.map { ($0, { smartDownloads.problem = nil }) },
             history.problem.map { ($0, { history.problem = nil }) },
             localLibrary.problem.map { ($0, { localLibrary.problem = nil }) },
-        ].compactMap(\.self)
+        ]
+        #if os(iOS) || os(visionOS)
+        messages.append(backgroundDownloads.problem.map { ($0, { backgroundDownloads.problem = nil }) })
+        #endif
+        return messages.compactMap(\.self)
+    }
+
+    @ViewBuilder private var problems: some View {
+        let messages = problemMessages
         if !messages.isEmpty {
             Section {
                 ForEach(messages.indices, id: \.self) { index in
@@ -314,6 +329,43 @@ private struct SmartRuleRow: View {
         .accessibilityIdentifier("rule.\(rule.seriesName)")
     }
 }
+
+#if os(iOS) || os(visionOS)
+/// What holds downloads back outside the app, with what to do about it.
+private struct BackgroundNotices: View {
+    let hasActiveDownloads: Bool
+    @Environment(BackgroundDownloads.self) private var backgroundDownloads
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        let notices = backgroundDownloads.notices(hasActiveDownloads: hasActiveDownloads)
+        if !notices.isEmpty {
+            Section {
+                ForEach(notices) { notice in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(notice.title, systemImage: notice.systemImage)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("notice.\(notice.rawValue)")
+                        Text(notice.message).font(.footnote).foregroundStyle(.secondary)
+                        HStack(spacing: 20) {
+                            if notice.opensSettings, let settings = URL(string: UIApplication.openSettingsURLString) {
+                                Button("Open Settings") { openURL(settings) }
+                                    .accessibilityIdentifier("notice.\(notice.rawValue).settings")
+                            }
+                            Button("Dismiss") { backgroundDownloads.dismiss(notice) }
+                                .accessibilityIdentifier("notice.\(notice.rawValue).dismiss")
+                        }
+                        .font(.footnote.weight(.medium))
+                        .buttonStyle(.borderless)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+}
+#endif
 
 /// Artwork saved with a download, shown from disk so it works offline.
 struct OfflineArtwork: View {

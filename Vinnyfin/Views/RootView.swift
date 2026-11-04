@@ -12,7 +12,6 @@ struct RootView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     #endif
     #if !os(tvOS)
-    @Environment(DownloadManager.self) private var downloads
     @Environment(SmartDownloads.self) private var smartDownloads
     #endif
     /// A title a link asked to open, for Home to show.
@@ -69,17 +68,10 @@ struct RootView: View {
                 messages.show("vinnyfin can't open \(url.absoluteString).")
             }
         }
-        #if !os(tvOS)
-        .onChange(of: scenePhase, initial: true) { _, phase in
-            downloads.sceneChanged(isActive: phase == .active, isInBackground: phase == .background)
-        }
-        #endif
         // Runs while the app is open, and stops as it goes to the background.
         .task(id: scenePhase == .background) {
             guard scenePhase != .background else {
-                #if os(iOS) || os(visionOS)
-                await SmartDownloads.scheduleBackgroundRefresh()
-                #elseif os(tvOS)
+                #if os(tvOS)
                 TopShelf.reload()
                 #endif
                 return
@@ -90,9 +82,6 @@ struct RootView: View {
             await smartDownloads.refreshWhileOpen()
             #endif
         }
-        #if !os(tvOS)
-        .task { await downloads.trackProgress() }
-        #endif
     }
 
     /// Plays the title, or shows its page on Home in place of the player.

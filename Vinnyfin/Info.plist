@@ -57,11 +57,14 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>net.vinnysaj.vinnyfin.smart-downloads</string>
+		<string>net.vinnysaj.vinnyfin.download-catch-up</string>
+		<string>net.vinnysaj.vinnyfin.continued-download.*</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
 		<string>fetch</string>
+		<string>processing</string>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>

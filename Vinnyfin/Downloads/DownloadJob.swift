@@ -45,6 +45,8 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     var totalBytes: Int64?
     var completed = ByteRanges()
     var chunkSize = DownloadJob.initialChunkSize
+    /// When a dropped connection last halved `chunkSize`.
+    var lastCutAt: Date?
     /// Failures in a row that never reached the server or were cut off. Never makes the job give up.
     var networkFailures = 0
     /// Error answers from the server in a row. The job gives up after `maxServerFailures`.
