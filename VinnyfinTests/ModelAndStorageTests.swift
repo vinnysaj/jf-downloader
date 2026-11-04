@@ -223,3 +223,26 @@ struct StorageTests {
     }
 }
 #endif
+
+#if !os(tvOS)
+struct LocalLibraryTests {
+    @Test func remembersOnlyFilesFromOutsideTheAppsFolder() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "local-library-\(UUID().uuidString)")
+        let folder = root.appending(path: "Documents")
+        let elsewhere = root.appending(path: "Elsewhere")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inFolder = folder.appending(path: "Kept.mp4")
+        let outside = elsewhere.appending(path: "Opened.mp4")
+        try Data([0]).write(to: inFolder)
+        try Data([0]).write(to: outside)
+
+        let library = LocalLibrary(file: root.appending(path: "Recents.json"), folder: folder)
+        library.noteOpened(inFolder, request: try PlaybackRequest.file(inFolder))
+        library.noteOpened(outside, request: try PlaybackRequest.file(outside))
+
+        #expect(library.recents.map(\.name) == ["Opened.mp4"])
+    }
+}
+#endif
