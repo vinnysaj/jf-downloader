@@ -183,6 +183,19 @@ final class ScreenshotTests: XCTestCase {
         try await snap(name)
         tap(app.buttons["player.close"])
     }
+
+    /// A tab: a button in the tab bar, or a row in iPad's sidebar. Not just any button by that
+    /// name, which can be the back button to the tab's first screen.
+    @MainActor
+    private func tab(_ name: String, in app: XCUIApplication) -> XCUIElement {
+        let places = [app.tabBars.buttons[name], app.cells[name]]
+        let deadline = Date.now.addingTimeInterval(uiTimeout)
+        while Date.now < deadline {
+            if let tab = places.first(where: \.exists) { return tab }
+            RunLoop.current.run(until: .now.addingTimeInterval(0.25))
+        }
+        return places[0]
+    }
     #endif
 
     #if os(iOS)
@@ -201,19 +214,6 @@ final class ScreenshotTests: XCTestCase {
             tap(tab(name, in: app))
             tap(tab(name, in: app))
         }
-    }
-
-    /// A tab: a button in the tab bar, or a row in iPad's sidebar. Not just any button by that
-    /// name, which can be the back button to the tab's first screen.
-    @MainActor
-    private func tab(_ name: String, in app: XCUIApplication) -> XCUIElement {
-        let places = [app.tabBars.buttons[name], app.cells[name]]
-        let deadline = Date.now.addingTimeInterval(uiTimeout)
-        while Date.now < deadline {
-            if let tab = places.first(where: \.exists) { return tab }
-            RunLoop.current.run(until: .now.addingTimeInterval(0.25))
-        }
-        return places[0]
     }
 
     @MainActor
