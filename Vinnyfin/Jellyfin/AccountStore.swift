@@ -157,6 +157,10 @@ final class AccountStore {
             userName: result.user.name
         )
         try Keychain.setToken(result.accessToken, for: account.serverId)
+        #if os(iOS) || os(macOS)
+        // The next launch's move would take a token left where only the app read it for newer.
+        try Keychain.deleteAppToken(for: account.serverId)
+        #endif
         defaults.set(try JSONEncoder().encode(account), forKey: Self.accountKey)
         defaults.set(serverURL, forKey: Self.lastServerKey)
         self.account = account
