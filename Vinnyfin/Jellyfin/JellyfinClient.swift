@@ -110,6 +110,8 @@ nonisolated struct JellyfinClient: Sendable {
         var isPlayed: Bool?
         var isFavorite: Bool?
         var genres: [String] = []
+        /// Only these items, when given.
+        var ids: [String] = []
         var fields = JellyfinClient.listFields
         var startIndex = 0
         var limit: Int?
@@ -134,6 +136,7 @@ nonisolated struct JellyfinClient: Sendable {
         if let played = query.isPlayed { parameters["isPlayed"] = String(played) }
         if query.isFavorite == true { parameters["isFavorite"] = "true" }
         if !query.genres.isEmpty { parameters["genres"] = query.genres.joined(separator: "|") }
+        if !query.ids.isEmpty { parameters["ids"] = query.ids.joined(separator: ",") }
         return try await get("Items", query: parameters)
     }
 

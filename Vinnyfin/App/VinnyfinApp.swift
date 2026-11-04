@@ -62,6 +62,7 @@ extension View {
             .environment(app.messages)
             .environment(app.player)
             .environment(app.downloads)
+            .environment(app.downloadNotifications)
             .environment(app.smartDownloads)
             .environment(app.localLibrary)
             #if os(iOS) || os(visionOS)
@@ -82,7 +83,9 @@ final class AppDelegate: NSObject {
     #if os(tvOS)
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history)
     #else
-    private(set) lazy var downloads = DownloadManager(accounts: accounts)
+    private(set) lazy var downloadNotifications = DownloadNotifications(settings: settings)
+    private(set) lazy var downloads = DownloadManager(accounts: accounts, settings: settings, history: history,
+                                                      notifications: downloadNotifications)
     private(set) lazy var smartDownloads = SmartDownloads(accounts: accounts, downloads: downloads, settings: settings, history: history)
     let localLibrary = LocalLibrary()
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history,
@@ -96,6 +99,7 @@ final class AppDelegate: NSObject {
     private func launched() {
         ImageCache.configure()
         #if !os(tvOS)
+        downloadNotifications.start()
         let downloads = downloads
         Task { await downloads.run() }
         Task { await downloads.trackProgress() }

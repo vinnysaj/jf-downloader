@@ -37,6 +37,12 @@ nonisolated struct TransferTag: Hashable, Sendable {
         range.map { "bytes=\($0.lowerBound)-\($0.upperBound - 1)" }
     }
 
+    /// Whether the two ask for some of the same bytes. A whole-file request asks for them all.
+    func overlaps(_ other: TransferTag) -> Bool {
+        guard other.jobId == jobId else { return false }
+        guard let range, let otherRange = other.range else { return true }
+        return range.overlaps(otherRange)
+    }
 }
 
 /// A parsed `Content-Range: bytes 0-99/1234` header, as a half-open range.
@@ -190,9 +196,13 @@ nonisolated extension DownloadJob {
     /// without downloading any of it alongside the file in hand.
     static let probeRange: Range<Int64> = 0..<1
 
-    /// The active jobs in the order they download: oldest first.
+    /// The active jobs in the order they download: the list's, which people can rearrange.
     static func queue(_ jobs: [DownloadJob]) -> [UUID] {
-        jobs.filter { $0.status == .active && !$0.isTransferComplete }.sorted { $0.createdAt < $1.createdAt }.map(\.id)
+        queued(jobs).map(\.id)
+    }
+
+    static func queued(_ jobs: [DownloadJob]) -> [DownloadJob] {
+        jobs.filter { $0.status == .active && !$0.isTransferComplete }
     }
 
     /// Whether a one-byte probe has to come first: the server hasn't answered for this file, and
@@ -218,44 +228,68 @@ nonisolated extension DownloadJob {
         serverFailures >= Self.serverFailuresBeforeYielding && (retryAt ?? .distantPast) > now
     }
 
-    /// The transfers to start, up to `budget` of them, oldest file first.
+    /// The files whose transfers belong in the session. In front, the file in hand: the first
+    /// that isn't held or backing off, with any ahead of it that are backing off, whose one
+    /// transfer is timed for its retry. Off screen, every file that isn't held.
+    static func sessionFiles(_ jobs: [DownloadJob], held: Set<UUID>, queuingAhead: Bool, now: Date = .now) -> Set<UUID> {
+        let byId = Dictionary(jobs.map { ($0.id, $0) }) { first, _ in first }
+        var files: Set<UUID> = []
+        for id in queue(jobs) where !held.contains(id) {
+            files.insert(id)
+            guard queuingAhead || byId[id]?.isBackingOff(at: now) == true else { break }
+        }
+        return files
+    }
+
+    /// The transfers to start, up to `budget` of them, in queue order.
     ///
-    /// In front (`queuingAhead` false) the session works on one file, the oldest that isn't
-    /// backing off. Off screen it holds every file's transfers, so the system can carry on
-    /// without the app. A file backing off gets one transfer, timed for its retry. A file that
-    /// needs a probe gets only that, one probe at a time, so the server isn't asked about every
-    /// file at once. In front, the files after the one in hand that need a probe get it in turn,
-    /// so that all their chunks can go in the moment the app leaves the screen.
-    static func plan(_ jobs: [DownloadJob], running: [TransferTag], budget: Int, queuingAhead: Bool, now: Date = .now) -> [TransferTag] {
+    /// The session holds the transfers of `sessionFiles`, never of a file `held` (by the
+    /// schedule, or for room). In front (`queuingAhead` false) that's one file, which is planned
+    /// once the transfers other files have on the wire (`finishing`) are done: a file moved
+    /// ahead takes over from the one it overtook without either losing bytes or sharing the
+    /// connection. Off screen the session holds every file's transfers, so the system can carry
+    /// on without the app. A file `waitingForNetwork` (the device is on a network its transfers
+    /// may not use) is held in front; off screen its chunks go in for the system to start on a
+    /// network they may use, but not a probe, which isn't the session's. A file backing off
+    /// gets one transfer, timed for its retry. A file that needs a probe gets only that, one
+    /// probe at a time, so the server isn't asked about every file at once. In front, the files
+    /// after the one in hand that need a probe get it in turn, so that all their chunks can go
+    /// in the moment the app leaves the screen.
+    static func plan(_ jobs: [DownloadJob], running: [TransferTag], finishing: Set<UUID> = [], held: Set<UUID> = [],
+                     waitingForNetwork: Set<UUID> = [], budget: Int, queuingAhead: Bool, now: Date = .now) -> [TransferTag] {
         let serverTakesRanges = serverTakesRanges(jobs)
+        let notPlanned = queuingAhead ? held : held.union(waitingForNetwork)
+        let inSession = sessionFiles(jobs, held: notPlanned, queuingAhead: queuingAhead, now: now)
+        let byId = Dictionary(jobs.map { ($0.id, $0) }) { first, _ in first }
         var tags: [TransferTag] = []
         var isProbing = running.contains { tag in
-            tag.range == probeRange && jobs.contains { $0.id == tag.jobId && !$0.isBackingOff(at: now) }
+            tag.range == probeRange && byId[tag.jobId].map { !$0.isBackingOff(at: now) } == true
         }
-        var hasFileInHand = false
-        for id in queue(jobs) {
-            guard tags.count < budget, let job = jobs.first(where: { $0.id == id }) else { break }
+        for id in queue(jobs) where !notPlanned.contains(id) {
+            guard tags.count < budget, let job = byId[id] else { break }
             let claimed = running.filter { $0.jobId == id }
             let needsProbe = job.needsProbe(serverTakesRanges: serverTakesRanges)
+            let mayProbe = !waitingForNetwork.contains(id)
             if job.isBackingOff(at: now) {
-                if claimed.isEmpty, queuingAhead || !hasFileInHand {
+                if claimed.isEmpty, inSession.contains(id), mayProbe || !needsProbe {
                     tags += job.nextRequests(running: [], limit: 1, serverTakesRanges: serverTakesRanges).map { TransferTag(jobId: id, range: $0) }
                 }
                 continue
             }
-            if hasFileInHand, !queuingAhead {
+            guard inSession.contains(id) else {
+                // In front, after the file in hand.
                 guard needsProbe else { continue }
                 if claimed.isEmpty, !isProbing { tags.append(TransferTag(jobId: id, range: probeRange)) }
                 break
             }
-            hasFileInHand = true
             if needsProbe {
-                if claimed.isEmpty, !isProbing {
+                if claimed.isEmpty, !isProbing, mayProbe {
                     tags.append(TransferTag(jobId: id, range: probeRange))
                     isProbing = true
                 }
                 continue
             }
+            if !queuingAhead, !finishing.subtracting([id]).isEmpty { continue }
             tags += job.nextRequests(running: claimed, limit: budget - tags.count, serverTakesRanges: serverTakesRanges)
                 .map { TransferTag(jobId: id, range: $0) }
         }
@@ -299,6 +333,7 @@ nonisolated extension DownloadJob {
         serverFailures = 0
         lastError = nil
         retryAt = nil
+        serverUnreachableSince = nil
         chunkSize = min(Self.maximumChunkSize, chunkSize + wholeChunkBytes / 4)
     }
 
@@ -315,15 +350,19 @@ nonisolated extension DownloadJob {
     }
 
     /// Counts a failed transfer and schedules the retry. `attemptStart` is as for `recordCut`.
-    mutating func recordFailure(_ failure: TransferFailure, receivedBytes: Int64, attemptStart: Date, now: Date = .now) {
+    /// `unreachable` says the server couldn't be reached at all, which a failure the server
+    /// answered says it could.
+    mutating func recordFailure(_ failure: TransferFailure, receivedBytes: Int64, attemptStart: Date, unreachable: Bool = false, now: Date = .now) {
         switch failure {
         case .network(let message):
             networkFailures += 1
+            if unreachable { serverUnreachableSince = serverUnreachableSince ?? now }
             recordCut(receivedBytes: receivedBytes, attemptStart: attemptStart, now: now)
             lastError = message
             retryAt = now.addingTimeInterval(Self.backoff(attempt: networkFailures, cap: 60))
         case .server(let message):
             serverFailures += 1
+            serverUnreachableSince = nil
             lastError = message
             if serverFailures >= Self.maxServerFailures {
                 status = .failed
@@ -339,17 +378,23 @@ nonisolated extension DownloadJob {
         min(cap, pow(2, Double(max(0, attempt - 1))))
     }
 
+    /// Back to active from paused or failed, from where it got to, with no retry pending.
+    mutating func resume() {
+        status = .active
+        networkFailures = 0
+        serverFailures = 0
+        retryAt = nil
+        serverUnreachableSince = nil
+    }
+
     /// Back to the start, for a file that changed on the server.
     mutating func resetProgress() {
-        status = .active
+        resume()
         rangeSupport = .unknown
         totalBytes = nil
         completed = ByteRanges()
         chunkSize = Self.initialChunkSize
-        networkFailures = 0
-        serverFailures = 0
         lastError = nil
-        retryAt = nil
         lastCutAt = nil
     }
 }
