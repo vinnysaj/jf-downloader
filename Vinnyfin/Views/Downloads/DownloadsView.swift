@@ -13,6 +13,9 @@ struct DownloadsView: View {
     #if os(iOS) || os(visionOS)
     @Environment(BackgroundDownloads.self) private var backgroundDownloads
     #endif
+    #if os(iOS) || os(macOS)
+    @Environment(WidgetDownloads.self) private var widgetDownloads
+    #endif
     @Environment(\.openURL) private var openURL
     @State private var importing = false
 
@@ -52,7 +55,7 @@ struct DownloadsView: View {
                     } header: {
                         Text("Smart Downloads")
                     } footer: {
-                        Text("These shows stay downloaded ahead of where you're watching, wherever you watch. They're checked whenever vinnyfin opens, regularly while it's open, and every few hours in the background.")
+                        Text("These shows stay downloaded ahead of where you're watching, wherever you watch, and new episodes download as they're added. They're checked whenever vinnyfin opens, regularly while it's open, and every few hours in the background.")
                     }
                 }
                 if !movies.isEmpty {
@@ -103,6 +106,9 @@ struct DownloadsView: View {
         #if os(iOS) || os(visionOS)
         messages.append(backgroundDownloads.problem.map { ($0, { backgroundDownloads.problem = nil }) })
         #endif
+        #if os(iOS) || os(macOS)
+        messages.append(widgetDownloads.problem.map { ($0, { widgetDownloads.problem = nil }) })
+        #endif
         return messages.compactMap(\.self)
     }
 
@@ -135,14 +141,10 @@ struct DownloadsView: View {
                 Button("Show in \(FinishedFiles.browser)", systemImage: "folder") {
                     openURL(FinishedFiles.browserURL(for: downloads.finishedFolder))
                 }
-                Button("Pause All", systemImage: "pause") {
-                    for job in unfinished where job.status == .active { downloads.pause(job.id) }
-                }
-                .disabled(!unfinished.contains { $0.status == .active })
-                Button("Resume All", systemImage: "play") {
-                    for job in unfinished where job.status != .active { downloads.resume(job.id) }
-                }
-                .disabled(!unfinished.contains { $0.status != .active })
+                Button("Pause All", systemImage: "pause") { downloads.pauseAll() }
+                    .disabled(!unfinished.contains { $0.status == .active })
+                Button("Resume All", systemImage: "play") { downloads.resumeAll() }
+                    .disabled(!unfinished.contains { $0.status != .active })
             } label: {
                 Label("More", systemImage: "ellipsis")
             }
@@ -245,7 +247,7 @@ private struct DownloadedRow: View {
                     Text(job.isEpisode ? [job.item?.episodeCode, job.title].compactMap(\.self).joined(separator: " · ") : job.title)
                         .font(.body.weight(.medium))
                         .lineLimit(2)
-                    Text([job.versionName, job.totalBytes.map(DownloadManager.bytes)].compactMap(\.self).joined(separator: " · "))
+                    Text([job.versionName, DownloadManager.bytes(job.storedBytes)].joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -282,7 +284,7 @@ private struct DownloadedRow: View {
     private var entry: WatchHistory.Entry? { history.entry(for: job.itemId) }
 
     private var isWatched: Bool {
-        entry?.played ?? job.item?.isPlayed ?? false
+        job.isWatched(in: history)
     }
 
     private var progress: Double? {
@@ -296,31 +298,19 @@ private struct DownloadedRow: View {
 /// A show kept downloaded, with its count and a way to change or stop it.
 private struct SmartRuleRow: View {
     let rule: SmartDownloads.Rule
-    @Environment(SmartDownloads.self) private var smartDownloads
-    @Environment(DownloadManager.self) private var downloads
 
     var body: some View {
         HStack(spacing: 12) {
             OfflineArtwork(itemId: rule.seriesId, aspectRatio: 2.0 / 3.0).frame(width: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(rule.seriesName).font(.body.weight(.medium))
-                Text(rule.episodesAhead.map { "Next \($0) episodes" } ?? "Every remaining episode")
+                Text(rule.episodesAhead.map { "Next \($0) episodes" } ?? "Every unwatched episode")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Menu {
-                ForEach([3, 5, 10, 20], id: \.self) { count in
-                    Button("Next \(count) Episodes") {
-                        smartDownloads.setRule(seriesId: rule.seriesId, seriesName: rule.seriesName, episodesAhead: count)
-                    }
-                }
-                Button("Every Remaining Episode") {
-                    smartDownloads.setRule(seriesId: rule.seriesId, seriesName: rule.seriesName, episodesAhead: nil)
-                }
-                Button("Stop Smart Downloads", systemImage: "xmark", role: .destructive) {
-                    smartDownloads.removeRule(seriesId: rule.seriesId)
-                }
+            SmartDownloadMenu(seriesId: rule.seriesId, seriesName: rule.seriesName) {
+                EmptyView()
             } label: {
                 Image(systemName: "ellipsis.circle").font(.title3)
             }

@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 #if os(macOS)
 import AppKit
@@ -68,6 +69,9 @@ extension View {
             .environment(app.backgroundDownloads)
             .environment(app.diagnostics)
             #endif
+            #if os(iOS) || os(macOS)
+            .environment(app.widgetDownloads)
+            #endif
         #endif
     }
 }
@@ -92,13 +96,28 @@ final class AppDelegate: NSObject {
     private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads)
     let diagnostics = AppDiagnostics()
     #endif
+    #if os(iOS) || os(macOS)
+    private(set) lazy var widgetDownloads = WidgetDownloads(downloads: downloads, history: history)
+    #endif
 
     private func launched() {
         ImageCache.configure()
         #if !os(tvOS)
         let downloads = downloads
+        let smartDownloads = smartDownloads
+        // Siri, Shortcuts and the Downloads control act on these, also with the app in the background.
+        AppDependencyManager.shared.add(dependency: self.accounts)
+        AppDependencyManager.shared.add(dependency: self.settings)
+        AppDependencyManager.shared.add(dependency: self.history)
+        AppDependencyManager.shared.add(dependency: downloads)
+        AppDependencyManager.shared.add(dependency: smartDownloads)
         Task { await downloads.run() }
         Task { await downloads.trackProgress() }
+        #endif
+        #if os(iOS) || os(macOS)
+        let widgetDownloads = widgetDownloads
+        AppDependencyManager.shared.add(dependency: widgetDownloads as any DownloadsRunning)
+        Task { await widgetDownloads.run() }
         #endif
         #if os(iOS) || os(visionOS)
         backgroundDownloads.registerLaunchHandlers()

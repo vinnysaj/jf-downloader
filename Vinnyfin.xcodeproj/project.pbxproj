@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		66A5C0E9CA6212B264B3639A /* TopShelf.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 652F552FF841B2312D917CF4 /* TopShelf.appex */; platformFilters = (tvos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D0A1D0A1D0A1D0A1D0A10003 /* DownloadsWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D0A1D0A1D0A1D0A1D0A10002 /* DownloadsWidget.appex */; platformFilters = (ios, macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A1E7E1A1E7E1A1E7E1A1E706 /* AetherEngine in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E703 /* AetherEngine */; };
 		A1E7E1A1E7E1A1E7E1A1E707 /* Nuke in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E704 /* Nuke */; };
 		A1E7E1A1E7E1A1E7E1A1E708 /* NukeUI in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E705 /* NukeUI */; };
@@ -35,6 +36,13 @@
 			remoteGlobalIDString = 976B3DB60BE9331065AC1FCB;
 			remoteInfo = Vinnyfin;
 		};
+		D0A1D0A1D0A1D0A1D0A10004 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A391A1819DA1A6FCC0276006 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D0A1D0A1D0A1D0A1D0A10001;
+			remoteInfo = DownloadsWidget;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -45,6 +53,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				66A5C0E9CA6212B264B3639A /* TopShelf.appex in Embed Foundation Extensions */,
+				D0A1D0A1D0A1D0A1D0A10003 /* DownloadsWidget.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -56,6 +65,7 @@
 		5D10A52A987F8DDDC248D2A2 /* vinnyfin.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = vinnyfin.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		652F552FF841B2312D917CF4 /* TopShelf.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TopShelf.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		7BADCD9C76DAEAAB4CF6A6D5 /* VinnyfinTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VinnyfinTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D0A1D0A1D0A1D0A1D0A10002 /* DownloadsWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DownloadsWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -69,6 +79,7 @@
 		7A6FE341AB5BF91E0116A4D9 /* Exceptions for "Vinnyfin" folder in "TopShelf" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				App/AppGroup.swift,
 				App/AppLink.swift,
 				App/Device.swift,
 				App/TopShelf.swift,
@@ -86,6 +97,24 @@
 			);
 			target = C406F95571791F6DE04B8B0B /* TopShelf */;
 		};
+		D0A1D0A1D0A1D0A1D0A10007 /* Exceptions for "DownloadsWidget" folder in "DownloadsWidget" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D0A1D0A1D0A1D0A1D0A10001 /* DownloadsWidget */;
+		};
+		D0A1D0A1D0A1D0A1D0A10008 /* Exceptions for "Vinnyfin" folder in "DownloadsWidget" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				App/AppGroup.swift,
+				App/AppLink.swift,
+				Downloads/DownloadsSnapshot.swift,
+				Intents/DownloadsControlIntent.swift,
+				Jellyfin/JellyfinModels.swift,
+			);
+			target = D0A1D0A1D0A1D0A1D0A10001 /* DownloadsWidget */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -94,6 +123,7 @@
 			exceptions = (
 				3B680B6C3E56AD42CD698342 /* Exceptions for "Vinnyfin" folder in "Vinnyfin" target */,
 				7A6FE341AB5BF91E0116A4D9 /* Exceptions for "Vinnyfin" folder in "TopShelf" target */,
+				D0A1D0A1D0A1D0A1D0A10008 /* Exceptions for "Vinnyfin" folder in "DownloadsWidget" target */,
 			);
 			path = Vinnyfin;
 			sourceTree = "<group>";
@@ -116,6 +146,14 @@
 			path = TopShelf;
 			sourceTree = "<group>";
 		};
+		D0A1D0A1D0A1D0A1D0A10006 /* DownloadsWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D0A1D0A1D0A1D0A1D0A10007 /* Exceptions for "DownloadsWidget" folder in "DownloadsWidget" target */,
+			);
+			path = DownloadsWidget;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -136,6 +174,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D0A1D0A1D0A1D0A1D0A1000A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -146,6 +191,7 @@
 				7BADCD9C76DAEAAB4CF6A6D5 /* VinnyfinTests.xctest */,
 				0696FC3419A958EA70DD02E9 /* VinnyfinUITests.xctest */,
 				652F552FF841B2312D917CF4 /* TopShelf.appex */,
+				D0A1D0A1D0A1D0A1D0A10002 /* DownloadsWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -155,6 +201,7 @@
 			children = (
 				5843EC513002D4DAC1E272F7 /* Vinnyfin */,
 				DEDCA089B5565C25617C4919 /* TopShelf */,
+				D0A1D0A1D0A1D0A1D0A10006 /* DownloadsWidget */,
 				B7F4BF62BC54328D95850863 /* VinnyfinTests */,
 				850D8079A140ED3691C41285 /* VinnyfinUITests */,
 				587DAA54711BEBC695D29FB1 /* Products */,
@@ -199,6 +246,7 @@
 			);
 			dependencies = (
 				5125A7113209DFFCB38A17CD /* PBXTargetDependency */,
+				D0A1D0A1D0A1D0A1D0A10005 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				5843EC513002D4DAC1E272F7 /* Vinnyfin */,
@@ -233,6 +281,28 @@
 			);
 			productName = TopShelf;
 			productReference = 652F552FF841B2312D917CF4 /* TopShelf.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		D0A1D0A1D0A1D0A1D0A10001 /* DownloadsWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D0A1D0A1D0A1D0A1D0A1000C /* Build configuration list for PBXNativeTarget "DownloadsWidget" */;
+			buildPhases = (
+				D0A1D0A1D0A1D0A1D0A10009 /* Sources */,
+				D0A1D0A1D0A1D0A1D0A1000A /* Frameworks */,
+				D0A1D0A1D0A1D0A1D0A1000B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D0A1D0A1D0A1D0A1D0A10006 /* DownloadsWidget */,
+			);
+			name = DownloadsWidget;
+			packageProductDependencies = (
+			);
+			productName = DownloadsWidget;
+			productReference = D0A1D0A1D0A1D0A1D0A10002 /* DownloadsWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 		C15E999431C3000AC0B371D7 /* VinnyfinUITests */ = {
@@ -279,6 +349,9 @@
 					C406F95571791F6DE04B8B0B = {
 						ProvisioningStyle = Automatic;
 					};
+					D0A1D0A1D0A1D0A1D0A10001 = {
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = E8C30742CCCB5105D47FAF6E /* Build configuration list for PBXProject "Vinnyfin" */;
@@ -301,6 +374,7 @@
 			targets = (
 				976B3DB60BE9331065AC1FCB /* Vinnyfin */,
 				C406F95571791F6DE04B8B0B /* TopShelf */,
+				D0A1D0A1D0A1D0A1D0A10001 /* DownloadsWidget */,
 				3A78035E216140D030C528EC /* VinnyfinTests */,
 				C15E999431C3000AC0B371D7 /* VinnyfinUITests */,
 			);
@@ -330,6 +404,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		D9F6EC267ED4438C2305969A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0A1D0A1D0A1D0A1D0A1000B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -367,6 +448,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D0A1D0A1D0A1D0A1D0A10009 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -388,9 +476,72 @@
 			target = 976B3DB60BE9331065AC1FCB /* Vinnyfin */;
 			targetProxy = A35E995A35708CFE32325F4A /* PBXContainerItemProxy */;
 		};
+		D0A1D0A1D0A1D0A1D0A10005 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilters = (
+				ios,
+				macos,
+			);
+			target = D0A1D0A1D0A1D0A1D0A10001 /* DownloadsWidget */;
+			targetProxy = D0A1D0A1D0A1D0A1D0A10004 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		D0A1D0A1D0A1D0A1D0A1000D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = DownloadsWidget/DownloadsWidget.entitlements;
+				DEVELOPMENT_TEAM = T5XCUP79BU;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DownloadsWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.widgets;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D0A1D0A1D0A1D0A1D0A1000E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = DownloadsWidget/DownloadsWidget.entitlements;
+				DEVELOPMENT_TEAM = T5XCUP79BU;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DownloadsWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.widgets;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		8339943559963AC7848AEEE6 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -670,6 +821,8 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvsimulator*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Vinnyfin/Vinnyfin-macOS.entitlements";
 				DEVELOPMENT_TEAM = T5XCUP79BU;
 				ENABLE_APP_SANDBOX = YES;
@@ -701,6 +854,8 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvsimulator*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Vinnyfin/Vinnyfin-macOS.entitlements";
 				DEVELOPMENT_TEAM = T5XCUP79BU;
 				ENABLE_APP_SANDBOX = YES;
@@ -727,6 +882,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		D0A1D0A1D0A1D0A1D0A1000C /* Build configuration list for PBXNativeTarget "DownloadsWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0A1D0A1D0A1D0A1D0A1000D /* Debug */,
+				D0A1D0A1D0A1D0A1D0A1000E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		33DD849D12DB8178059A44EA /* Build configuration list for PBXNativeTarget "Vinnyfin" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

@@ -169,10 +169,3 @@ nonisolated enum Keychain {
         return query
     }
 }
-
-#if os(tvOS)
-/// The app group the Apple TV app shares with its Top Shelf extension.
-nonisolated enum AppGroup {
-    static let identifier = "group.net.vinnysaj.vinnyfin"
-}
-#endif
