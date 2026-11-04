@@ -83,6 +83,8 @@ struct ItemDetailView: View {
         .inlineNavigationTitle()
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
         .task(id: item.id) { await load() }
+        // A playback that ended moved where the title resumes, or finished it.
+        .onChange(of: player.endedPlaybacks) { Task { await loadDetail() } }
         #if os(tvOS)
         // Focus starts on Play, also for a page opened from a link at launch, while focus is
         // still in the sidebar. Coming back to the page leaves focus where it was.
@@ -141,6 +143,18 @@ struct ItemDetailView: View {
     }
 
     private func load() async {
+        await loadDetail()
+        guard let session else { return }
+        do {
+            similar = try await session.client.similar(to: item.titleId, userId: session.userId)
+        } catch {
+            guard !error.isCancellation else { return }
+            similar = []
+            loadError = loadError ?? "Couldn't load titles like this one: \(error.localizedDescription)"
+        }
+    }
+
+    private func loadDetail() async {
         guard let session else { return }
         do {
             detail = try await session.client.item(id: item.id, userId: session.userId)
@@ -148,13 +162,6 @@ struct ItemDetailView: View {
         } catch {
             guard !error.isCancellation else { return }
             loadError = "Couldn't load the details: \(error.localizedDescription)"
-        }
-        do {
-            similar = try await session.client.similar(to: item.titleId, userId: session.userId)
-        } catch {
-            guard !error.isCancellation else { return }
-            similar = []
-            loadError = loadError ?? "Couldn't load titles like this one: \(error.localizedDescription)"
         }
     }
 }

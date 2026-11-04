@@ -22,6 +22,9 @@ final class PlayerCoordinator {
     #endif
     /// Why the engine couldn't be built, to show instead of playing.
     var problem: String?
+    /// Players closed whose last session the server has been told about, counted: a page showing
+    /// a title's watch state loads it again on each.
+    private(set) var endedPlaybacks = 0
 
     @ObservationIgnored private let accounts: AccountStore
     @ObservationIgnored private let settings: AppSettings
@@ -103,11 +106,18 @@ final class PlayerCoordinator {
         downloads.playerChanged(id, isPlaying: true)
         smartDownloads.playerOpened(id)
         model.onUnderwayChanged = { [downloads] underway in downloads.playerChanged(id, isPlaying: underway) }
-        model.onClose = { [downloads, smartDownloads] in
-            downloads.playerClosed(id)
-            smartDownloads.playerClosed(id)
-        }
         #endif
+        model.onClose = { [weak self, weak model] in
+            #if !os(tvOS)
+            self?.downloads.playerClosed(id)
+            self?.smartDownloads.playerClosed(id)
+            #endif
+            let reported = model?.stopReport
+            Task {
+                await reported?.value
+                self?.endedPlaybacks += 1
+            }
+        }
         return model
     }
 

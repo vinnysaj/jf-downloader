@@ -75,10 +75,9 @@ final class WatchHistory {
         var refused: [String] = []
         for (key, entry) in entries where entry.needsSync && !key.hasPrefix("file:") {
             do {
-                try await client.updateUserData(
-                    itemId: key, userId: userId,
+                try await client.updateUserData(itemId: key, userId: userId, UserDataUpdate(
                     positionTicks: Int64(entry.position * 10_000_000), played: entry.played, lastPlayed: entry.updatedAt
-                )
+                ))
                 entries[key]?.needsSync = false
             } catch JellyfinError.http(let status, let body) where (400..<500).contains(status) && status != 401 && status != 408 && status != 429 {
                 entries[key]?.needsSync = false

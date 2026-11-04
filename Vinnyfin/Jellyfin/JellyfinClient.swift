@@ -343,15 +343,17 @@ nonisolated struct JellyfinClient: Sendable {
         try await send("UserFavoriteItems/\(itemId)", method: favorite ? "POST" : "DELETE", query: ["userId": userId])
     }
 
-    /// Writes a position and played state recorded while the server couldn't be reached.
-    func updateUserData(itemId: String, userId: String, positionTicks: Int64, played: Bool, lastPlayed: Date) async throws {
-        struct Body: Encodable {
-            let PlaybackPositionTicks: Int64
-            let Played: Bool
-            let LastPlayedDate: String
-        }
-        let body = Body(PlaybackPositionTicks: positionTicks, Played: played, LastPlayedDate: JellyfinDate.format(lastPlayed))
-        try await send("UserItems/\(itemId)/UserData", method: "POST", query: ["userId": userId], body: body)
+    /// Writes what `update` gives of an item's user data. It goes through none of the rules a
+    /// playback report does, such as clearing a position in the first few percent.
+    func updateUserData(itemId: String, userId: String, _ update: UserDataUpdate) async throws {
+        try await send("UserItems/\(itemId)/UserData", method: "POST", query: ["userId": userId], body: update)
+    }
+
+    /// Gives an item the position the server keeps for its version `versionId`, which was just
+    /// reported (see `UserDataUpdate.init(positionOf:)`).
+    func givePosition(ofVersion versionId: String, toItem itemId: String, userId: String) async throws {
+        let version: UserItemData = try await get("UserItems/\(versionId)/UserData", query: ["userId": userId])
+        try await updateUserData(itemId: itemId, userId: userId, UserDataUpdate(positionOf: version))
     }
 
     // MARK: Playback
@@ -502,6 +504,31 @@ nonisolated struct PlaybackReport: Encodable, Sendable {
     var CanSeek = true
     var AudioStreamIndex: Int?
     var SubtitleStreamIndex: Int?
+}
+
+/// A change to an item's user data. The server writes what's given and leaves the rest as it is.
+nonisolated struct UserDataUpdate: Encodable, Sendable {
+    let PlaybackPositionTicks: Int64
+    var Played: Bool?
+    var LastPlayedDate: String?
+
+    init(positionTicks: Int64, played: Bool?, lastPlayed: Date?) {
+        PlaybackPositionTicks = positionTicks
+        Played = played
+        LastPlayedDate = lastPlayed.map(JellyfinDate.format)
+    }
+
+    /// An item's share of what the server keeps for one of its versions, just reported: that
+    /// version's position, and a play just after the version's, so the server takes the item for
+    /// the version played last. Every list and every other client then shows the item's own
+    /// position, and the server lists the item's own version first and names the item itself in
+    /// Resume and Next Up. The watched state isn't given: finishing a version already marks every
+    /// version watched and clears their positions, and the item then gets no position.
+    init(positionOf version: UserItemData) {
+        // A second on, as the date is given to the second and the version's has a fraction.
+        self.init(positionTicks: version.playbackPositionTicks ?? 0, played: nil,
+                  lastPlayed: version.lastPlayedDate.flatMap(JellyfinDate.parse)?.addingTimeInterval(1))
+    }
 }
 
 nonisolated struct PlaybackInfoRequest: Encodable, Sendable {

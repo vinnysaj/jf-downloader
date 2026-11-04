@@ -107,6 +107,46 @@ struct VersionPlayedLastTests {
     }
 }
 
+/// What the app writes to a title after reporting a playback of another of its versions.
+struct TitlePositionTests {
+    private func json(_ update: UserDataUpdate) throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(update)) as? [String: Any])
+    }
+
+    @Test func givesTheTitleTheVersionsPositionJustAfterItWasPlayed() throws {
+        let version = try JSONDecoder().decode(UserItemData.self, from: Data("""
+        {"PlaybackPositionTicks":2540000000,"PlayedPercentage":60.5,"LastPlayedDate":"2026-11-04T21:11:50.0649347Z","Played":false}
+        """.utf8))
+        let update = UserDataUpdate(positionOf: version)
+        #expect(update.PlaybackPositionTicks == 2_540_000_000)
+        let playedAt = try #require(update.LastPlayedDate.flatMap(JellyfinDate.parse))
+        let versionPlayedAt = try #require(JellyfinDate.parse("2026-11-04T21:11:50.0649347Z"))
+        // Later than the version's, fraction and all.
+        #expect(playedAt.timeIntervalSince(versionPlayedAt) >= 0.9)
+    }
+
+    @Test func neverTouchesWhetherTheTitleIsWatched() throws {
+        // A finished version: the server marked every version watched and cleared their positions.
+        let finished = try JSONDecoder().decode(UserItemData.self, from: Data("""
+        {"PlaybackPositionTicks":0,"LastPlayedDate":"2026-11-04T21:13:20.9110264Z","Played":true}
+        """.utf8))
+        let body = try json(UserDataUpdate(positionOf: finished))
+        #expect(body["PlaybackPositionTicks"] as? Int == 0)
+        #expect(body["Played"] == nil)
+    }
+
+    @Test func leavesOutADateTheVersionDoesntHave() throws {
+        let body = try json(UserDataUpdate(positionOf: UserItemData(playbackPositionTicks: 0)))
+        #expect(body["LastPlayedDate"] == nil)
+    }
+
+    @Test func sendsWhatWasWatchedOfflineInFull() throws {
+        let body = try json(UserDataUpdate(positionTicks: 0, played: true, lastPlayed: Date(timeIntervalSince1970: 1_772_600_767)))
+        #expect(body["Played"] as? Bool == true)
+        #expect(body["LastPlayedDate"] as? String == "2026-03-04T05:06:07Z")
+    }
+}
+
 /// Resume and Next Up name the version that was played, or the next episode's matching version;
 /// lists show the item the versions belong to.
 struct ListedItemTests {

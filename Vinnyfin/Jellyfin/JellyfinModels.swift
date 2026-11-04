@@ -160,6 +160,8 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
 /// keeps a position for each version, marks them all watched when one is finished, and lists
 /// the version partway through and played last ahead of the item's own. Resume and Next Up
 /// name the version itself. Gelato's streams are versions too, and it orders them the same way.
+/// The app gives the item the position of a version it plays (`UserDataUpdate.init(positionOf:)`),
+/// which makes the item the one played last; another client's playback leaves it on the version.
 nonisolated extension JellyfinItem {
     /// The version the server lists ahead of the item's own: the one partway through and played
     /// last. Nil when the item's own version leads, or when the item is a version listing itself.
