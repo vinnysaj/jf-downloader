@@ -3,11 +3,12 @@ import SwiftUI
 /// What to watch next: a featured banner, then shelves of what's in progress, what's new and
 /// what's like what was watched.
 struct HomeView: View {
+    /// The pages open on top of Home.
+    @Binding var path: [JellyfinItem]
     var openDownloads: () -> Void = {}
 
     @Environment(\.session) private var session
     @Environment(AccountStore.self) private var accounts
-    @State private var path: [JellyfinItem] = []
     @State private var resume: [JellyfinItem] = []
     @State private var nextUp: [JellyfinItem] = []
     @State private var latestMovies: [JellyfinItem] = []
@@ -180,7 +181,7 @@ struct HomeView: View {
         async let resume = client.resumeItems(userId: userId)
         async let nextUp = client.nextUp(userId: userId)
         async let movies = client.latest(userId: userId, types: ["Movie"])
-        async let shows = client.latest(userId: userId, types: ["Episode"])
+        async let shows = client.latestShows(userId: userId)
         async let watched = client.recentlyPlayed(userId: userId)
         var favoritesQuery = JellyfinClient.ItemQuery(types: ["Movie", "Series"])
         favoritesQuery.isFavorite = true
@@ -190,7 +191,7 @@ struct HomeView: View {
             self.resume = try await resume
             self.nextUp = try await nextUp
             self.latestMovies = try await movies
-            self.latestShows = try await shows.map(Self.showFor)
+            self.latestShows = try await shows
             self.recentlyWatched = try await watched
             self.favorites = try await favorites.items
             loadError = nil
@@ -207,16 +208,6 @@ struct HomeView: View {
             return
         }
         await loadBecauseYouWatched(client: client, userId: userId)
-    }
-
-    /// Latest episodes come back grouped by show, but a lone new episode comes back as itself;
-    /// either way the shelf shows the show.
-    private static func showFor(_ item: JellyfinItem) -> JellyfinItem {
-        guard item.isEpisode, let seriesId = item.seriesId else { return item }
-        var show = JellyfinItem(id: seriesId, name: item.seriesName ?? item.name, type: "Series")
-        show.imageTags = item.seriesPrimaryImageTag.map { ["Primary": $0] }
-        show.productionYear = item.productionYear
-        return show
     }
 
     private func loadBecauseYouWatched(client: JellyfinClient, userId: String) async {

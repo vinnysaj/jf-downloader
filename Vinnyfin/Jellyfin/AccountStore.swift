@@ -3,10 +3,11 @@ import Observation
 import Security
 
 /// Who is signed in to which server. The token lives in the Keychain, readable after the
-/// first unlock so downloads can carry on while the phone is locked.
+/// first unlock so downloads can carry on while the phone is locked. On Apple TV the sign-in is
+/// kept in the app group, where the Top Shelf extension reads it to ask the server what's up next.
 @Observable
 final class AccountStore {
-    struct Account: Codable, Equatable {
+    nonisolated struct Account: Codable, Equatable, Sendable {
         var serverURL: URL
         var serverId: String
         var serverName: String?
@@ -23,7 +24,18 @@ final class AccountStore {
     private static let lastServerKey = "lastServer"
     private static let lastUserNameKey = "lastUserName"
 
-    init(defaults: UserDefaults = .standard) {
+    /// Where the sign-in is kept. On Apple TV that's the app group's defaults, shared with the Top
+    /// Shelf extension.
+    nonisolated static var savedDefaults: UserDefaults {
+        #if os(tvOS)
+        // A suite is refused only when it's named after the app itself.
+        UserDefaults(suiteName: AppGroup.identifier)!
+        #else
+        .standard
+        #endif
+    }
+
+    init(defaults: UserDefaults = savedDefaults) {
         self.defaults = defaults
         if let data = defaults.data(forKey: Self.accountKey),
            let account = try? JSONDecoder().decode(Account.self, from: data),
@@ -32,6 +44,12 @@ final class AccountStore {
             self.account = account
             client = JellyfinClient(serverURL: account.serverURL, deviceId: deviceId, deviceName: Device.name, token: token)
         }
+    }
+
+    /// The signed-in server and user, for browsing.
+    var session: ServerSession? {
+        guard let client, let account else { return nil }
+        return ServerSession(client: client, account: account)
     }
 
     /// Identifies this install to the server; Jellyfin lists sessions by it.
@@ -139,10 +157,22 @@ nonisolated enum Keychain {
     }
 
     private static func baseQuery(_ account: String) -> [String: Any] {
-        [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+        #if os(tvOS)
+        // An app group doubles as a Keychain access group.
+        query[kSecAttrAccessGroup as String] = AppGroup.identifier
+        #endif
+        return query
     }
 }
+
+#if os(tvOS)
+/// The app group the Apple TV app shares with its Top Shelf extension.
+nonisolated enum AppGroup {
+    static let identifier = "group.net.vinnysaj.vinnyfin"
+}
+#endif
