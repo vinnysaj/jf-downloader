@@ -139,10 +139,71 @@ struct UpNextWidgetTests {
 }
 
 /// Moving a sign-in kept where only the app read it to the app group, where the widgets read it.
-struct SignInMoveTests {
+/// Each test has its own pair of defaults suites, removed after it.
+final class SignInMoveTests {
+    private let suiteName = "SignInMoveTests-\(UUID().uuidString)"
+    private let account = AccountStore.Account(serverURL: URL(string: "http://den.local:8096")!, serverId: "server-1",
+                                               serverName: "Den", userId: "u", userName: "alex")
+
+    deinit {
+        for suffix in ["-app", "-shared"] {
+            UserDefaults(suiteName: suiteName + suffix)?.removePersistentDomain(forName: suiteName + suffix)
+        }
+    }
+
     private func suites() throws -> (app: UserDefaults, shared: UserDefaults) {
-        let name = "SignInMoveTests-\(UUID().uuidString)"
-        return (try #require(UserDefaults(suiteName: name + "-app")), try #require(UserDefaults(suiteName: name + "-shared")))
+        (try #require(UserDefaults(suiteName: suiteName + "-app")), try #require(UserDefaults(suiteName: suiteName + "-shared")))
+    }
+
+    /// The token moves before the defaults, which move only once it has.
+    @Test func movesTheTokenOfTheAppsSignInThenTheDefaults() throws {
+        let (app, shared) = try suites()
+        app.set(try JSONEncoder().encode(account), forKey: "account")
+        app.set("device-1", forKey: "deviceId")
+        var moved: [String] = []
+        try AccountStore.moveSignIn(from: app, to: shared, isInAppGroup: true) { serverId in
+            #expect(shared.object(forKey: "account") == nil)
+            moved.append(serverId)
+        }
+        #expect(moved == ["server-1"])
+        #expect(shared.data(forKey: "account") != nil)
+        #expect(shared.string(forKey: "deviceId") == "device-1")
+        #expect(app.object(forKey: "account") == nil)
+    }
+
+    /// A build the group isn't granted to would write the group's defaults to a file of its own,
+    /// which a build that has the group never reads.
+    @Test func movesNothingWithoutTheAppGroup() throws {
+        let (app, shared) = try suites()
+        app.set(try JSONEncoder().encode(account), forKey: "account")
+        #expect(throws: SignInMoveError.notInAppGroup) {
+            try AccountStore.moveSignIn(from: app, to: shared, isInAppGroup: false) { _ in Issue.record("The token moved") }
+        }
+        #expect(app.data(forKey: "account") != nil)
+        #expect(shared.object(forKey: "account") == nil)
+    }
+
+    @Test func leavesTheDefaultsWhereTheyAreWhenTheTokenCantMove() throws {
+        let (app, shared) = try suites()
+        app.set(try JSONEncoder().encode(account), forKey: "account")
+        app.set("device-1", forKey: "deviceId")
+        #expect(throws: KeychainError.self) {
+            try AccountStore.moveSignIn(from: app, to: shared, isInAppGroup: true) { _ in
+                throw KeychainError(message: "Couldn't save the sign-in to the Keychain", status: errSecMissingEntitlement)
+            }
+        }
+        #expect(app.data(forKey: "account") != nil)
+        #expect(app.string(forKey: "deviceId") == "device-1")
+        #expect(shared.object(forKey: "account") == nil)
+    }
+
+    /// The defaults moved on an earlier launch; the token goes now, by the group's sign-in.
+    @Test func movesTheTokenOfASignInAlreadyInTheGroup() throws {
+        let (app, shared) = try suites()
+        shared.set(try JSONEncoder().encode(account), forKey: "account")
+        var moved: [String] = []
+        try AccountStore.moveSignIn(from: app, to: shared, isInAppGroup: true) { moved.append($0) }
+        #expect(moved == ["server-1"])
     }
 
     @Test func movesTheSignInsDefaultsAndNothingElse() throws {

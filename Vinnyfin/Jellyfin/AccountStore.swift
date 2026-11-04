@@ -69,25 +69,29 @@ final class AccountStore {
 
     #if os(iOS) || os(macOS)
     /// The app's sign-in, moved first from where only the app reads it to the app group, for the
-    /// widgets. While its token can't be moved, the app reads it where it is, without asking the
-    /// app group's Keychain, which may be what refused it.
+    /// widgets. While it can't be moved, the app keeps it where it is for this run: in its own
+    /// defaults, with its own Keychain item, or the group's for a sign-in saved since.
     convenience init(movingSignInFrom appDefaults: UserDefaults) {
-        let sharingProblem: String?
+        let moveError: (any Error)?
         do {
             try Self.moveSignInToAppGroup(from: appDefaults, to: Self.savedDefaults)
-            sharingProblem = nil
+            moveError = nil
         } catch {
-            Self.log.error("Couldn't move the sign-in to the app group: \(error.localizedDescription, privacy: .public)")
-            sharingProblem = "The widgets can't use your sign-in: \(error.localizedDescription) vinnyfin stays signed in and tries again the next time it opens."
+            moveError = error
         }
-        self.init(defaults: Self.savedDefaults) { serverId in
+        guard let moveError else {
+            self.init(defaults: Self.savedDefaults)
+            return
+        }
+        Self.log.error("Couldn't move the sign-in to the app group: \(moveError.localizedDescription, privacy: .public)")
+        self.init(defaults: appDefaults) { serverId in
             try Keychain.appToken(for: serverId) ?? Keychain.token(for: serverId)
         }
-        self.sharingProblem = sharingProblem
+        sharingProblem = "The widgets can't use your sign-in: \(moveError.localizedDescription) vinnyfin stays signed in and tries again the next time it opens."
     }
     #endif
 
-    private static func savedAccount(in defaults: UserDefaults) throws -> Account? {
+    nonisolated private static func savedAccount(in defaults: UserDefaults) throws -> Account? {
         guard let data = defaults.data(forKey: accountKey) else { return nil }
         return try JSONDecoder().decode(Account.self, from: data)
     }
@@ -190,18 +194,31 @@ extension AccountStore {
     nonisolated static let sharedKeys = [accountKey, deviceIdKey, lastServerKey, lastUserNameKey]
 
     /// Moves a sign-in kept where only the app reads it, its own defaults and Keychain item, to
-    /// the app group. The defaults go first; the token is copied, read back, and only then deleted
-    /// where it was, so a failure leaves it there for the app to keep using. It runs at each
-    /// launch and does nothing once everything has moved.
+    /// the app group. It runs at each launch and does nothing once everything has moved.
     static func moveSignInToAppGroup(from appDefaults: UserDefaults, to sharedDefaults: UserDefaults) throws {
+        try moveSignIn(from: appDefaults, to: sharedDefaults, isInAppGroup: AppGroup.container != nil) { serverId in
+            try moveToken(
+                read: { try Keychain.appToken(for: serverId) },
+                readShared: { try Keychain.token(for: serverId) },
+                writeShared: { try Keychain.setToken($0, for: serverId) },
+                deleteOriginal: { try Keychain.deleteAppToken(for: serverId) }
+            )
+        }
+    }
+
+    /// Moves the token of the sign-in first, the app's own if it has one, then the defaults, and
+    /// those only once the group has proven itself. A build the group isn't granted to, as one
+    /// built without signing or a Mac app whose profile lacks the group, has no container on
+    /// iPhone and iPad, and the Keychain refuses it the group everywhere; its group defaults are
+    /// a file of the app's own, which a build that has the group never reads, so a sign-in moved
+    /// there would be lost to it.
+    nonisolated static func moveSignIn(from appDefaults: UserDefaults, to sharedDefaults: UserDefaults, isInAppGroup: Bool,
+                                       movingToken: (_ serverId: String) throws -> Void) throws {
+        guard isInAppGroup else { throw SignInMoveError.notInAppGroup }
+        if let account = try savedAccount(in: appDefaults) ?? savedAccount(in: sharedDefaults) {
+            try movingToken(account.serverId)
+        }
         moveDefaults(from: appDefaults, to: sharedDefaults)
-        guard let account = try savedAccount(in: sharedDefaults) else { return }
-        try moveToken(
-            read: { try Keychain.appToken(for: account.serverId) },
-            readShared: { try Keychain.token(for: account.serverId) },
-            writeShared: { try Keychain.setToken($0, for: account.serverId) },
-            deleteOriginal: { try Keychain.deleteAppToken(for: account.serverId) }
-        )
     }
 
     /// Moves each of the sign-in's values in the app's own defaults to the group's. Anything left
@@ -229,10 +246,14 @@ extension AccountStore {
 }
 
 nonisolated enum SignInMoveError: LocalizedError {
+    case notInAppGroup
     case copyDiffers
 
     var errorDescription: String? {
-        "The Keychain's copy of the sign-in didn't read back the same."
+        switch self {
+        case .notInAppGroup: "This build of vinnyfin isn't in the app group \(AppGroup.identifier)."
+        case .copyDiffers: "The Keychain's copy of the sign-in didn't read back the same."
+        }
     }
 }
 #endif
