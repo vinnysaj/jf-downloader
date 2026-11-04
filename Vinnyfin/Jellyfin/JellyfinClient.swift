@@ -205,29 +205,84 @@ nonisolated struct JellyfinClient: Sendable {
         }
     }
 
-    /// The item with its media sources. Behind Gelato this is also the call that makes the
-    /// server look up the item's streams, so it can take a few seconds.
+    /// The item with its versions, its own first, and the position of the version played last.
+    /// Behind Gelato this is also the call that makes the server look up the item's streams, so
+    /// it can take a few seconds.
     func item(id: String, userId: String) async throws -> JellyfinItem {
-        try await get("Items/\(id)", query: ["userId": userId, "fields": Self.detailFields])
+        try await withOwnVersionFirst(get("Items/\(id)", query: ["userId": userId, "fields": Self.detailFields]), userId: userId)
     }
 
+    /// What's partway through, each as the item library lists show, at the position reached last.
     func resumeItems(userId: String, startIndex: Int = 0, limit: Int = 20) async throws -> ItemsPage {
-        try await get("UserItems/Resume", query: [
+        try await listedItems(in: get("UserItems/Resume", query: [
             "userId": userId, "startIndex": String(startIndex), "limit": String(limit), "mediaTypes": "Video",
-            "fields": Self.listFields, "enableUserData": "true", "imageTypeLimit": "1",
+            "fields": Self.listFields + ",MediaSourceCount", "enableUserData": "true", "imageTypeLimit": "1",
             "enableImageTypes": "Primary,Backdrop,Thumb,Logo",
-        ])
+        ]), userId: userId)
     }
 
-    /// The next episode to watch of every show in progress, or of one show.
+    /// The next episode to watch of every show in progress, or of one show, each as the item
+    /// library lists show, at the position reached last.
     func nextUp(userId: String, seriesId: String? = nil, startIndex: Int = 0, limit: Int = 20) async throws -> ItemsPage {
         var query = [
-            "userId": userId, "startIndex": String(startIndex), "limit": String(limit), "fields": Self.listFields,
-            "enableUserData": "true", "imageTypeLimit": "1", "enableImageTypes": "Primary,Backdrop,Thumb,Logo",
-            "enableResumable": "true", "disableFirstEpisode": "false",
+            "userId": userId, "startIndex": String(startIndex), "limit": String(limit),
+            "fields": Self.listFields + ",MediaSourceCount", "enableUserData": "true", "imageTypeLimit": "1",
+            "enableImageTypes": "Primary,Backdrop,Thumb,Logo", "enableResumable": "true", "disableFirstEpisode": "false",
         ]
         if let seriesId { query["seriesId"] = seriesId }
-        return try await get("Shows/NextUp", query: query)
+        return try await listedItems(in: get("Shows/NextUp", query: query), userId: userId)
+    }
+
+    // MARK: Versions
+
+    /// The item with its own version first and the position of the version played last, when
+    /// the server lists another version ahead of the item's own (see `JellyfinItem.versionPlayedLast`).
+    private func withOwnVersionFirst(_ item: JellyfinItem, userId: String) async throws -> JellyfinItem {
+        guard let playedLast = item.versionPlayedLast else { return item }
+        let data: UserItemData = try await get("UserItems/\(playedLast.id)/UserData", query: ["userId": userId])
+        return item.withOwnVersionFirst(positionFrom: data)
+    }
+
+    /// The page with each item that has versions replaced by the item library lists show for it,
+    /// at the position of its version played last. Resume names the version partway through, and
+    /// Next Up can name the version of the next episode matching the one played, either of which
+    /// can be an alternate version: an item of its own, whose page and playback are that version's.
+    private func listedItems(in page: ItemsPage, userId: String) async throws -> ItemsPage {
+        let versioned = page.items.filter { ($0.mediaSourceCount ?? 0) > 1 }
+        guard !versioned.isEmpty else { return page }
+        let types = Array(Set(versioned.map(\.type)))
+        var listed = try await self.listed(ids: versioned.map(\.id), types: types, userId: userId)
+        let alternates = versioned.filter { item in !listed.contains { $0.id == item.id } }
+        if !alternates.isEmpty {
+            // An alternate version lists every version of its item, the item's own among them.
+            let versionIds = try await withThrowingTaskGroup(of: [String].self) { group in
+                for alternate in alternates {
+                    group.addTask {
+                        let detail: JellyfinItem = try await get("Items/\(alternate.id)", query: ["userId": userId, "fields": "MediaSources"])
+                        return detail.mediaSources?.map(\.id) ?? []
+                    }
+                }
+                return try await group.reduce(into: Set<String>()) { $0.formUnion($1) }
+            }
+            let known = Set(listed.map(\.id))
+            listed += try await self.listed(ids: versionIds.subtracting(known).sorted(), types: types, userId: userId)
+        }
+        let shown = try await withThrowingTaskGroup(of: JellyfinItem.self) { group in
+            for item in listed {
+                group.addTask { try await withOwnVersionFirst(item, userId: userId) }
+            }
+            return try await group.reduce(into: [JellyfinItem]()) { $0.append($1) }
+        }
+        return ItemsPage(items: page.items.map { $0.listedItem(among: shown) ?? $0 }, totalRecordCount: page.totalRecordCount)
+    }
+
+    /// Those of `ids` that library lists show, with their versions.
+    private func listed(ids: [String], types: [String], userId: String) async throws -> [JellyfinItem] {
+        guard !ids.isEmpty else { return [] }
+        var query = ItemQuery(types: types)
+        query.ids = ids
+        query.fields = Self.listFields + ",MediaSources"
+        return try await items(userId: userId, query).items
     }
 
     func similar(to itemId: String, userId: String, limit: Int = 16) async throws -> [JellyfinItem] {

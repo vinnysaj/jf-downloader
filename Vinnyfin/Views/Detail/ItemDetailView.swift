@@ -36,7 +36,8 @@ struct ItemDetailView: View {
     @State private var detail: JellyfinItem?
     @State private var similar: [JellyfinItem] = []
     @State private var loadError: String?
-    /// A version the user picked; nil lets playback and downloads choose by quality.
+    /// A version the user picked, for plays and downloads from this page; nil lets them choose by
+    /// quality. It isn't kept: every other playback starts with the version the quality allows.
     @State private var pickedSourceId: String?
     #if os(tvOS)
     @FocusState private var playFocused: Bool
@@ -131,7 +132,7 @@ struct ItemDetailView: View {
             }
             .padding()
             .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 16))
-            Text("Plays and downloads use the version picked here. Without a pick, they choose the one closest to your quality settings.")
+            Text("Plays and downloads from this page use the version picked here. Everywhere else, and once you leave the page, they start with the one closest to your quality settings.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
