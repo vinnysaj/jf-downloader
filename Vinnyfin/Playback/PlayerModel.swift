@@ -152,6 +152,9 @@ final class PlayerModel: Identifiable {
     var isTranscoding: Bool { current?.isTranscode ?? false }
     var isPlaying: Bool { status == .playing || status == .buffering }
     var item: JellyfinItem? { current?.item }
+    /// The scrub previews, from the server for a stream and from the saved files for a download.
+    var trickplay: TrickplayTiles? { current?.trickplay }
+    var chapters: [ChapterMark] { current?.chapters ?? [] }
 
     /// The intro, recap, preview or credits being played, which the player offers to skip.
     func skippableSegment(at time: Double) -> MediaSegment? {
@@ -308,22 +311,50 @@ final class PlayerModel: Identifiable {
         }
     }
 
-    /// The next episode and the skippable segments, which playback doesn't wait for.
+    /// The next episode and the skippable segments, which playback doesn't wait for. A download
+    /// falls back on its saved segments and on the next episode downloaded. What the server
+    /// can't give is logged, and for a stream, where the skip buttons or the next episode would
+    /// be missed, the player says so once.
     private func loadExtras(for resolved: ResolvedPlayback) async {
         guard let item = resolved.item else { return }
+        var missing: [String] = []
+        var lastError: (any Error)?
+        var foundNext = false
+        var nextFailed = false
         if let client = accounts.client, let account = accounts.account {
-            if let found = try? await client.mediaSegments(itemId: item.id), current?.historyKey == resolved.historyKey {
-                segments = found
+            do {
+                let found = try await client.mediaSegments(itemId: item.id)
+                if current?.historyKey == resolved.historyKey { segments = found }
+            } catch JellyfinError.http(let status, _) where status == 404 {
+                // The server keeps no segments for it.
+            } catch is CancellationError {
+                return
+            } catch {
+                Self.log.notice("Couldn't load the segments to skip: \(error.localizedDescription, privacy: .public)")
+                if resolved.segments.isEmpty { missing.append("the buttons to skip intros and credits") }
+                lastError = error
             }
             if item.isEpisode, let seriesId = item.seriesId {
-                if let next = try? await client.episode(after: item.id, seriesId: seriesId, userId: account.userId) {
+                do {
+                    let next = try await client.episode(after: item.id, seriesId: seriesId, userId: account.userId)
                     if current?.historyKey == resolved.historyKey { nextEpisode = next }
+                    foundNext = true
+                } catch is CancellationError {
                     return
+                } catch {
+                    Self.log.notice("Couldn't find the next episode: \(error.localizedDescription, privacy: .public)")
+                    nextFailed = true
+                    lastError = error
                 }
             }
         }
-        if item.isEpisode, current?.historyKey == resolved.historyKey {
+        guard current?.historyKey == resolved.historyKey else { return }
+        if item.isEpisode, !foundNext {
             nextEpisode = downloadedEpisode(item)
+            if nextEpisode == nil, nextFailed { missing.append("the next episode") }
+        }
+        if resolved.isStream, !missing.isEmpty, let lastError {
+            show("Couldn't load \(missing.formatted(.list(type: .and))): \(lastError.localizedDescription)", for: 6)
         }
     }
 

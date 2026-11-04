@@ -41,6 +41,8 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var mediaSources: [MediaSource]?
     var people: [Person]?
     var chapters: [Chapter]?
+    /// The scrub previews the server made, by version and then by width in pixels.
+    var trickplay: [String: [String: TrickplayInfo]]?
 
     enum CodingKeys: String, CodingKey {
         case id = "Id", name = "Name", type = "Type", sortName = "SortName", overview = "Overview"
@@ -56,7 +58,7 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
         case parentLogoImageTag = "ParentLogoImageTag", parentThumbItemId = "ParentThumbItemId"
         case parentThumbImageTag = "ParentThumbImageTag", seriesPrimaryImageTag = "SeriesPrimaryImageTag"
         case primaryImageAspectRatio = "PrimaryImageAspectRatio", userData = "UserData"
-        case mediaSources = "MediaSources", people = "People", chapters = "Chapters"
+        case mediaSources = "MediaSources", people = "People", chapters = "Chapters", trickplay = "Trickplay"
     }
 
     init(id: String, name: String, type: String) {
@@ -170,10 +172,33 @@ nonisolated struct Person: Codable, Hashable, Sendable, Identifiable {
 nonisolated struct Chapter: Codable, Hashable, Sendable {
     var startPositionTicks: Int64
     var name: String?
+    /// Set when the server has a picture of the chapter's start.
+    var imageTag: String?
 
     enum CodingKeys: String, CodingKey {
-        case startPositionTicks = "StartPositionTicks", name = "Name"
+        case startPositionTicks = "StartPositionTicks", name = "Name", imageTag = "ImageTag"
     }
+
+    var start: Double { Double(startPositionTicks) / 10_000_000 }
+}
+
+/// One width of a version's scrub previews: a thumbnail every `interval` milliseconds, laid out
+/// left to right and top to bottom on sheets of `tileWidth` by `tileHeight`.
+nonisolated struct TrickplayInfo: Codable, Hashable, Sendable {
+    let width: Int
+    let height: Int
+    let tileWidth: Int
+    let tileHeight: Int
+    let thumbnailCount: Int
+    let interval: Int
+
+    enum CodingKeys: String, CodingKey {
+        case width = "Width", height = "Height", tileWidth = "TileWidth", tileHeight = "TileHeight"
+        case thumbnailCount = "ThumbnailCount", interval = "Interval"
+    }
+
+    var thumbnailsPerSheet: Int { max(1, tileWidth * tileHeight) }
+    var sheetCount: Int { (thumbnailCount + thumbnailsPerSheet - 1) / thumbnailsPerSheet }
 }
 
 /// The parts of Jellyfin's `MediaSourceInfo` this app reads: one version of an item.

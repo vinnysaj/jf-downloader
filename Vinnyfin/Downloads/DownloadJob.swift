@@ -33,12 +33,17 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     /// The size Jellyfin listed for the source, shown until the server confirms the real one.
     let sizeHint: Int64?
     let createdAt: Date
-    /// The item as it was when queued, with only the chosen version, for browsing and playing
-    /// it offline.
+    /// The item as it was when queued or its extras last looked it up, with only the chosen
+    /// version, for browsing and playing it offline.
     var item: JellyfinItem?
     /// The server's marked intro, credits and the like, for skipping them offline. Nil until
-    /// fetched, and for downloads queued before segments were kept.
+    /// fetched.
     var segments: [MediaSegment]?
+    /// When `item` was last taken from the server's details. Nil for downloads queued before
+    /// the details included what their extras need (`DownloadExtras`).
+    var extrasCheckedAt: Date?
+    /// What its extras take on disk, as of the last time it had them all.
+    var extrasBytes: Int64?
 
     var status = Status.active
     var rangeSupport = RangeSupport.unknown
@@ -70,6 +75,7 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
         sizeHint = source.plausibleSize
         createdAt = now
         self.item = Self.snapshot(of: item, keeping: source)
+        extrasCheckedAt = now
     }
 
     static func snapshot(of item: JellyfinItem, keeping source: MediaSource) -> JellyfinItem {
@@ -83,6 +89,9 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     var isEpisode: Bool { item?.isEpisode ?? (subtitle != nil) }
 
     var displayTotalBytes: Int64? { totalBytes ?? sizeHint }
+
+    /// The file and its extras, as far as they're known.
+    var storedBytes: Int64 { (totalBytes ?? 0) + (extrasBytes ?? 0) }
 
     var isTransferComplete: Bool {
         guard let totalBytes else { return false }

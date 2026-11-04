@@ -1,4 +1,6 @@
 import AetherEngine
+import Nuke
+import OSLog
 import SwiftUI
 
 /// The player's controls over the picture: close and title along the top, transport in the
@@ -257,6 +259,9 @@ struct PlayerControls: View {
             .disabled(model.audioOptions.isEmpty)
         panelButton(.subtitles, identifier: "player.subtitles", filled: model.selectedSubtitle != nil)
         panelButton(.speed, identifier: "player.speed")
+        if !model.chapters.isEmpty {
+            panelButton(.chapters, identifier: "player.chapters")
+        }
     }
 
     private func panelButton(_ kind: PlayerPanel, identifier: String, filled: Bool = false) -> some View {
@@ -304,8 +309,9 @@ private struct FormatBadge: View {
     }
 }
 
-/// The timeline: how far along, how much is buffered, and a handle to drag (or, on Apple TV,
-/// to move with the remote and click to jump).
+/// The timeline: how far along, how much is buffered, where chapters start, and a handle to drag
+/// (or, on Apple TV, to move with the remote and click to jump). While it moves, a preview over
+/// it shows the picture there, when the server made scrub previews, and the chapter.
 struct Scrubber: View {
     let model: PlayerModel
     @Binding var position: Double?
@@ -329,9 +335,27 @@ struct Scrubber: View {
                         .frame(width: width * min(1, max(0, model.clock.buffered / duration)))
                     Capsule().fill(.white)
                         .frame(width: width * min(1, max(0, time / duration)))
+                    ForEach(model.chapters.filter { $0.start > 0 && $0.start < duration }) { chapter in
+                        Rectangle().fill(.black.opacity(0.55))
+                            .frame(width: 2)
+                            .offset(x: width * chapter.start / duration - 1)
+                    }
                 }
                 .frame(height: barHeight)
                 .frame(maxHeight: .infinity)
+                .overlay(alignment: .bottomLeading) {
+                    if let position {
+                        ScrubPreview(model: model, time: position)
+                            .alignmentGuide(.leading) { preview in
+                                // Centered over the handle, kept within the timeline.
+                                let center = width * min(1, max(0, position / duration))
+                                return -min(max(0, center - preview.width / 2), max(0, width - preview.width))
+                            }
+                            .alignmentGuide(.bottom) { preview in preview.height + 18 }
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                }
                 #if !os(tvOS)
                 .contentShape(.rect)
                 .gesture(
@@ -412,5 +436,89 @@ struct Scrubber: View {
         let minutes = (total / 60) % 60
         let secs = total % 60
         return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, secs) : String(format: "%d:%02d", minutes, secs)
+    }
+}
+
+/// Over the timeline while it moves: the picture at that point, when the server made scrub
+/// previews, with the chapter and the time under it.
+private struct ScrubPreview: View {
+    let model: PlayerModel
+    let time: Double
+
+    var body: some View {
+        let chapter = ChapterMark.current(in: model.chapters, at: time)
+        VStack(spacing: 4) {
+            if let tiles = model.trickplay {
+                TrickplayThumbnail(tiles: tiles, time: time)
+                    .frame(width: Self.thumbnailWidth)
+                    .clipShape(.rect(cornerRadius: 8))
+            }
+            if let chapter {
+                Text(chapter.name).font(.caption.weight(.semibold)).lineLimit(1)
+            }
+            Text(Scrubber.format(time)).font(.caption).monospacedDigit()
+        }
+        .padding(model.trickplay == nil ? 8 : 4)
+        .frame(maxWidth: Self.thumbnailWidth + 8)
+        .platformGlass(in: .rect(cornerRadius: 12))
+        .accessibilityHidden(true)
+    }
+
+    private static var thumbnailWidth: CGFloat {
+        #if os(tvOS)
+        320
+        #else
+        CGFloat(TrickplayTiles.preferredWidth) / 2
+        #endif
+    }
+}
+
+/// One thumbnail cut from its sheet of scrub previews, which comes from the image cache, or from
+/// disk for a download.
+private struct TrickplayThumbnail: View {
+    let tiles: TrickplayTiles
+    let time: Double
+    @State private var sheet: (index: Int, image: CGImage)?
+    /// The sheet that couldn't be loaded, whose thumbnails say so.
+    @State private var failedSheet: Int?
+
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "player")
+
+    var body: some View {
+        let spot = tiles.thumbnail(at: time)
+        Group {
+            if let spot, let sheet, sheet.index == spot.sheet, let thumbnail = sheet.image.cropping(to: spot.rect) {
+                Image(decorative: thumbnail, scale: 1).resizable()
+            } else {
+                Rectangle().fill(.black.opacity(0.6))
+                    .overlay {
+                        if let spot, failedSheet == spot.sheet {
+                            Text("No preview").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+            }
+        }
+        .aspectRatio(CGFloat(tiles.info.width) / CGFloat(max(1, tiles.info.height)), contentMode: .fit)
+        .task(id: spot?.sheet) {
+            guard let index = spot?.sheet, sheet?.index != index else { return }
+            do {
+                let image = try await ImagePipeline.shared.image(for: tiles.sheets[index])
+                #if os(macOS)
+                let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                #else
+                let cgImage = image.cgImage
+                #endif
+                if let cgImage {
+                    sheet = (index, cgImage)
+                } else {
+                    Self.log.notice("Scrub preview sheet \(index) has no bitmap")
+                    failedSheet = index
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                Self.log.notice("Couldn't load scrub previews: \(error.localizedDescription, privacy: .public)")
+                failedSheet = index
+            }
+        }
     }
 }

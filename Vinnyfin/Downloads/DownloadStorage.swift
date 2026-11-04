@@ -8,6 +8,8 @@ import Foundation
 /// - `Library/Application Support/Downloads/` holds the job list and the partial files, out of
 ///   the Files app's sight and out of backups.
 /// - `…/Downloads/Artwork/` holds each downloaded item's pictures, for browsing offline.
+/// - `…/Downloads/Extras/<job>/` holds a download's scrub previews and chapter pictures; its
+///   subtitle files sit beside the finished file (`DownloadExtras`).
 /// - `…/Downloads/Staging/` holds bodies the session delegate moved out of the system's
 ///   temporary location, until they are written into their partial file.
 nonisolated struct DownloadStorage: Sendable {
@@ -20,6 +22,7 @@ nonisolated struct DownloadStorage: Sendable {
     var partials: URL { root.appending(path: "Partials", directoryHint: .isDirectory) }
     var staging: URL { root.appending(path: "Staging", directoryHint: .isDirectory) }
     var artwork: URL { root.appending(path: "Artwork", directoryHint: .isDirectory) }
+    var extras: URL { root.appending(path: "Extras", directoryHint: .isDirectory) }
     /// Resume data of ranges cancelled for a playback, one file per range.
     var held: URL { root.appending(path: "Held", directoryHint: .isDirectory) }
 
@@ -39,7 +42,7 @@ nonisolated struct DownloadStorage: Sendable {
 
     func prepare() throws {
         let manager = FileManager.default
-        for directory in [finished, partials, staging, artwork, held] {
+        for directory in [finished, partials, staging, artwork, extras, held] {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         var excluded = URLResourceValues()
@@ -62,36 +65,48 @@ nonisolated struct DownloadStorage: Sendable {
         artwork.appending(path: "\(itemId)-\(kind.rawValue).jpg")
     }
 
-    /// Fetches the pictures an offline list and detail screen show: the item's own, and for an
-    /// episode its show's poster.
-    func saveArtwork(for item: JellyfinItem, client: JellyfinClient) async throws {
-        var wanted: [(id: String, kind: JellyfinClient.ImageKind, tag: String?, width: Int, file: URL)] = [
-            (item.id, .primary, item.primaryImageTag, 600, artworkFile(itemId: item.id, kind: .primary)),
-        ]
-        if let tag = item.backdropImageTags?.first {
-            wanted.append((item.id, .backdrop, tag, 1280, artworkFile(itemId: item.id, kind: .backdrop)))
-        } else if let parent = item.parentBackdropItemId, let tag = item.parentBackdropImageTags?.first {
-            wanted.append((parent, .backdrop, tag, 1280, artworkFile(itemId: item.id, kind: .backdrop)))
-        }
-        if let seriesId = item.seriesId {
-            wanted.append((seriesId, .primary, item.seriesPrimaryImageTag, 600, artworkFile(itemId: seriesId, kind: .primary)))
-        }
-        for image in wanted where !FileManager.default.fileExists(atPath: image.file.path) {
-            let url = client.imageURL(itemId: image.id, kind: image.kind, tag: image.tag, maxWidth: image.width)
-            let (downloaded, response) = try await URLSession.shared.download(from: url)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                // An item without that picture.
-                try FileManager.default.removeItem(at: downloaded)
-                continue
-            }
-            try FileManager.default.moveItem(at: downloaded, to: image.file)
+    func removeArtwork(for itemId: String) throws {
+        for kind in [JellyfinClient.ImageKind.primary, .backdrop, .logo] {
+            let file = artworkFile(itemId: itemId, kind: kind)
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         }
     }
 
-    func removeArtwork(for itemId: String) throws {
-        for kind in [JellyfinClient.ImageKind.primary, .backdrop] {
-            let file = artworkFile(itemId: itemId, kind: kind)
-            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+    // MARK: Extras
+
+    func extrasFolder(for jobId: UUID) -> URL {
+        extras.appending(path: jobId.uuidString, directoryHint: .isDirectory)
+    }
+
+    /// Puts a fetched extra in place, over an older copy.
+    func saveExtra(_ downloaded: URL, to file: URL) throws {
+        let manager = FileManager.default
+        try manager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if manager.fileExists(atPath: file.path) { try manager.removeItem(at: file) }
+        try manager.moveItem(at: downloaded, to: file)
+        #if !os(macOS)
+        // Subtitles beside a finished file are in Documents, which backups would otherwise take.
+        if file.path.hasPrefix(finished.path) {
+            var excluded = URLResourceValues()
+            excluded.isExcludedFromBackup = true
+            var saved = file
+            try saved.setResourceValues(excluded)
+        }
+        #endif
+    }
+
+    /// Deletes a job's folder of extras and the files given, its subtitles beside the file.
+    func removeExtras(for jobId: UUID, besideFile files: [URL]) throws {
+        let manager = FileManager.default
+        for file in files + [extrasFolder(for: jobId)] where manager.fileExists(atPath: file.path) {
+            try manager.removeItem(at: file)
+        }
+    }
+
+    /// What the files take on disk; ones that aren't there count as nothing.
+    func size(of files: [URL]) -> Int64 {
+        files.reduce(0) { total, file in
+            total + Int64((try? file.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0)
         }
     }
 

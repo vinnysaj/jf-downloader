@@ -47,6 +47,14 @@ import OSLog
 /// well: transfers that ended while the app was dead report only after the relaunch, and their
 /// ranges aren't planned again until they have, or `relaunchReportWait` has passed. So is the
 /// resume data of ranges held for a playback, so a kill during one loses none of it.
+///
+/// Each download's extras (`DownloadExtras`: subtitles, scrub previews, chapter pictures,
+/// segments, artwork, details) come through `probeSession`, one request at a time, oldest
+/// download first, whenever the process runs and nothing plays: they're small, and in the
+/// background session each would wait behind the file in hand for a connection and cost the
+/// daemon a task. A pass looks for what's missing as the app launches or is woken, as a
+/// download is queued or published, and as the network or a playback lets go; one cut off by
+/// a suspension carries on at the next. They count in the download's size and go with it.
 @Observable
 final class DownloadManager {
     static let sessionIdentifier = "net.vinnysaj.vinnyfin.transfers"
@@ -116,8 +124,8 @@ final class DownloadManager {
     @ObservationIgnored private let storage: DownloadStorage
     @ObservationIgnored private let delegate: TransferDelegate
     @ObservationIgnored private let session: URLSession
-    /// For probes, which are a byte each: in the background session they would wait behind the
-    /// file in hand for one of its connections, minutes on a slow link.
+    /// For probes, which are a byte each, and extras, which are small: in the background session
+    /// they would wait behind the file in hand for one of its connections, minutes on a slow link.
     @ObservationIgnored private let probeSession: URLSession
     @ObservationIgnored private var running: [Int: RunningTransfer] = [:]
     /// Probes under way through `probeSession`, by job, and the identifier their reports carry.
@@ -151,6 +159,16 @@ final class DownloadManager {
     /// Resume data of ranges cancelled for a playback, to carry on from afterwards. Kept on disk
     /// too, so a kill during the playback loses none of it.
     @ObservationIgnored private var heldResumeData: [TransferTag: Data] = [:]
+    /// A pass over the downloads' extras is under way.
+    private var isFetchingExtras = false
+    @ObservationIgnored private var extrasPass: Task<Void, Never>?
+    /// Something asked for a pass while one ran, so another follows.
+    @ObservationIgnored private var extrasPassWanted = false
+    /// Downloads this pass found with all their extras.
+    @ObservationIgnored private var extrasDone: Set<UUID> = []
+    /// Downloads whose extras failed, how often in a row, and when to try again.
+    @ObservationIgnored private var extrasFailures: [UUID: (count: Int, retryAt: Date)] = [:]
+    @ObservationIgnored private var extrasRetry: Task<Void, Never>?
 
     init(accounts: AccountStore, storage: DownloadStorage = .standard) {
         self.accounts = accounts
@@ -249,6 +267,7 @@ final class DownloadManager {
         // Held ranges left by a run that ended during a playback carry on otherwise.
         if isPausedForPlayback { holdTransfers() } else if !heldResumeData.isEmpty { releaseTransfers() }
         pump()
+        fetchExtrasSoon()
 
         for await event in delegate.events {
             switch event {
@@ -293,15 +312,17 @@ final class DownloadManager {
         }
     }
 
-    /// Hands the session what's next, then returns once the queue has settled (every active
-    /// download done, or held for a playback) or the caller's task is cancelled, for a
-    /// background task to keep the app running that long. Meanwhile the session's events and
-    /// `trackProgress` keep the queue moving.
+    /// Hands the session what's next and looks for missing extras, then returns once the queue
+    /// has settled (every active download done and the extras pass over, or held for a playback)
+    /// or the caller's task is cancelled, for a background task to keep the app running that
+    /// long. Meanwhile the session's events and `trackProgress` keep the queue moving.
     func keepMoving() async {
         pump()
+        fetchExtrasSoon()
         let settled = Observations { [weak self] in
             guard let self else { return true }
-            return self.hasAdoptedTransfers && (self.isPausedForPlayback || DownloadJob.queue(self.jobs).isEmpty)
+            return self.hasAdoptedTransfers
+                && (self.isPausedForPlayback || (DownloadJob.queue(self.jobs).isEmpty && !self.isFetchingExtras))
         }
         for await isSettled in settled where isSettled || Task.isCancelled { return }
     }
@@ -328,28 +349,7 @@ final class DownloadManager {
         if startedByUser { userStartedJobIds.insert(job.id) }
         save()
         pump()
-        if let client = accounts.client {
-            let storage = storage
-            Task { [weak self] in
-                do {
-                    try await storage.saveArtwork(for: item, client: client)
-                } catch {
-                    Self.log.notice("Couldn't save artwork for \(item.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                }
-                self?.artworkRevision += 1
-            }
-            // The intro and credits, so the skip buttons work offline too.
-            Task { [weak self] in
-                do {
-                    let segments = try await client.mediaSegments(itemId: item.id)
-                    guard let self, let index = self.index(of: job.id) else { return }
-                    self.jobs[index].segments = segments
-                    self.save()
-                } catch {
-                    Self.log.notice("Couldn't save segments for \(item.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
+        fetchExtrasSoon()
     }
 
     func pause(_ id: UUID) {
@@ -358,6 +358,16 @@ final class DownloadManager {
         jobs[index].status = .paused
         save()
         pump()
+    }
+
+    /// Pauses every download under way.
+    func pauseAll() {
+        for job in jobs where job.status == .active { pause(job.id) }
+    }
+
+    /// Continues every paused download, and retries every failed one.
+    func resumeAll() {
+        for job in jobs where job.status == .paused || job.status == .failed { resume(job.id) }
     }
 
     /// A player opened, or started or stopped playing.
@@ -517,6 +527,7 @@ final class DownloadManager {
             }
         }
         pump()
+        fetchExtrasSoon()
     }
 
     /// Whether a transfer handed to the session, or one that may still report from before a
@@ -553,11 +564,14 @@ final class DownloadManager {
         pump()
     }
 
+    /// Stops and forgets a job, with its extras, and the item's artwork once no other job of it
+    /// is left. `deletingFile` deletes the finished file and the subtitles beside it too.
     func remove(_ id: UUID, deletingFile: Bool = false) {
         guard let index = index(of: id) else { return }
+        let job = jobs[index]
         cancelTransfers(of: id)
         removePartial(of: id)
-        if deletingFile, let savedPath = jobs[index].savedPath {
+        if deletingFile, let savedPath = job.savedPath {
             let file = storage.finished.appending(path: savedPath)
             do {
                 if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
@@ -565,14 +579,18 @@ final class DownloadManager {
                 problem = "Couldn't delete \(file.lastPathComponent): \(error.localizedDescription)"
             }
         }
+        removeExtras(of: job, besideFile: deletingFile)
         jobs.remove(at: index)
+        if !jobs.contains(where: { $0.itemId == job.itemId }) {
+            do {
+                try storage.removeArtwork(for: job.itemId)
+                artworkRevision += 1
+            } catch {
+                problem = "Couldn't delete saved artwork: \(error.localizedDescription)"
+            }
+        }
         save()
         pump()
-    }
-
-    func removeCompleted() {
-        jobs.removeAll { $0.status == .completed }
-        save()
     }
 
     /// Stops and forgets every unfinished job, for signing out. Finished files stay.
@@ -580,6 +598,7 @@ final class DownloadManager {
         for job in jobs where job.status != .completed {
             cancelTransfers(of: job.id)
             removePartial(of: job.id)
+            removeExtras(of: job, besideFile: false)
         }
         jobs.removeAll { $0.status != .completed }
         save()
@@ -589,14 +608,18 @@ final class DownloadManager {
         job.savedPath.map { storage.finished.appending(path: $0) }
     }
 
-    /// A finished download of the item (of that version, when one is given) whose file is still there.
+    /// A finished download of the item (of that version, when one is given) whose file is still
+    /// there, with the extras it has saved.
     func playableFile(itemId: String, mediaSourceId: String?) -> PlaybackResolver.DownloadedCopy? {
         let candidates = jobs.filter {
             $0.itemId == itemId && $0.status == .completed && (mediaSourceId == nil || $0.mediaSourceId == mediaSourceId)
         }
         for job in candidates {
             if let url = savedFileURL(of: job), FileManager.default.fileExists(atPath: url.path) {
-                return PlaybackResolver.DownloadedCopy(url: url, item: job.item, segments: job.segments ?? [])
+                let saved = DownloadExtras.saved(for: job, storage: storage) { FileManager.default.fileExists(atPath: $0.path) }
+                return PlaybackResolver.DownloadedCopy(url: url, item: job.item, segments: job.segments ?? [],
+                                                       subtitleFiles: saved.subtitles, trickplaySheets: saved.trickplaySheets,
+                                                       chapterImages: saved.chapterImages)
             }
         }
         return nil
@@ -614,11 +637,6 @@ final class DownloadManager {
     /// Removes every download of the item and deletes its files.
     func deleteDownloads(ofItem itemId: String) {
         for job in jobs where job.itemId == itemId { remove(job.id, deletingFile: true) }
-        do {
-            try storage.removeArtwork(for: itemId)
-        } catch {
-            problem = "Couldn't delete saved artwork: \(error.localizedDescription)"
-        }
     }
 
     /// The downloaded episode that comes after `episode` in its show, for playing on offline.
@@ -646,12 +664,17 @@ final class DownloadManager {
         }
     }
 
-    /// Bytes the finished downloads take up.
+    /// Bytes the finished downloads take up, extras included.
     var storageUsed: Int64 {
-        jobs.filter { $0.status == .completed }.reduce(0) { $0 + ($1.totalBytes ?? 0) }
+        jobs.filter { $0.status == .completed }.reduce(0) { $0 + $1.storedBytes }
     }
 
     func availableCapacity() -> Int64? { storage.availableCapacity() }
+
+    /// The free space the downloads already queued don't need, for new ones.
+    func spaceForNewDownloads() -> Int64? {
+        storage.availableCapacity().map { $0 - queuedBytesRemaining }
+    }
 
     /// Saved artwork for an item, for showing it offline.
     func artworkURL(itemId: String, kind: JellyfinClient.ImageKind) -> URL? {
@@ -890,7 +913,10 @@ final class DownloadManager {
 
     private func networkChanged(reachable: Bool) {
         isNetworkReachable = reachable
-        if reachable { pump() }
+        if reachable {
+            pump()
+            fetchExtrasSoon()
+        }
     }
 
     // MARK: Finished transfers
@@ -1026,6 +1052,9 @@ final class DownloadManager {
             jobs[index].completedAt = .now
             jobs[index].lastError = nil
             jobs[index].retryAt = nil
+            // Its subtitles go beside it now.
+            extrasDone.remove(jobs[index].id)
+            fetchExtrasSoon()
         } catch {
             jobs[index].status = .failed
             jobs[index].lastError = "Couldn't move the finished file into place: \(error.localizedDescription)"
@@ -1044,6 +1073,173 @@ final class DownloadManager {
     private func noteFileExtension(from response: ResponseInfo?, at index: Int) {
         guard jobs[index].fileExtension == nil, let response else { return }
         jobs[index].fileExtension = response.videoExtension
+    }
+
+    // MARK: Extras
+
+    /// After this many failures in a row, a download's extras wait for the next launch, and the
+    /// last failure shows as `problem`.
+    static let extrasAttempts = 3
+
+    /// Starts a pass over the downloads' extras, or another after the one under way.
+    private func fetchExtrasSoon() {
+        extrasPassWanted = true
+        guard extrasPass == nil else { return }
+        isFetchingExtras = true
+        extrasPass = Task { [weak self] in
+            while let self, self.extrasPassWanted {
+                self.extrasPassWanted = false
+                self.extrasDone = []
+                await self.fetchExtras()
+            }
+            self?.extrasPass = nil
+            self?.isFetchingExtras = false
+        }
+    }
+
+    /// Fetches what downloads that are under way or finished lack, oldest first, one request at
+    /// a time, while the server can be reached and nothing plays. A connection that fails ends
+    /// the pass, until the network or the next launch starts another; other failures hold that
+    /// download back for a while (`extrasFailures`).
+    private func fetchExtras() async {
+        while hasAdoptedTransfers, isNetworkReachable, !isPausedForPlayback, !Task.isCancelled,
+              let client = accounts.client, let userId = accounts.account?.userId
+        {
+            guard let next = nextExtrasStep(now: .now) else {
+                // Downloads held back by a failure go again once their wait is over.
+                let waits = extrasFailures.values.map(\.retryAt).filter { $0 != .distantFuture }
+                if let soonest = waits.min() { retryExtras(after: max(1, soonest.timeIntervalSinceNow)) }
+                return
+            }
+            let (job, step) = next
+            do {
+                try await fetch(step, for: job, client: client, userId: userId)
+                extrasFailures[job.id] = nil
+            } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+                if let code = (error as? URLError)?.code, Self.connectionFailures.contains(code) {
+                    Self.log.notice("Extras wait for the connection: \(error.localizedDescription, privacy: .public)")
+                    retryExtras(after: 60)
+                    return
+                }
+                extrasFailed(job, step, error)
+            }
+        }
+    }
+
+    private static let connectionFailures: Set<URLError.Code> = [
+        .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .timedOut,
+        .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed,
+    ]
+
+    /// The oldest download with something to fetch, and what. Records the size of those found
+    /// with everything.
+    private func nextExtrasStep(now: Date) -> (DownloadJob, DownloadExtras.Step)? {
+        let exists = { (file: URL) in FileManager.default.fileExists(atPath: file.path) }
+        for job in jobs.sorted(by: { $0.createdAt < $1.createdAt })
+        where (job.status == .active || job.status == .completed) && !extrasDone.contains(job.id)
+            && (extrasFailures[job.id]?.retryAt ?? .distantPast) <= now
+        {
+            if let step = DownloadExtras.nextStep(for: job, storage: storage, exists: exists, now: now) { return (job, step) }
+            extrasDone.insert(job.id)
+            let size = storage.size(of: DownloadExtras.files(for: job, storage: storage).filter(\.isOwn).map(\.local))
+            if job.extrasBytes != size, let index = index(of: job.id) {
+                jobs[index].extrasBytes = size
+                save()
+            }
+        }
+        return nil
+    }
+
+    private func fetch(_ step: DownloadExtras.Step, for job: DownloadJob, client: JellyfinClient, userId: String) async throws {
+        switch step {
+        case .lookUp:
+            let detail: JellyfinItem
+            do {
+                detail = try await client.item(id: job.itemId, userId: userId)
+            } catch JellyfinError.http(let status, _) where status == 404 {
+                // Gone from the server: the details saved with the download are all there is.
+                Self.log.notice("\(job.title, privacy: .public) is gone from the server; keeping the details it was saved with")
+                update(job.id) { $0.extrasCheckedAt = .now }
+                return
+            }
+            let source = detail.mediaSources?.first { $0.id == job.mediaSourceId } ?? job.item?.mediaSources?.first
+            update(job.id) { saved in
+                if let source { saved.item = DownloadJob.snapshot(of: detail, keeping: source) }
+                saved.extrasCheckedAt = .now
+            }
+        case .segments:
+            let segments: [MediaSegment]
+            do {
+                segments = try await client.mediaSegments(itemId: job.itemId)
+            } catch JellyfinError.http(let status, _) where status == 404 {
+                // A server from before media segments.
+                segments = []
+            }
+            update(job.id) { $0.segments = segments }
+        case .file(let file):
+            let (downloaded, response) = try await probeSession.download(for: URLRequest(url: file.url(using: client)))
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else {
+                discard(downloaded)
+                // Its details may be out of date: the server can make previews or chapter pictures again.
+                if status == 404 { update(job.id) { $0.extrasCheckedAt = .distantPast } }
+                throw JellyfinError.http(status: status, body: "")
+            }
+            // Removed meanwhile: its extras would be left behind.
+            guard index(of: job.id) != nil else { return discard(downloaded) }
+            try storage.saveExtra(downloaded, to: file.local)
+            if case .artwork = file.remote { artworkRevision += 1 }
+        }
+    }
+
+    /// Changes a job that may have been removed while its extras were being fetched.
+    private func update(_ jobId: UUID, _ change: (inout DownloadJob) -> Void) {
+        guard let index = index(of: jobId) else { return }
+        change(&jobs[index])
+        save()
+    }
+
+    private func extrasFailed(_ job: DownloadJob, _ step: DownloadExtras.Step, _ error: any Error) {
+        let count = (extrasFailures[job.id]?.count ?? 0) + 1
+        Self.log.error("Extras of \(job.title, privacy: .public) failed (\(count)): \(String(describing: error), privacy: .public)")
+        guard count < Self.extrasAttempts else {
+            extrasFailures[job.id] = (count, .distantFuture)
+            let what = switch step {
+            case .lookUp: "details"
+            case .segments: "intro and credits markers"
+            case .file(let file): file.description
+            }
+            problem = "Couldn't save the \(what) for \(job.title): \(error.localizedDescription) It plays without them until vinnyfin tries again, the next time it opens."
+            return
+        }
+        extrasFailures[job.id] = (count, .now.addingTimeInterval(30 * DownloadJob.backoff(attempt: count, cap: 8)))
+    }
+
+    /// Another pass once `seconds` have passed, while the app runs, in place of one waiting.
+    private func retryExtras(after seconds: TimeInterval) {
+        extrasRetry?.cancel()
+        extrasRetry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            self?.fetchExtrasSoon()
+        }
+    }
+
+    /// Deletes a job's previews and chapter pictures, and with `besideFile` its subtitles.
+    private func removeExtras(of job: DownloadJob, besideFile: Bool) {
+        extrasFailures[job.id] = nil
+        let subtitles = besideFile
+            ? DownloadExtras.files(for: job, storage: storage).compactMap { file -> URL? in
+                if case .subtitle = file.remote { return file.local }
+                return nil
+            }
+            : []
+        do {
+            try storage.removeExtras(for: job.id, besideFile: subtitles)
+        } catch {
+            problem = "Couldn't delete the subtitles and previews of \(job.title): \(error.localizedDescription)"
+        }
     }
 
     // MARK: Files

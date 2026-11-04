@@ -67,8 +67,18 @@ struct DetailHero<Actions: View>: View {
         return session?.backdrop(item) ?? session?.landscape(item)
     }
 
+    /// The server's, or offline the one saved with a download.
+    private var logoURL: URL? {
+        #if !os(tvOS)
+        if let saved = downloads.artworkURL(itemId: item.id, kind: .logo), session == nil || !downloads.isNetworkReachable {
+            return saved
+        }
+        #endif
+        return session?.logo(item, width: 900)
+    }
+
     @ViewBuilder private var title: some View {
-        if let logo = session?.logo(item, width: 900) {
+        if let logo = logoURL {
             Artwork(url: logo, aspectRatio: nil, cornerRadius: 0, placeholder: "", contentMode: .fit)
                 .frame(maxWidth: logoWidth, maxHeight: logoHeight, alignment: .leading)
                 .accessibilityLabel(item.isEpisode ? (item.seriesName ?? item.name) : item.name)

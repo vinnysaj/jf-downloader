@@ -15,7 +15,8 @@ struct ItemDestination: View {
     }
 }
 
-/// A movie or an episode: play it, pick a version, download it, and more like it.
+/// A movie or an episode: play it, pick a version, download it, and more like it. Offline it
+/// shows the details and artwork saved with a download.
 struct ItemDetailView: View {
     let item: JellyfinItem
 
@@ -23,14 +24,25 @@ struct ItemDetailView: View {
     @Environment(PlayerCoordinator.self) private var player
     @Environment(AppSettings.self) private var settings
     @Environment(AppMessages.self) private var messages
+    #if !os(tvOS)
+    @Environment(DownloadManager.self) private var downloads
+    #endif
     @State private var detail: JellyfinItem?
     @State private var similar: [JellyfinItem] = []
     @State private var loadError: String?
     /// A version the user picked; nil lets playback and downloads choose by quality.
     @State private var pickedSourceId: String?
 
-    private var shown: JellyfinItem { detail ?? item }
-    private var sources: [MediaSource] { detail?.mediaSources ?? [] }
+    /// The server's details, or until they come (offline, never) the ones saved with a download.
+    private var loaded: JellyfinItem? {
+        #if os(tvOS)
+        detail
+        #else
+        detail ?? downloads.jobs(forItem: item.id).lazy.compactMap(\.item).first
+        #endif
+    }
+    private var shown: JellyfinItem { loaded ?? item }
+    private var sources: [MediaSource] { loaded?.mediaSources ?? [] }
     private var playbackSource: MediaSource? {
         sources.first { $0.id == pickedSourceId } ?? VersionChooser.choose(from: sources, quality: settings.streamingQuality)
     }
@@ -89,7 +101,7 @@ struct ItemDetailView: View {
 
     @ViewBuilder private var secondaryButtons: some View {
         #if !os(tvOS)
-        DownloadButton(item: detail, source: pickedSourceId.flatMap { id in sources.first { $0.id == id } })
+        DownloadButton(item: loaded, source: pickedSourceId.flatMap { id in sources.first { $0.id == id } })
         #endif
         WatchedButton(item: shown) { detail = $0 }
         FavoriteButton(item: shown) { detail = $0 }
