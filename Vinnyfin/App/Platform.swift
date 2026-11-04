@@ -1,20 +1,4 @@
 import SwiftUI
-#if canImport(UIKit)
-import UIKit
-#endif
-
-enum Device {
-    /// What people call this device: iPhone, iPad, Apple TV, Apple Vision Pro or Mac.
-    static var name: String {
-        #if os(macOS)
-        "Mac"
-        #elseif os(visionOS)
-        "Apple Vision Pro"
-        #else
-        UIDevice.current.model
-        #endif
-    }
-}
 
 /// Toolbar spots by role. The Mac's window toolbar has no navigation bar, so there they map to
 /// its leading and trailing ends.

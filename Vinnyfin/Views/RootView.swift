@@ -15,18 +15,17 @@ struct RootView: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(SmartDownloads.self) private var smartDownloads
     #endif
+    /// A title a link asked to open, for Home to show.
+    @State private var linkedItem: JellyfinItem?
 
-    private var session: ServerSession? {
-        guard let client = accounts.client, let account = accounts.account else { return nil }
-        return ServerSession(client: client, account: account)
-    }
+    private var session: ServerSession? { accounts.session }
 
     var body: some View {
         @Bindable var player = player
         @Bindable var messages = messages
         Group {
             if let session {
-                MainTabs()
+                MainTabs(linkedItem: $linkedItem)
                     // Each server and user gets fresh browsing state.
                     .id(session.account.serverId + session.account.userId)
             } else {
@@ -60,10 +59,15 @@ struct RootView: View {
             Text(player.problem ?? "")
         }
         .onOpenURL { url in
-            guard url.isFileURL else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            player.playFile(url)
+            if url.isFileURL {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                player.playFile(url)
+            } else if let link = AppLink(url) {
+                open(link)
+            } else {
+                messages.show("vinnyfin can't open \(url.absoluteString).")
+            }
         }
         #if !os(tvOS)
         .onChange(of: scenePhase, initial: true) { _, phase in
@@ -75,6 +79,8 @@ struct RootView: View {
             guard scenePhase != .background else {
                 #if os(iOS) || os(visionOS)
                 await SmartDownloads.scheduleBackgroundRefresh()
+                #elseif os(tvOS)
+                TopShelf.reload()
                 #endif
                 return
             }
@@ -88,6 +94,21 @@ struct RootView: View {
         .task { await downloads.trackProgress() }
         #endif
     }
+
+    /// Plays the title, or shows its page on Home in place of the player.
+    private func open(_ link: AppLink) {
+        switch link.action {
+        case .play:
+            player.play(.item(link.item))
+        case .open:
+            guard session != nil else {
+                messages.show("Sign in to see \(link.name).")
+                return
+            }
+            Task { await player.dismiss() }
+            linkedItem = link.item
+        }
+    }
 }
 
 struct MainTabs: View {
@@ -95,7 +116,10 @@ struct MainTabs: View {
         case home, movies, shows, downloads, settings, search
     }
 
+    /// A title a link asked to open, shown on Home as the page after it.
+    @Binding var linkedItem: JellyfinItem?
     @State private var selection = Destination.home
+    @State private var homePath: [JellyfinItem] = []
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
     #endif
@@ -103,7 +127,7 @@ struct MainTabs: View {
     var body: some View {
         TabView(selection: $selection) {
             Tab("Home", systemImage: "house", value: .home) {
-                HomeView { selection = .downloads }
+                HomeView(path: $homePath) { selection = .downloads }
             }
             Tab("Movies", systemImage: "film", value: .movies) {
                 NavigationStack {
@@ -132,6 +156,12 @@ struct MainTabs: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .onChange(of: linkedItem, initial: true) {
+            guard let linkedItem else { return }
+            selection = .home
+            homePath = [linkedItem]
+            self.linkedItem = nil
+        }
     }
 }
 

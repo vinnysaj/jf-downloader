@@ -166,7 +166,7 @@ struct PlayerWindow: View {
                 Color.black
             }
         }
-        .environment(\.session, accounts.client.flatMap { client in accounts.account.map { ServerSession(client: client, account: $0) } })
+        .environment(\.session, accounts.session)
         .frame(minWidth: 480, minHeight: 270)
         .navigationTitle(model?.title ?? request?.title ?? "vinnyfin")
         .onAppear {
