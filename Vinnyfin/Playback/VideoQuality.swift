@@ -42,15 +42,38 @@ nonisolated enum VideoQuality: String, CaseIterable, Codable, Sendable, Identifi
         case .sd: 2_500_000
         }
     }
+
+    /// The sizes with a limit, largest first.
+    static let limited: [VideoQuality] = [.uhd, .fullHD, .hd, .sd]
+
+    /// The smallest limit a picture `height` lines tall fits in.
+    static func fitting(height: Int) -> VideoQuality {
+        limited.last { ($0.maxHeight ?? .max) >= height } ?? .original
+    }
 }
 
 /// What a version of a title is, as far as picking one goes.
 nonisolated struct VersionTraits: Equatable, Sendable {
     /// The picture's class in lines: 2160, 1080, 720 and so on. Nil when nothing says.
     let resolutionClass: Int?
+    /// Bits per second, as the server measured the file. Nil when it hasn't, as for a Gelato
+    /// stream before it is first opened.
+    let bitrate: Int?
 
     init(_ source: MediaSource) {
         resolutionClass = Self.resolutionClass(of: source)
+        bitrate = source.bitrate.flatMap { $0 > 100_000 ? $0 : nil }
+    }
+
+    /// The bitrate, or failing that a generous guess from the picture's class: what a transcode
+    /// to that size is asked for.
+    var estimatedBitrate: Int? {
+        bitrate ?? resolutionClass.map { VideoQuality.fitting(height: $0).transcodeBitrate }
+    }
+
+    /// "4K", "1080p": the class as the quality settings name it.
+    static func label(forResolution resolution: Int) -> String {
+        resolution == 2160 ? VideoQuality.uhd.label : "\(resolution)p"
     }
 
     /// From the video stream's size, treating a wide 1920x800 as 1080p; failing that, from
@@ -83,6 +106,21 @@ nonisolated enum PlaybackPlan: Equatable, Sendable {
     case direct(MediaSource)
     /// The server scales this version down to `quality`.
     case transcode(MediaSource, VideoQuality)
+
+    var source: MediaSource {
+        switch self {
+        case .direct(let source), .transcode(let source, _): source
+        }
+    }
+
+    /// The picture size it plays at, as the quality settings name it: "4K", "720p". Nil when
+    /// nothing says.
+    var label: String? {
+        switch self {
+        case .direct(let source): VersionTraits(source).resolutionClass.map(VersionTraits.label(forResolution:))
+        case .transcode(_, let quality): quality.label
+        }
+    }
 }
 
 nonisolated enum VersionChooser {
@@ -107,5 +145,74 @@ nonisolated enum VersionChooser {
               let resolution = VersionTraits(source).resolutionClass, resolution > cap
         else { return .direct(source) }
         return .transcode(source, quality)
+    }
+
+    /// A cheaper way to go on playing a title when the connection can't keep up with `playing`:
+    /// the best version below it that the connection carries, else a transcode it carries, when
+    /// transcoding is allowed. Without a measured throughput it takes one step: the next version
+    /// down, else the next transcode down. When nothing fits the throughput, the cheapest there
+    /// is. Nil when nothing is cheaper.
+    ///
+    /// - Parameters:
+    ///   - bitrate: What `playing` was measured at, in bits per second, when it was.
+    ///   - throughput: What the connection delivers, in bits per second, when it was measured.
+    static func planStepDown(from playing: PlaybackPlan, bitrate: Int?, throughput: Int?,
+                             sources: [MediaSource], allowTranscoding: Bool) -> PlaybackPlan? {
+        struct Option {
+            let plan: PlaybackPlan
+            let bitrate: Int
+            let resolution: Int?
+            /// Ranks the dearest first, keeping the server's order between equals.
+            let order: Int
+            func isDearer(than other: Option) -> Bool {
+                (bitrate, resolution ?? 0, -order) > (other.bitrate, other.resolution ?? 0, -other.order)
+            }
+        }
+        let currentResolution: Int?
+        let currentBitrate: Int?
+        switch playing {
+        case .direct(let source):
+            currentResolution = VersionTraits(source).resolutionClass
+            currentBitrate = bitrate ?? VersionTraits(source).estimatedBitrate
+        case .transcode(_, let quality):
+            currentResolution = quality.maxHeight
+            currentBitrate = bitrate ?? quality.transcodeBitrate
+        }
+        guard let currentBitrate else { return nil }
+        // A step has to save enough to be worth the pause it costs, and never makes the picture bigger.
+        func isCheaper(bitrate: Int, resolution: Int?) -> Bool {
+            if let resolution, let currentResolution, resolution > currentResolution { return false }
+            return Double(bitrate) <= Double(currentBitrate) * 0.85
+        }
+        let versions = sources.enumerated().compactMap { index, source -> Option? in
+            let traits = VersionTraits(source)
+            guard let estimate = traits.estimatedBitrate, isCheaper(bitrate: estimate, resolution: traits.resolutionClass) else { return nil }
+            return Option(plan: .direct(source), bitrate: estimate, resolution: traits.resolutionClass, order: index)
+        }
+        let transcodes = !allowTranscoding ? [] : VideoQuality.limited.enumerated().compactMap { index, quality -> Option? in
+            guard isCheaper(bitrate: quality.transcodeBitrate, resolution: quality.maxHeight) else { return nil }
+            let source = transcodeSource(for: quality, from: sources) ?? playing.source
+            return Option(plan: .transcode(source, quality), bitrate: quality.transcodeBitrate, resolution: quality.maxHeight, order: index)
+        }
+        let dearestFirst = { (options: [Option]) in options.sorted { $0.isDearer(than: $1) } }
+        guard let throughput else {
+            return (dearestFirst(versions).first ?? dearestFirst(transcodes).first)?.plan
+        }
+        // Room for the connection's dips and for the audio.
+        let budget = Double(throughput) * 0.8
+        let fits = { (option: Option) in Double(option.bitrate) <= budget }
+        if let version = dearestFirst(versions).first(where: fits) { return version.plan }
+        if let transcode = dearestFirst(transcodes).first(where: fits) { return transcode.plan }
+        return dearestFirst(versions + transcodes).last?.plan
+    }
+
+    /// The version a transcode to `quality` is best made from: the smallest that is at least
+    /// that size, which is the least for the server to read and scale.
+    private static func transcodeSource(for quality: VideoQuality, from sources: [MediaSource]) -> MediaSource? {
+        let height = quality.maxHeight ?? 0
+        return sources.filter { (VersionTraits($0).resolutionClass ?? 0) >= height }.min { lhs, rhs in
+            let (left, right) = (VersionTraits(lhs), VersionTraits(rhs))
+            return (left.resolutionClass ?? 0, left.estimatedBitrate ?? .max) < (right.resolutionClass ?? 0, right.estimatedBitrate ?? .max)
+        }
     }
 }
