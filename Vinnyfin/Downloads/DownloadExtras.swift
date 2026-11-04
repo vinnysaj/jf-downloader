@@ -58,10 +58,9 @@ nonisolated enum DownloadExtras {
 
     /// What a download fetches next.
     enum Step: Equatable, Sendable {
-        /// The item's details, again: the job was queued before they included what extras need,
-        /// or the server may have made previews or chapter pictures since.
+        /// The item's details, with the downloaded version's chapters and segments: once, and
+        /// again while the server may still make previews or chapter pictures.
         case lookUp
-        case segments
         case file(File)
     }
 
@@ -74,12 +73,11 @@ nonisolated enum DownloadExtras {
     /// is on disk.
     static func nextStep(for job: DownloadJob, storage: DownloadStorage, exists: (URL) -> Bool, now: Date) -> Step? {
         if needsLookUp(job, now: now) { return .lookUp }
-        if job.segments == nil { return .segments }
         return files(for: job, storage: storage).first { !exists($0.local) }.map(Step.file)
     }
 
     static func needsLookUp(_ job: DownloadJob, now: Date) -> Bool {
-        guard let checked = job.extrasCheckedAt else { return true }
+        guard let checked = job.extrasCheckedAt, job.segments != nil, job.extrasItemId == job.versionItemId else { return true }
         guard now.timeIntervalSince(job.createdAt) < lookUpPeriod, now.timeIntervalSince(checked) >= lookUpInterval else { return false }
         guard let item = job.item else { return true }
         let lacksPreviews = TrickplayTiles.info(of: item, sourceId: job.mediaSourceId) == nil
@@ -101,7 +99,7 @@ nonisolated enum DownloadExtras {
         }
         for (index, chapter) in (item.chapters ?? []).enumerated() {
             guard let tag = chapter.imageTag else { continue }
-            files.append(File(remote: .chapterImage(itemId: item.id, index: index, tag: tag),
+            files.append(File(remote: .chapterImage(itemId: job.versionItemId, index: index, tag: tag),
                               local: folder.appending(path: "Chapters/\(index)-\(tag).jpg")))
         }
         if let savedPath = job.savedPath, let source = item.mediaSources?.first {

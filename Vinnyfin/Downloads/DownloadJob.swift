@@ -39,9 +39,12 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     /// The server's marked intro, credits and the like, for skipping them offline. Nil until
     /// fetched.
     var segments: [MediaSegment]?
-    /// When `item` was last taken from the server's details. Nil for downloads queued before
-    /// the details included what their extras need (`DownloadExtras`).
+    /// When `item` was last taken from the server's details. Nil until it has been once.
     var extrasCheckedAt: Date?
+    /// The item `item`'s chapters and `segments` were taken from, which is the downloaded
+    /// version's own (`versionItemId`). Nil for downloads saved before they were, whose next
+    /// look-up takes them again.
+    var extrasItemId: String?
     /// What its extras take on disk, as of the last time it had them all.
     var extrasBytes: Int64?
 
@@ -75,13 +78,19 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
         sizeHint = source.plausibleSize
         createdAt = now
         self.item = Self.snapshot(of: item, keeping: source)
-        extrasCheckedAt = now
     }
 
+    /// The item the downloaded version is, whose segments and chapters are its own (see
+    /// `MediaSource.versionItemId`).
+    var versionItemId: String { mediaSourceId }
+
+    /// The item's details with `source` as its only version. The chapters listed are the item's
+    /// own version's, so another version's go until its extras look them up.
     static func snapshot(of item: JellyfinItem, keeping source: MediaSource) -> JellyfinItem {
         var snapshot = item
         snapshot.mediaSources = [source]
         snapshot.people = nil
+        if source.versionItemId != item.id { snapshot.chapters = nil }
         return snapshot
     }
 

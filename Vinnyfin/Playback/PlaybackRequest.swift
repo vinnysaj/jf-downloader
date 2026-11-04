@@ -240,6 +240,7 @@ struct PlaybackResolver {
             quality: settings.streamingQuality, allowTranscoding: settings.allowTranscoding
         ) else { throw PlaybackError.noVersions }
 
+        // Where the version played last got to, whichever version plays now.
         var start = request.startFromBeginning ? nil : item.resumeSeconds
         if !request.startFromBeginning, let local = history.entry(for: itemId), local.needsSync, !local.played {
             start = local.position > 0 ? local.position : start
@@ -274,7 +275,7 @@ struct PlaybackResolver {
             historyKey: item.id,
             reporting: .init(itemId: item.id, mediaSourceId: source.id, playSessionId: Self.newPlaySessionId(), playMethod: "DirectPlay"),
             trickplay: Self.trickplay(of: item, source: source, client: client),
-            chapters: Self.chapters(of: item, client: client)
+            chapters: Self.chapters(of: item, playing: source, client: client)
         )
     }
 
@@ -310,7 +311,7 @@ struct PlaybackResolver {
             transcode: .init(quality: quality, audioIndex: audioIndex, subtitleIndex: subtitleIndex),
             // A transcode keeps the version's timeline, so its previews and chapters fit it.
             trickplay: Self.trickplay(of: item, source: source, client: client),
-            chapters: Self.chapters(of: item, client: client)
+            chapters: Self.chapters(of: item, playing: source, client: client)
         )
     }
 
@@ -321,15 +322,17 @@ struct PlaybackResolver {
         }
     }
 
-    /// The item's chapters, with their pictures on the server.
-    private static func chapters(of item: JellyfinItem, client: JellyfinClient) -> [ChapterMark] {
-        ChapterMark.of(item) { index, chapter in
+    /// The chapters of the version playing, with their pictures on the server, when it's the
+    /// item's own. Another version's are its own item's, which the player asks for once it plays.
+    static func chapters(of item: JellyfinItem, playing source: MediaSource, client: JellyfinClient) -> [ChapterMark] {
+        guard source.versionItemId == item.id else { return [] }
+        return ChapterMark.of(item) { index, chapter in
             chapter.imageTag.map { client.chapterImageURL(itemId: item.id, index: index, tag: $0, maxWidth: ChapterMark.imageWidth) }
         }
     }
 
     /// A resume position, unless it's at or past the end of this version, which happens when the
-    /// position was left in a longer one: the server keeps one position per title.
+    /// position was reached in a longer one: a title resumes where its version played last got to.
     static func resumable(_ start: Double?, length: Double?) -> Double? {
         guard let start, start > 0 else { return nil }
         guard let length, length > 0 else { return start }

@@ -1161,29 +1161,44 @@ final class DownloadManager {
     private func fetch(_ step: DownloadExtras.Step, for job: DownloadJob, client: JellyfinClient, userId: String) async throws {
         switch step {
         case .lookUp:
+            let version = job.versionItemId
             let detail: JellyfinItem
             do {
                 detail = try await client.item(id: job.itemId, userId: userId)
             } catch JellyfinError.http(let status, _) where status == 404 {
-                // Gone from the server: the details saved with the download are all there is.
+                // Gone from the server: what was saved with the download is all there is.
                 Self.log.notice("\(job.title, privacy: .public) is gone from the server; keeping the details it was saved with")
-                update(job.id) { $0.extrasCheckedAt = .now }
+                update(job.id) { saved in
+                    saved.segments = saved.segments ?? []
+                    saved.extrasItemId = version
+                    saved.extrasCheckedAt = .now
+                }
                 return
+            }
+            var chapters = detail.chapters
+            if version != detail.id {
+                do {
+                    chapters = try await client.item(id: version, userId: userId).chapters
+                } catch JellyfinError.http(let status, _) where status == 404 {
+                    // A version that isn't an item of its own has no chapters.
+                    chapters = nil
+                }
+            }
+            let segments: [MediaSegment]
+            do {
+                segments = try await client.mediaSegments(itemId: version)
+            } catch JellyfinError.http(let status, _) where status == 404 {
+                // A server from before media segments, or a version without any.
+                segments = []
             }
             let source = detail.mediaSources?.first { $0.id == job.mediaSourceId } ?? job.item?.mediaSources?.first
             update(job.id) { saved in
                 if let source { saved.item = DownloadJob.snapshot(of: detail, keeping: source) }
+                saved.item?.chapters = chapters
+                saved.segments = segments
+                saved.extrasItemId = version
                 saved.extrasCheckedAt = .now
             }
-        case .segments:
-            let segments: [MediaSegment]
-            do {
-                segments = try await client.mediaSegments(itemId: job.itemId)
-            } catch JellyfinError.http(let status, _) where status == 404 {
-                // A server from before media segments.
-                segments = []
-            }
-            update(job.id) { $0.segments = segments }
         case .file(let file):
             let (downloaded, response) = try await probeSession.download(for: URLRequest(url: file.url(using: client)))
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -1213,8 +1228,7 @@ final class DownloadManager {
         guard count < Self.extrasAttempts else {
             extrasFailures[job.id] = (count, .distantFuture)
             let what = switch step {
-            case .lookUp: "details"
-            case .segments: "intro and credits markers"
+            case .lookUp: "details and intro and credits markers"
             case .file(let file): file.description
             }
             problem = "Couldn't save the \(what) for \(job.title): \(error.localizedDescription) It plays without them until vinnyfin tries again, the next time it opens."

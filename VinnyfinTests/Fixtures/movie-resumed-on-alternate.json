@@ -1,0 +1,57 @@
+{
+  "Id": "2bbfee523d051d10b55753c530d83ac9",
+  "Name": "Two Versions",
+  "Type": "Movie",
+  "ProductionYear": 2024,
+  "RunTimeTicks": 4200230000,
+  "UserData": {
+    "PlayedPercentage": 35.71233003906929,
+    "PlaybackPositionTicks": 1500000000,
+    "PlayCount": 2,
+    "IsFavorite": false,
+    "LastPlayedDate": "2026-11-04T20:52:25.5981076Z",
+    "Played": false
+  },
+  "MediaSources": [
+    {
+      "Id": "04ab28e4a01eb6e6715bd19765a03fa4",
+      "Name": "1080p",
+      "Protocol": "File",
+      "Container": "mkv",
+      "Size": 49883033,
+      "Bitrate": 950100,
+      "RunTimeTicks": 4200230000,
+      "Path": "/media/movies/Two Versions (2024)/Two Versions (2024) - 1080p.mkv",
+      "MediaStreams": [
+        {
+          "Type": "Video",
+          "Index": 0,
+          "Codec": "h264",
+          "Width": 1920,
+          "Height": 1080,
+          "DisplayTitle": "1080p H264 SDR"
+        }
+      ]
+    },
+    {
+      "Id": "2bbfee523d051d10b55753c530d83ac9",
+      "Name": "2160p",
+      "Protocol": "File",
+      "Container": "mkv",
+      "Size": 190670276,
+      "Bitrate": 3631615,
+      "RunTimeTicks": 4200230000,
+      "Path": "/media/movies/Two Versions (2024)/Two Versions (2024) - 2160p.mkv",
+      "MediaStreams": [
+        {
+          "Type": "Video",
+          "Index": 0,
+          "Codec": "h264",
+          "Width": 3840,
+          "Height": 2160,
+          "DisplayTitle": "4K H264 SDR"
+        }
+      ]
+    }
+  ]
+}

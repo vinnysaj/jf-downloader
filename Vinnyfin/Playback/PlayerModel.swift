@@ -116,8 +116,8 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored private var startedReporting = false
     /// Telling the server that the last session stopped.
     @ObservationIgnored private var stopReport: Task<Void, Never>?
-    /// The title whose next episode and segments were asked for.
-    @ObservationIgnored private var extrasRequestedFor: String?
+    /// The title whose next episode was asked for, and the version whose segments and chapters.
+    @ObservationIgnored private var extrasRequestedFor: ExtrasKey?
     /// The audio and subtitles chosen in the version this one stands in for.
     @ObservationIgnored private var carriedTracks: TrackSelection?
     @ObservationIgnored private var connectionWatch = ConnectionWatch()
@@ -305,26 +305,42 @@ final class PlayerModel: Identifiable {
         Self.keepScreenAwake(true)
         startReporting()
         if resolved.isStream { watchConnection() }
-        if extrasRequestedFor != resolved.historyKey {
-            extrasRequestedFor = resolved.historyKey
-            Task { await loadExtras(for: resolved) }
+        let extras = ExtrasKey(title: resolved.historyKey, version: resolved.mediaSource?.versionItemId)
+        if extrasRequestedFor != extras {
+            let isNewTitle = extrasRequestedFor?.title != extras.title
+            // Another version's skip markers don't fit this one's timeline.
+            if !isNewTitle { segments = resolved.segments }
+            extrasRequestedFor = extras
+            Task { await loadExtras(for: resolved, includingNextEpisode: isNewTitle) }
         }
     }
 
-    /// The next episode and the skippable segments, which playback doesn't wait for. A download
-    /// falls back on its saved segments and on the next episode downloaded. What the server
-    /// can't give is logged, and for a stream, where the skip buttons or the next episode would
-    /// be missed, the player says so once.
-    private func loadExtras(for resolved: ResolvedPlayback) async {
+    private struct ExtrasKey: Equatable {
+        let title: String
+        let version: String?
+    }
+
+    /// Whether `resolved` is still the version playing.
+    private func isPlaying(_ resolved: ResolvedPlayback) -> Bool {
+        current?.historyKey == resolved.historyKey && current?.mediaSource?.id == resolved.mediaSource?.id
+    }
+
+    /// What playback doesn't wait for: the skippable segments of the version playing, its
+    /// chapters when it isn't the item's own version, and once for the title, the next episode.
+    /// A download falls back on its saved segments and on the next episode downloaded. What the
+    /// server can't give is logged, and for a stream, where the skip buttons, chapters or next
+    /// episode would be missed, the player says so once for the title.
+    private func loadExtras(for resolved: ResolvedPlayback, includingNextEpisode: Bool) async {
         guard let item = resolved.item else { return }
+        let version = resolved.mediaSource?.versionItemId ?? item.id
         var missing: [String] = []
         var lastError: (any Error)?
         var foundNext = false
         var nextFailed = false
         if let client = accounts.client, let account = accounts.account {
             do {
-                let found = try await client.mediaSegments(itemId: item.id)
-                if current?.historyKey == resolved.historyKey { segments = found }
+                let found = try await client.mediaSegments(itemId: version)
+                if isPlaying(resolved) { segments = found }
             } catch JellyfinError.http(let status, _) where status == 404 {
                 // The server keeps no segments for it.
             } catch is CancellationError {
@@ -334,7 +350,21 @@ final class PlayerModel: Identifiable {
                 if resolved.segments.isEmpty { missing.append("the buttons to skip intros and credits") }
                 lastError = error
             }
-            if item.isEpisode, let seriesId = item.seriesId {
+            if resolved.isStream, let source = resolved.mediaSource, version != item.id {
+                do {
+                    let detail = try await client.item(id: version, userId: account.userId)
+                    if isPlaying(resolved) { current?.chapters = PlaybackResolver.chapters(of: detail, playing: source, client: client) }
+                } catch JellyfinError.http(let status, _) where status == 404 {
+                    // A version that isn't an item of its own has no chapters.
+                } catch is CancellationError {
+                    return
+                } catch {
+                    Self.log.notice("Couldn't load the version's chapters: \(error.localizedDescription, privacy: .public)")
+                    missing.append("the chapters")
+                    lastError = error
+                }
+            }
+            if includingNextEpisode, item.isEpisode, let seriesId = item.seriesId {
                 do {
                     let next = try await client.episode(after: item.id, seriesId: seriesId, userId: account.userId)
                     if current?.historyKey == resolved.historyKey { nextEpisode = next }
@@ -348,7 +378,7 @@ final class PlayerModel: Identifiable {
                 }
             }
         }
-        guard current?.historyKey == resolved.historyKey else { return }
+        guard isPlaying(resolved), includingNextEpisode else { return }
         if item.isEpisode, !foundNext {
             nextEpisode = downloadedEpisode(item)
             if nextEpisode == nil, nextFailed { missing.append("the next episode") }
