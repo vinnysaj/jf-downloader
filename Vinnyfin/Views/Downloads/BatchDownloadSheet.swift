@@ -54,7 +54,7 @@ struct BatchDownloadSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Download \(ready.count)", systemImage: "arrow.down.circle") {
-                        for (episode, source) in ready { downloads.enqueue(episode, source: source) }
+                        for (episode, source) in ready { downloads.enqueue(episode, source: source, startedByUser: true) }
                         onQueued()
                         dismiss()
                     }
