@@ -164,31 +164,4 @@ nonisolated enum IntentSummaries {
         episode.episodeCode ?? episode.name
     }
 }
-
-/// The intents as App Shortcuts, which work from Siri and Spotlight without setting anything up.
-nonisolated struct VinnyfinShortcuts: AppShortcutsProvider {
-    static var appShortcuts: [AppShortcut] {
-        AppShortcut(intent: DownloadNextEpisodesIntent(), phrases: [
-            "Download the next episodes of \(\.$show) in \(.applicationName)",
-            "Download more \(\.$show) in \(.applicationName)",
-            "Download the next episodes in \(.applicationName)",
-        ], shortTitle: "Download Next Episodes", systemImageName: "arrow.down.circle")
-        AppShortcut(intent: DownloadMovieIntent(), phrases: [
-            "Download the movie \(\.$movie) in \(.applicationName)",
-            "Download a movie in \(.applicationName)",
-        ], shortTitle: "Download Movie", systemImageName: "film")
-        AppShortcut(intent: PauseAllDownloadsIntent(), phrases: [
-            "Pause downloads in \(.applicationName)",
-            "Pause my \(.applicationName) downloads",
-        ], shortTitle: "Pause Downloads", systemImageName: "pause.circle")
-        AppShortcut(intent: ResumeAllDownloadsIntent(), phrases: [
-            "Resume downloads in \(.applicationName)",
-            "Resume my \(.applicationName) downloads",
-        ], shortTitle: "Resume Downloads", systemImageName: "play.circle")
-        AppShortcut(intent: DownloadStatusIntent(), phrases: [
-            "What's downloading in \(.applicationName)",
-            "Check my \(.applicationName) downloads",
-        ], shortTitle: "What's Downloading", systemImageName: "arrow.down.circle.dotted")
-    }
-}
 #endif

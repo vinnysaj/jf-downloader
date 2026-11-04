@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 
 /// Where a title in a list leads: a show's page, a collection's titles, or a movie's or episode's page.
@@ -94,6 +95,8 @@ struct ItemDetailView: View {
         .screenTitle(shown.name)
         .inlineNavigationTitle()
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
+        // Siri knows which title the page is about: "play this", "download this".
+        .appEntityIdentifier(EntityIdentifier.title(item))
         .task(id: item.id) { await load() }
         #if os(tvOS)
         // Focus starts on Play, also for a page opened from a link at launch, while focus is
