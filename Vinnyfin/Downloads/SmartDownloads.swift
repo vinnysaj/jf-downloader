@@ -1,7 +1,4 @@
 #if !os(tvOS)
-#if os(iOS) || os(visionOS)
-import BackgroundTasks
-#endif
 import Foundation
 import Observation
 import OSLog
@@ -11,14 +8,12 @@ import OSLog
 /// here or on any other device. With "Delete Watched Episodes" on, watched downloads go.
 ///
 /// Refreshes when the app opens, every `openInterval` while it's open, when a player closes, and
-/// in the background no more often than `backgroundInterval`. Never while a player is open: the
-/// episode in it could be the one a refresh deletes.
+/// on the background refresh wake (`BackgroundDownloads`). Never while a player is open: the
+/// episode in it could be the one a refresh deletes. The episodes a refresh queues for a show
+/// someone just set up count as downloads they started; the ones it tops up later don't.
 @Observable
 final class SmartDownloads {
     static let openInterval: Duration = .seconds(15 * 60)
-    static let backgroundInterval: TimeInterval = 2 * 60 * 60
-    /// Listed under BGTaskSchedulerPermittedIdentifiers in Info.plist.
-    static let backgroundRefreshIdentifier = "net.vinnysaj.vinnyfin.smart-downloads"
 
     nonisolated struct Rule: Codable, Identifiable, Equatable, Sendable {
         let seriesId: String
@@ -41,6 +36,8 @@ final class SmartDownloads {
     @ObservationIgnored private var isRefreshing = false
     /// The players open, by their model's id.
     @ObservationIgnored private var openPlayers: Set<UUID> = []
+    /// Shows someone set up or changed whose next refresh hasn't queued their episodes yet.
+    @ObservationIgnored private var seriesSetUpByUser: Set<String> = []
 
     private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "smart-downloads")
 
@@ -71,12 +68,14 @@ final class SmartDownloads {
         } else {
             rules.append(rule)
         }
+        seriesSetUpByUser.insert(seriesId)
         save()
         refreshSoon()
     }
 
     func removeRule(seriesId: String) {
         rules.removeAll { $0.seriesId == seriesId }
+        seriesSetUpByUser.remove(seriesId)
         save()
     }
 
@@ -98,27 +97,6 @@ final class SmartDownloads {
             try? await Task.sleep(for: Self.openInterval)
         }
     }
-
-    #if os(iOS) || os(visionOS)
-    /// Asks the system to wake the app for a refresh in `backgroundInterval` or later.
-    static func scheduleBackgroundRefresh() async {
-        let request = BGAppRefreshTaskRequest(identifier: backgroundRefreshIdentifier)
-        request.earliestBeginDate = .now.addingTimeInterval(backgroundInterval)
-        do {
-            try await BGTaskScheduler.shared.submitTaskRequest(request)
-        } catch {
-            // Background App Refresh is off for the app, or the device doesn't offer it: the
-            // refresh waits for the app to open.
-            log.notice("Couldn't schedule a background refresh: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// The system woke the app for a refresh: books the next one, then refreshes.
-    func refreshInBackground() async {
-        await Self.scheduleBackgroundRefresh()
-        await refresh()
-    }
-    #endif
 
     /// Refreshes after a moment, folding several triggers into one pass.
     func refreshSoon() {
@@ -181,11 +159,13 @@ final class SmartDownloads {
         }
         if let rule = rule(for: seriesId) {
             let wanted = SmartDownloadPlanner.episodesToDownload(states, nextUpId: nextUp, count: rule.episodesAhead)
+            let startedByUser = seriesSetUpByUser.contains(seriesId)
             for id in wanted {
                 let detail = try await client.item(id: id, userId: account.userId)
                 guard let source = VersionChooser.choose(from: detail.mediaSources ?? [], quality: settings.downloadQuality) else { continue }
-                downloads.enqueue(detail, source: source)
+                downloads.enqueue(detail, source: source, startedByUser: startedByUser)
             }
+            seriesSetUpByUser.remove(seriesId)
         }
         if settings.deleteWatchedEpisodes {
             for id in SmartDownloadPlanner.watchedDownloads(states) {

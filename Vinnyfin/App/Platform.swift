@@ -31,6 +31,18 @@ extension ToolbarItemPlacement {
 }
 
 extension View {
+    /// The screen's title in the navigation bar, except on Apple TV. There the bar stays over the
+    /// content as it scrolls, so a title in it sits on whatever scrolls under; the sidebar names
+    /// each tab's first screen, and other screens head their content with their title. Hiding
+    /// the bar instead hangs the app when a screen that hides it is pushed.
+    func screenTitle(_ title: some StringProtocol) -> some View {
+        #if os(tvOS)
+        self
+        #else
+        navigationTitle(title)
+        #endif
+    }
+
     /// A small title in the bar. The Mac's window toolbar and Apple TV have only the one style.
     func inlineNavigationTitle() -> some View {
         #if os(macOS) || os(tvOS)

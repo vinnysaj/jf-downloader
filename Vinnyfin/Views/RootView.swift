@@ -10,9 +10,10 @@ struct RootView: View {
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    #elseif os(visionOS)
+    @Environment(\.pushWindow) private var pushWindow
     #endif
     #if !os(tvOS)
-    @Environment(DownloadManager.self) private var downloads
     @Environment(SmartDownloads.self) private var smartDownloads
     #endif
     /// A title a link asked to open, for Home to show.
@@ -34,13 +35,18 @@ struct RootView: View {
         }
         .environment(\.session, session)
         .preferredColorScheme(settings.appearance.colorScheme)
-        #if os(macOS)
+        #if os(macOS) || os(visionOS)
         .onChange(of: player.pendingWindowRequest) { _, request in
             guard let request else { return }
             player.pendingWindowRequest = nil
+            #if os(visionOS)
+            // The player takes this window's place, and closing it brings the library back.
+            pushWindow(id: PlayerWindow.id, value: request)
+            #else
             // One engine plays one thing: a new playback replaces the window of the last.
             dismissWindow(id: PlayerWindow.id)
             openWindow(id: PlayerWindow.id, value: request)
+            #endif
         }
         #else
         .fullScreenCover(item: $player.presented) { model in
@@ -69,17 +75,10 @@ struct RootView: View {
                 messages.show("vinnyfin can't open \(url.absoluteString).")
             }
         }
-        #if !os(tvOS)
-        .onChange(of: scenePhase, initial: true) { _, phase in
-            downloads.sceneChanged(isActive: phase == .active, isInBackground: phase == .background)
-        }
-        #endif
         // Runs while the app is open, and stops as it goes to the background.
         .task(id: scenePhase == .background) {
             guard scenePhase != .background else {
-                #if os(iOS) || os(visionOS)
-                await SmartDownloads.scheduleBackgroundRefresh()
-                #elseif os(tvOS)
+                #if os(tvOS)
                 TopShelf.reload()
                 #endif
                 return
@@ -90,9 +89,6 @@ struct RootView: View {
             await smartDownloads.refreshWhileOpen()
             #endif
         }
-        #if !os(tvOS)
-        .task { await downloads.trackProgress() }
-        #endif
     }
 
     /// Plays the title, or shows its page on Home in place of the player.

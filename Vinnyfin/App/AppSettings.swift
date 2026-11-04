@@ -48,6 +48,9 @@ final class AppSettings {
     var streamingQuality: VideoQuality { didSet { store(streamingQuality.rawValue, Keys.streamingQuality) } }
     /// Lets the server scale a version down when none matches `streamingQuality`.
     var allowTranscoding: Bool { didSet { store(allowTranscoding, Keys.allowTranscoding) } }
+    /// Moves a stream the connection can't keep up with to a smaller version, or to a transcode
+    /// when `allowTranscoding` lets it, as it plays.
+    var adaptiveQuality: Bool { didSet { store(adaptiveQuality, Keys.adaptiveQuality) } }
     var downloadQuality: VideoQuality { didSet { store(downloadQuality.rawValue, Keys.downloadQuality) } }
     /// Deletes a downloaded episode once it has been watched, here or on another device.
     var deleteWatchedEpisodes: Bool { didSet { store(deleteWatchedEpisodes, Keys.deleteWatchedEpisodes) } }
@@ -71,6 +74,7 @@ final class AppSettings {
         static let appearance = "settings.appearance"
         static let streamingQuality = "settings.streamingQuality"
         static let allowTranscoding = "settings.allowTranscoding"
+        static let adaptiveQuality = "settings.adaptiveQuality"
         static let downloadQuality = "settings.downloadQuality"
         static let deleteWatchedEpisodes = "settings.deleteWatchedEpisodes"
         static let smartDownloadCount = "settings.smartDownloadCount"
@@ -89,6 +93,7 @@ final class AppSettings {
         appearance = defaults.string(forKey: Keys.appearance).flatMap(Appearance.init) ?? .system
         streamingQuality = defaults.string(forKey: Keys.streamingQuality).flatMap(VideoQuality.init) ?? .original
         allowTranscoding = defaults.object(forKey: Keys.allowTranscoding) as? Bool ?? true
+        adaptiveQuality = defaults.object(forKey: Keys.adaptiveQuality) as? Bool ?? true
         downloadQuality = defaults.string(forKey: Keys.downloadQuality).flatMap(VideoQuality.init) ?? .fullHD
         deleteWatchedEpisodes = defaults.object(forKey: Keys.deleteWatchedEpisodes) as? Bool ?? true
         smartDownloadCount = defaults.object(forKey: Keys.smartDownloadCount) as? Int ?? 10

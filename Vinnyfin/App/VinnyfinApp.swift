@@ -12,17 +12,15 @@ struct VinnyfinApp: App {
     #else
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     #endif
+    #if os(visionOS)
+    @State private var cinemaImmersion: any ImmersionStyle = .progressive(0.2...1, initialAmount: 1)
+    #endif
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .withAppEnvironment(appDelegate)
         }
-        #if os(iOS) || os(visionOS)
-        .backgroundTask(.appRefresh(SmartDownloads.backgroundRefreshIdentifier)) { [smartDownloads = appDelegate.smartDownloads] in
-            await smartDownloads.refreshInBackground()
-        }
-        #endif
         #if os(macOS)
         .defaultSize(width: 1200, height: 800)
         .commands {
@@ -33,15 +31,32 @@ struct VinnyfinApp: App {
         }
         #endif
 
-        #if os(macOS)
+        #if os(macOS) || os(visionOS)
         WindowGroup("Player", id: PlayerWindow.id, for: PlaybackRequest.self) { $request in
             PlayerWindow(request: request)
                 .withAppEnvironment(appDelegate)
         }
+        #if os(macOS)
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 720)
+        #else
+        // The picture is the window, with no glass around it, and the window keeps its shape.
+        .windowStyle(.plain)
+        .windowResizability(.contentSize)
+        #endif
         .restorationBehavior(.disabled)
+        #endif
 
+        #if os(visionOS)
+        ImmersiveSpace(id: CinemaSpace.id) {
+            CinemaSpace()
+                .withAppEnvironment(appDelegate)
+        }
+        // The Digital Crown brings the room back in around the theater.
+        .immersionStyle(selection: $cinemaImmersion, in: .progressive)
+        #endif
+
+        #if os(macOS)
         Settings {
             SettingsView()
                 .withAppEnvironment(appDelegate)
@@ -69,12 +84,16 @@ extension View {
             .environment(app.downloads)
             .environment(app.smartDownloads)
             .environment(app.localLibrary)
+            #if os(iOS) || os(visionOS)
+            .environment(app.backgroundDownloads)
+            .environment(app.diagnostics)
+            #endif
         #endif
     }
 }
 
 /// Owns the app's state from launch, including the background launches the system makes
-/// only to hand over finished transfers, when no window is ever shown.
+/// to hand over finished transfers or run a background task, when no window may be shown.
 final class AppDelegate: NSObject {
     let settings = AppSettings()
     let accounts = AccountStore()
@@ -89,12 +108,24 @@ final class AppDelegate: NSObject {
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history,
                                                      downloads: downloads, smartDownloads: smartDownloads, localLibrary: localLibrary)
     #endif
+    #if os(iOS) || os(visionOS)
+    private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads)
+    let diagnostics = AppDiagnostics()
+    #endif
 
     private func launched() {
         ImageCache.configure()
         #if !os(tvOS)
         let downloads = downloads
         Task { await downloads.run() }
+        Task { await downloads.trackProgress() }
+        #endif
+        #if os(iOS) || os(visionOS)
+        backgroundDownloads.registerLaunchHandlers()
+        let backgroundDownloads = backgroundDownloads
+        Task { await backgroundDownloads.run() }
+        let diagnostics = diagnostics
+        Task { await diagnostics.run() }
         #endif
     }
 
@@ -147,8 +178,8 @@ extension AppDelegate: UIApplicationDelegate {
 }
 #endif
 
-#if os(macOS)
-/// A player window on the Mac, one per playback.
+#if os(macOS) || os(visionOS)
+/// A player window on the Mac and Vision Pro, one per playback.
 struct PlayerWindow: View {
     static let id = "player"
     let request: PlaybackRequest?
@@ -156,6 +187,9 @@ struct PlayerWindow: View {
     @Environment(PlayerCoordinator.self) private var player
     @Environment(AccountStore.self) private var accounts
     @Environment(\.dismissWindow) private var dismissWindow
+    #if os(visionOS)
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    #endif
     @State private var model: PlayerModel?
 
     var body: some View {
@@ -167,17 +201,36 @@ struct PlayerWindow: View {
             }
         }
         .environment(\.session, accounts.session)
+        #if os(macOS)
         .frame(minWidth: 480, minHeight: 270)
+        #else
+        // Shaped like the picture, which then fills it edge to edge, at any size it's pulled to.
+        .aspectRatio(pictureAspectRatio, contentMode: .fit)
+        .frame(minWidth: 640, idealWidth: 1280, maxWidth: 3200)
+        #endif
         .navigationTitle(model?.title ?? request?.title ?? "vinnyfin")
         .onAppear {
             guard model == nil, let request else { return }
             model = player.makeModel(for: request)
+            player.presented = model
         }
         .onDisappear {
             let closing = model
             model = nil
+            if player.presented === closing { player.presented = nil }
+            #if os(visionOS)
+            if player.isInCinema { Task { await dismissImmersiveSpace() } }
+            #endif
             Task { await closing?.close() }
         }
     }
+
+    #if os(visionOS)
+    /// 16:9 until the video says otherwise.
+    private var pictureAspectRatio: CGFloat {
+        guard let size = model?.videoSize, size.width > 0, size.height > 0 else { return 16.0 / 9.0 }
+        return size.width / size.height
+    }
+    #endif
 }
 #endif

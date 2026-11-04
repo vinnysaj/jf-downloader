@@ -42,6 +42,14 @@ struct ResolvedPlayback {
         let playMethod: String
     }
 
+    /// What the server was asked to make of the version. Its audio and subtitles are in the
+    /// stream, chosen by the server's stream index.
+    struct Transcode: Equatable {
+        let quality: VideoQuality
+        let audioIndex: Int?
+        let subtitleIndex: Int?
+    }
+
     var url: URL
     var title: String
     var subtitle: String?
@@ -53,13 +61,25 @@ struct ResolvedPlayback {
     /// The key the position is kept under in `WatchHistory`.
     var historyKey: String
     var reporting: Reporting?
-    var isTranscode = false
+    /// Nil when the version plays as it is.
+    var transcode: Transcode?
     /// A downloaded copy of a server item.
     var isDownload = false
     /// The skippable stretches saved with a download.
     var segments: [MediaSegment] = []
     /// A security-scoped URL to stop accessing when playback ends.
     var scopedURL: URL?
+
+    var isTranscode: Bool { transcode != nil }
+
+    /// A server stream, which another version or a transcode of the title can stand in for.
+    var isStream: Bool { reporting != nil && !isDownload }
+
+    /// How the version is getting to the screen; nil for files that aren't the server's streams.
+    var plan: PlaybackPlan? {
+        guard isStream, let mediaSource else { return nil }
+        return transcode.map { .transcode(mediaSource, $0.quality) } ?? .direct(mediaSource)
+    }
 }
 
 nonisolated enum PlaybackError: LocalizedError {
@@ -176,7 +196,7 @@ struct PlaybackResolver {
         let length = item?.mediaSources?.first?.runtimeSeconds ?? item?.runtimeSeconds
         return ResolvedPlayback(
             url: copy.url,
-            title: item.map(Self.title) ?? request.title,
+            title: item?.titleWithYear ?? request.title,
             subtitle: item.flatMap(Self.subtitle),
             item: item,
             mediaSource: item?.mediaSources?.first,
@@ -207,27 +227,33 @@ struct PlaybackResolver {
             start = local.position > 0 ? local.position : start
         }
 
+        let resume = Self.resumable(start, length: plan.source.runtimeSeconds ?? item.runtimeSeconds)
         switch plan {
         case .direct(let source):
-            let length = source.runtimeSeconds ?? item.runtimeSeconds
-            return ResolvedPlayback(
-                url: client.streamURL(itemId: itemId, mediaSourceId: source.id),
-                title: Self.title(item),
-                subtitle: Self.subtitle(item),
-                item: item,
-                mediaSource: source,
-                startPosition: Self.resumable(start, length: length),
-                duration: length,
-                externalSubtitles: externalSubtitles(of: source, itemId: itemId, client: client),
-                historyKey: itemId,
-                reporting: .init(itemId: itemId, mediaSourceId: source.id, playSessionId: Self.newPlaySessionId(), playMethod: "DirectPlay")
-            )
+            return try direct(item: item, source: source, start: resume)
         case .transcode(let source, let quality):
             let audioIndex = Self.preferredAudioIndex(in: source, language: settings.audioLanguage)
             let subtitleIndex = Self.preferredSubtitleIndex(in: source, audioIndex: audioIndex, settings: settings)
             return try await transcode(item: item, source: source, quality: quality, audioIndex: audioIndex,
-                                       subtitleIndex: subtitleIndex, start: Self.resumable(start, length: source.runtimeSeconds ?? item.runtimeSeconds))
+                                       subtitleIndex: subtitleIndex, start: resume)
         }
+    }
+
+    /// Plays `source` as it is.
+    func direct(item: JellyfinItem, source: MediaSource, start: Double?) throws -> ResolvedPlayback {
+        guard let client = accounts.client else { throw PlaybackError.notSignedIn }
+        return ResolvedPlayback(
+            url: client.streamURL(itemId: item.id, mediaSourceId: source.id),
+            title: item.titleWithYear,
+            subtitle: Self.subtitle(item),
+            item: item,
+            mediaSource: source,
+            startPosition: start,
+            duration: source.runtimeSeconds ?? item.runtimeSeconds,
+            externalSubtitles: externalSubtitles(of: source, itemId: item.id, client: client),
+            historyKey: item.id,
+            reporting: .init(itemId: item.id, mediaSourceId: source.id, playSessionId: Self.newPlaySessionId(), playMethod: "DirectPlay")
+        )
     }
 
     /// Has the server scale `source` down to `quality`, with the audio and subtitle streams
@@ -250,7 +276,7 @@ struct PlaybackResolver {
         }
         return ResolvedPlayback(
             url: url,
-            title: Self.title(item),
+            title: item.titleWithYear,
             subtitle: Self.subtitle(item),
             item: item,
             mediaSource: source,
@@ -259,7 +285,7 @@ struct PlaybackResolver {
             historyKey: item.id,
             reporting: .init(itemId: item.id, mediaSourceId: source.id,
                              playSessionId: info.playSessionId ?? Self.newPlaySessionId(), playMethod: "Transcode"),
-            isTranscode: true
+            transcode: .init(quality: quality, audioIndex: audioIndex, subtitleIndex: subtitleIndex)
         )
     }
 
@@ -307,16 +333,8 @@ struct PlaybackResolver {
     /// The subtitle stream the subtitle setting asks for, from the server's list of streams.
     static func preferredSubtitleIndex(in source: MediaSource, audioIndex: Int?, settings: AppSettings) -> Int? {
         let audio = source.audioStreams.first { $0.index == (audioIndex ?? source.defaultAudioStreamIndex) } ?? source.audioStreams.first
-        let candidates = source.subtitleStreams.map {
-            TrackChooser.Candidate(id: $0.index ?? -1, language: $0.language, isForced: $0.isForced ?? false,
-                                   isHearingImpaired: $0.isHearingImpaired ?? false, isDefault: $0.isDefault ?? false)
-        }
-        return TrackChooser.subtitle(from: candidates, audioLanguage: audio?.language,
+        return TrackChooser.subtitle(from: source.subtitleStreams.compactMap(TrackChooser.Candidate.init), audioLanguage: audio?.language,
                                      mode: settings.subtitleMode, language: settings.subtitleLanguage)
-    }
-
-    static func title(_ item: JellyfinItem) -> String {
-        item.isEpisode ? item.name : (item.productionYear.map { "\(item.name) (\($0))" } ?? item.name)
     }
 
     static func subtitle(_ item: JellyfinItem) -> String? {
@@ -329,8 +347,8 @@ struct PlaybackResolver {
     }
 }
 
-/// Picks subtitle tracks for the subtitle setting. Works on the server's streams and on the
-/// player's tracks alike.
+/// Picks subtitle tracks for the subtitle setting, and finds a track chosen in one version of a
+/// title among another's. Works on the server's streams and on the player's tracks alike.
 nonisolated enum TrackChooser {
     struct Candidate: Equatable, Sendable {
         let id: Int
@@ -338,6 +356,25 @@ nonisolated enum TrackChooser {
         let isForced: Bool
         let isHearingImpaired: Bool
         let isDefault: Bool
+        /// The title the file gives the track, such as "Commentary".
+        var name: String?
+    }
+
+    /// The candidate that is the same choice as `chosen`, made in another version of the title,
+    /// whose tracks are numbered differently: the same language, of the same kind when there is
+    /// one, by name when several are. Nil when the version has nothing in that language.
+    static func same(as chosen: Candidate, in candidates: [Candidate]) -> Int? {
+        let sameLanguage = candidates.filter {
+            AppSettings.sameLanguage($0.language, chosen.language) || (isUnknown($0.language) && isUnknown(chosen.language))
+        }
+        let sameKind = sameLanguage.filter { $0.isForced == chosen.isForced && $0.isHearingImpaired == chosen.isHearingImpaired }
+        let pool = sameKind.isEmpty ? sameLanguage : sameKind
+        let sameName = chosen.name.flatMap { name in pool.first { $0.name?.caseInsensitiveCompare(name) == .orderedSame } }
+        return (sameName ?? pool.first)?.id
+    }
+
+    private static func isUnknown(_ language: String?) -> Bool {
+        language == nil || language == "und" || language?.isEmpty == true
     }
 
     static func subtitle(from candidates: [Candidate], audioLanguage: String?, mode: AppSettings.SubtitleMode, language: String) -> Int? {
@@ -352,11 +389,37 @@ nonisolated enum TrackChooser {
             return forced?.id
         case .smart:
             // Audio of unknown language is taken to be understood.
-            let audioIsUnknown = audioLanguage == nil || audioLanguage == "und" || audioLanguage?.isEmpty == true
-            let audioMatches = audioIsUnknown || AppSettings.sameLanguage(audioLanguage, language)
+            let audioMatches = isUnknown(audioLanguage) || AppSettings.sameLanguage(audioLanguage, language)
             return audioMatches ? forced?.id : (full ?? forced)?.id
         case .always:
             return (full ?? forced)?.id
         }
+    }
+}
+
+nonisolated extension TrackChooser.Candidate {
+    /// One of the streams the server lists for a version. Nil for a stream without an index,
+    /// which can't be asked for.
+    init?(_ stream: MediaStream) {
+        guard let index = stream.index else { return nil }
+        self.init(id: index, language: stream.language, isForced: stream.isForced ?? false,
+                  isHearingImpaired: stream.isHearingImpaired ?? false, isDefault: stream.isDefault ?? false,
+                  name: stream.title)
+    }
+
+    /// One of the player's tracks.
+    init(_ track: TrackInfo) {
+        self.init(id: track.id, language: track.language, isForced: track.isForced,
+                  isHearingImpaired: track.isHearingImpaired, isDefault: track.isDefault,
+                  name: TrackChooser.ownName(of: track))
+    }
+}
+
+nonisolated extension TrackChooser {
+    /// The title the file gives a track. Untitled streams get a made-up "ENG (srt)" or
+    /// "Track 3 (srt)" from the engine, which only repeats the language and the format.
+    static func ownName(of track: TrackInfo) -> String? {
+        let name = track.name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty || name.hasSuffix("(\(track.codec))") ? nil : name
     }
 }

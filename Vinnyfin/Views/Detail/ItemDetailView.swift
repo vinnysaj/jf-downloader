@@ -309,7 +309,7 @@ struct DownloadButton: View {
             messages.show("The server lists no versions of \(item.name) to download.")
             return
         }
-        downloads.enqueue(item, source: chosen)
+        downloads.enqueue(item, source: chosen, startedByUser: true)
     }
 }
 

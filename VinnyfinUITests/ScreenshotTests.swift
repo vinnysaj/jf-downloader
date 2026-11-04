@@ -81,7 +81,7 @@ final class ScreenshotTests: XCTestCase {
         tap(tab("Shows", in: app))
         tap(app.buttons["poster.Port Ellery"])
         tap(app.buttons["episode.3"])
-        XCTAssertTrue(app.buttons["fold.episode.3"].waitForExistence(timeout: uiTimeout), "The player didn't split at the fold")
+        XCTAssertTrue(app.buttons["episodes.episode.3"].waitForExistence(timeout: uiTimeout), "The player didn't split at the fold")
         tap(app.buttons["player.playPause"])
         try await snap("01-player")
     }
@@ -183,6 +183,19 @@ final class ScreenshotTests: XCTestCase {
         try await snap(name)
         tap(app.buttons["player.close"])
     }
+
+    /// A tab: a button in the tab bar, or a row in iPad's sidebar. Not just any button by that
+    /// name, which can be the back button to the tab's first screen.
+    @MainActor
+    private func tab(_ name: String, in app: XCUIApplication) -> XCUIElement {
+        let places = [app.tabBars.buttons[name], app.cells[name]]
+        let deadline = Date.now.addingTimeInterval(uiTimeout)
+        while Date.now < deadline {
+            if let tab = places.first(where: \.exists) { return tab }
+            RunLoop.current.run(until: .now.addingTimeInterval(0.25))
+        }
+        return places[0]
+    }
     #endif
 
     #if os(iOS)
@@ -201,19 +214,6 @@ final class ScreenshotTests: XCTestCase {
             tap(tab(name, in: app))
             tap(tab(name, in: app))
         }
-    }
-
-    /// A tab: a button in the tab bar, or a row in iPad's sidebar. Not just any button by that
-    /// name, which can be the back button to the tab's first screen.
-    @MainActor
-    private func tab(_ name: String, in app: XCUIApplication) -> XCUIElement {
-        let places = [app.tabBars.buttons[name], app.cells[name]]
-        let deadline = Date.now.addingTimeInterval(uiTimeout)
-        while Date.now < deadline {
-            if let tab = places.first(where: \.exists) { return tab }
-            RunLoop.current.run(until: .now.addingTimeInterval(0.25))
-        }
-        return places[0]
     }
 
     @MainActor

@@ -3,14 +3,23 @@ import Foundation
 import Observation
 
 /// Starts playbacks and owns the one playback engine, which is built once and reused for every
-/// title, as the engine expects. On iPhone, iPad, Apple TV and Vision Pro the player covers the
-/// app; on the Mac it opens in a window of its own.
+/// title, as the engine expects. On iPhone, iPad and Apple TV the player covers the app; on the
+/// Mac and Vision Pro it opens in a window of its own.
 @Observable
 final class PlayerCoordinator {
-    /// The playback on screen, for the full-screen player.
+    /// The playback on screen: the full-screen player's, or the player window's, which sets it.
     var presented: PlayerModel?
-    /// A playback waiting for the Mac's root view to open its window.
+    /// A playback waiting for the root view to open its window, on the Mac and Vision Pro.
     var pendingWindowRequest: PlaybackRequest?
+    #if os(visionOS)
+    /// The playback is on the cinema's big screen, in its immersive space, rather than in its window.
+    var isInCinema = false
+    /// RealityKit is drawing the picture in 3D.
+    var pictureIsStereo = false
+    /// Pinches on RealityKit's screen, in the window or the cinema, counted: the player window shows
+    /// or hides its controls on each.
+    var screenTaps = 0
+    #endif
     /// Why the engine couldn't be built, to show instead of playing.
     var problem: String?
 
@@ -42,7 +51,7 @@ final class PlayerCoordinator {
     #endif
 
     func play(_ request: PlaybackRequest) {
-        #if os(macOS)
+        #if os(macOS) || os(visionOS)
         pendingWindowRequest = request
         #else
         Task { await present(request) }

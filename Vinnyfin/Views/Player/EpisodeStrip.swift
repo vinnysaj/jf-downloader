@@ -1,11 +1,14 @@
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 import SwiftUI
 
-/// The show's episodes below the fold of an iPhone Duo standing half open, a season at a time,
-/// starting from the one playing. Tapping one plays it in place. Offline, the show's downloads.
-struct FoldEpisodes: View {
+/// The show's episodes in the player's controls, below the fold of an iPhone Duo standing half
+/// open and under Vision Pro's window: a season at a time, starting from the one playing.
+/// Tapping one plays it in place. Offline, the show's downloads.
+struct EpisodeStrip: View {
     let model: PlayerModel
     let playing: JellyfinItem
+    /// Called as it's scrolled or used, so controls that fade stay up meanwhile.
+    var onInteraction: () -> Void = {}
 
     @Environment(\.session) private var session
     @Environment(DownloadManager.self) private var downloads
@@ -21,13 +24,14 @@ struct FoldEpisodes: View {
                     LazyHStack(alignment: .top, spacing: 12) {
                         ForEach(episodes) { episode in
                             Button {
+                                onInteraction()
                                 Task { await model.play(episode) }
                             } label: {
                                 card(episode)
                             }
                             .buttonStyle(.artwork)
                             .id(episode.id)
-                            .accessibilityIdentifier("fold.episode.\(episode.indexNumber ?? 0)")
+                            .accessibilityIdentifier("episodes.episode.\(episode.indexNumber ?? 0)")
                         }
                     }
                     .scrollTargetLayout()
@@ -35,6 +39,9 @@ struct FoldEpisodes: View {
                 .scrollIndicators(.hidden)
                 .scrollTargetBehavior(.viewAligned)
                 .contentMargins(.horizontal, Metrics.playerInset, for: .scrollContent)
+                .onScrollPhaseChange { _, phase in
+                    if phase.isScrolling { onInteraction() }
+                }
                 .onChange(of: episodes) { proxy.scrollTo(playing.id, anchor: .leading) }
                 .onChange(of: playing.id) { withAnimation { proxy.scrollTo(playing.id, anchor: .leading) } }
             }
@@ -56,7 +63,7 @@ struct FoldEpisodes: View {
                         Image(systemName: "chevron.down").font(.caption.weight(.bold))
                     }
                 }
-                .accessibilityIdentifier("fold.season")
+                .accessibilityIdentifier("episodes.season")
             } else {
                 Text(seasonName)
             }
