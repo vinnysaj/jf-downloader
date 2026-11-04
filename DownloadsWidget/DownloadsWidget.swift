@@ -271,6 +271,7 @@ private struct DownloadProgress: View {
         case .queued: percent.map { "Waiting · \($0)" } ?? "Waiting"
         case .held: "Waits while you watch"
         case .waitingForNetwork: "Waiting for network"
+        case .waiting: download.wait ?? "Waiting"
         case .paused: percent.map { "Paused · \($0)" } ?? "Paused"
         case .failed: "Stopped"
         }

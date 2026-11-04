@@ -250,15 +250,16 @@ struct DownloadsSnapshotTests {
     }
 
     @Test func listsDownloadsInQueueOrderAndUnwatchedOnesReady() {
+        // Moved to the front of the queue, "first" downloads before the older "second".
         let jobs = [
             job("paused", .paused, minutesIn: 0, done: 100),
-            job("second", .active, minutesIn: 2),
-            job("first", .active, minutesIn: 1, done: 450),
+            job("first", .active, minutesIn: 2, done: 450),
+            job("second", .active, minutesIn: 1),
             job("old", .completed, minutesIn: 3, done: 1_000),
             job("new", .completed, minutesIn: 4, done: 1_000),
             job("seen", .completed, minutesIn: 5, done: 1_000),
         ]
-        let snapshot = DownloadsSnapshot(jobs: jobs, receivedBytes: [:], downloadingJobId: jobs[2].id, isHeldForPlayback: false,
+        let snapshot = DownloadsSnapshot(jobs: jobs, receivedBytes: [:], downloadingJobId: jobs[1].id, isHeldForPlayback: false,
                                          isNetworkReachable: true, isWatched: { $0.itemId == "seen" })
         #expect(snapshot.downloads.map(\.id) == ["first", "second", "paused"])
         #expect(snapshot.downloads.map(\.state) == [.downloading, .queued, .paused])
@@ -285,6 +286,11 @@ struct DownloadsSnapshotTests {
         let offline = DownloadsSnapshot(jobs: jobs, receivedBytes: [:], downloadingJobId: nil, isHeldForPlayback: false,
                                         isNetworkReachable: false, isWatched: { _ in false })
         #expect(offline.downloads.first?.state == .waitingForNetwork)
+        let ruled = DownloadsSnapshot(jobs: jobs, receivedBytes: [:], downloadingJobId: nil, isHeldForPlayback: false,
+                                      isNetworkReachable: true, waits: [jobs[0].id: DownloadWait.wifi.status], isWatched: { _ in false })
+        #expect(ruled.downloads.first?.state == .waiting)
+        #expect(ruled.downloads.first?.wait == "Waiting for Wi-Fi")
+        #expect(ruled.summary == "Episode a is next. Waiting for Wi-Fi. Nothing new is ready to watch offline.")
         let none = DownloadsSnapshot(jobs: [], receivedBytes: [:], downloadingJobId: nil, isHeldForPlayback: false,
                                      isNetworkReachable: true, isWatched: { _ in false })
         #expect(none.summary == "Nothing is downloading. Nothing new is ready to watch offline.")

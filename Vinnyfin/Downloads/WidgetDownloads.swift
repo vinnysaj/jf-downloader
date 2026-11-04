@@ -15,28 +15,32 @@ extension DownloadsSnapshot {
     init(_ downloads: DownloadManager, history: WatchHistory) {
         self.init(jobs: downloads.jobs, receivedBytes: downloads.receivedBytes, downloadingJobId: downloads.downloadingJobId,
                   isHeldForPlayback: downloads.isPausedForPlayback, isNetworkReachable: downloads.isNetworkReachable,
-                  isWatched: { $0.isWatched(in: history) })
+                  waits: downloads.waits.mapValues(\.status),
+                  isWatched: { $0.watchState(local: history.entry(for: $0.itemId)).isWatched })
     }
 
     /// The unfinished downloads in the order they download, the paused and failed ones after
-    /// them, and the finished ones not yet watched, one per title.
+    /// them, and the finished ones not yet watched, one per title. `waits` says what holds
+    /// queued downloads back, in the words of their status lines.
     init(jobs: [DownloadJob], receivedBytes: [UUID: Int64], downloadingJobId: UUID?, isHeldForPlayback: Bool,
-         isNetworkReachable: Bool, isWatched: (DownloadJob) -> Bool, now: Date = .now) {
+         isNetworkReachable: Bool, waits: [UUID: String] = [:], isWatched: (DownloadJob) -> Bool, now: Date = .now) {
         self.init()
-        let unfinished = jobs.filter { $0.status != .completed }.sorted { $0.createdAt < $1.createdAt }
+        let unfinished = jobs.filter { $0.status != .completed }
         let queue = DownloadJob.queue(jobs)
         let ordered = queue.compactMap { id in unfinished.first { $0.id == id } }
             + unfinished.filter { !queue.contains($0.id) }
         downloads = ordered.prefix(Self.listLimit).map { job in
+            let wait = job.status == .active ? waits[job.id] : nil
             let state: Download.State = switch job.status {
             case .paused: .paused
             case .failed: .failed
             case .active, .completed:
-                isHeldForPlayback ? .held : !isNetworkReachable ? .waitingForNetwork : job.id == downloadingJobId ? .downloading : .queued
+                isHeldForPlayback ? .held : !isNetworkReachable ? .waitingForNetwork : wait != nil ? .waiting
+                    : job.id == downloadingJobId ? .downloading : .queued
             }
             let received = receivedBytes[job.id] ?? job.completed.byteCount
             let percent = job.displayTotalBytes.flatMap { total in total > 0 ? Int(min(100, received * 100 / total)) : nil }
-            return Download(title: Title(job), state: state, percent: percent)
+            return Download(title: Title(job), state: state, percent: percent, wait: wait)
         }
         unfinishedCount = unfinished.count
         activeCount = unfinished.count { $0.status == .active }
@@ -54,13 +58,6 @@ extension DownloadsSnapshot.Title {
     init(_ job: DownloadJob) {
         self.init(itemId: job.itemId, type: job.item?.type ?? (job.isEpisode ? "Episode" : "Movie"),
                   name: job.item?.name ?? job.title, title: job.title, subtitle: job.subtitle)
-    }
-}
-
-extension DownloadJob {
-    /// Watched, by this device's record when it has one, else by the server's when it was saved.
-    func isWatched(in history: WatchHistory) -> Bool {
-        history.entry(for: itemId)?.played ?? item?.isPlayed ?? false
     }
 }
 

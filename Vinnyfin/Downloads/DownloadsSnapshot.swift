@@ -38,6 +38,8 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
             /// Waiting while something plays.
             case held
             case waitingForNetwork
+            /// Held back by a download rule or for want of room, as `wait` says.
+            case waiting
             case paused
             case failed
         }
@@ -46,6 +48,8 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
         let state: State
         /// How far along, in whole percent; nil until the size is known.
         let percent: Int?
+        /// What a waiting download waits for, as its status line in the app says it.
+        var wait: String?
 
         var id: String { title.id }
     }
@@ -98,6 +102,7 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
             case .downloading: sentences.append("\(current.title.title) is downloading\(progress)\(more).")
             case .held: sentences.append("Downloads wait while you watch. \(current.title.title) is next\(progress)\(more).")
             case .waitingForNetwork: sentences.append("Downloads are waiting for a network connection. \(current.title.title) is next\(progress)\(more).")
+            case .waiting: sentences.append("\(current.title.title) is next\(progress)\(more). \(current.wait ?? "It's waiting").")
             case .queued, .paused, .failed: sentences.append("\(current.title.title) is next\(progress)\(more).")
             }
         } else if unfinishedCount == 0 {

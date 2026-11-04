@@ -4,7 +4,8 @@ import Foundation
 /// One file to download: an item's chosen version, and how far it has got.
 nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     enum Status: String, Codable, Sendable {
-        /// Transferring, or waiting to retry. Only `pause` or a give-up moves it elsewhere.
+        /// Transferring, or waiting: to retry, or for what the rules or room hold it back for.
+        /// Only `pause` or a give-up moves it elsewhere.
         case active
         case paused
         case completed
@@ -62,6 +63,10 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     var lastError: String?
     /// Transfers started before this date are scheduled to begin at it.
     var retryAt: Date?
+    /// Since when transfers have failed to reach the server, without one coming through since.
+    var serverUnreachableSince: Date?
+    /// When someone chose Download Now for it: the network and schedule rules don't hold it back.
+    var downloadNowAt: Date?
     /// Where the finished file is, relative to Documents.
     var savedPath: String?
     var completedAt: Date?
@@ -96,6 +101,13 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
 
     var seriesId: String? { item?.seriesId }
     var isEpisode: Bool { item?.isEpisode ?? (subtitle != nil) }
+    var ignoresRules: Bool { downloadNowAt != nil }
+
+    /// A short name for notifications and the system's UI: "Show S01E02" for an episode, else the title.
+    var shortName: String {
+        guard isEpisode, let series = item?.seriesName else { return title }
+        return [series, item?.episodeCode].compactMap(\.self).joined(separator: " ")
+    }
 
     var displayTotalBytes: Int64? { totalBytes ?? sizeHint }
 

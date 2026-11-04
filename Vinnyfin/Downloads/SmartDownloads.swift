@@ -5,8 +5,11 @@ import OSLog
 
 /// Keeps shows downloaded ahead of where they're being watched: per show, the next N episodes
 /// after the one watched last, or every episode not yet watched, topped up as episodes are
-/// watched here or on any other device and as new ones reach the server. With "Delete Watched
-/// Episodes" on, watched downloads go.
+/// watched here or on any other device and as new ones reach the server. Each refresh also
+/// brings what the server says about how finished downloads were watched into the downloads
+/// (`DownloadManager.recordWatchState`), which decide from it, and from this device's history,
+/// what's watched: with "Delete Watched Episodes" on, watched episodes go, and watched
+/// downloads of any kind go to make room.
 ///
 /// Refreshes when the app opens, every `openInterval` while it's open, when a player closes, and
 /// on the background refresh wake (`BackgroundDownloads`). Never while a player is open: the
@@ -110,8 +113,9 @@ final class SmartDownloads {
         }
     }
 
-    /// Tops up every rule's show and deletes watched episodes, as far as the server can be
-    /// reached; offline, only episodes watched on this device are deleted.
+    /// Tops up every rule's show and learns how finished downloads were watched, as far as the
+    /// server can be reached, then deletes watched episodes; offline, with what the server last
+    /// said and this device's own history.
     func refresh() async {
         guard !isRefreshing else { return }
         guard openPlayers.isEmpty else {
@@ -121,44 +125,38 @@ final class SmartDownloads {
         isRefreshing = true
         defer { isRefreshing = false }
         problem = nil
-        var seriesIds = Set(rules.map(\.seriesId))
-        if settings.deleteWatchedEpisodes {
-            seriesIds.formUnion(downloads.jobs.compactMap { $0.status == .completed ? $0.seriesId : nil })
-        }
-        for seriesId in seriesIds.sorted() {
+        for seriesId in rules.map(\.seriesId).sorted() {
             if Task.isCancelled { return }
             do {
                 try await refresh(seriesId: seriesId)
             } catch {
                 // The background refresh ran out of time, or the app is closing.
                 if error.isCancellation { return }
-                if Self.isOffline(error) {
-                    deleteWatchedOffline(seriesId: seriesId)
-                    continue
-                }
+                if Self.isOffline(error) { continue }
                 let name = rule(for: seriesId)?.seriesName ?? "a show"
                 problem = "Couldn't update downloads for \(name): \(error.localizedDescription)"
                 Self.log.error("Refresh of \(seriesId, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             }
         }
+        do {
+            try await refreshWatchState()
+        } catch {
+            if error.isCancellation { return }
+            if !Self.isOffline(error) {
+                problem = "Couldn't check which downloads were watched: \(error.localizedDescription)"
+                Self.log.error("Watch state refresh failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        // A player opened while the server was answering could be playing one of them.
+        if settings.deleteWatchedEpisodes, openPlayers.isEmpty { downloads.deleteWatchedEpisodes() }
     }
 
     private func refresh(seriesId: String) async throws {
-        guard let client = accounts.client, let account = accounts.account else { return }
+        guard let client = accounts.client, let account = accounts.account, let rule = rule(for: seriesId) else { return }
         let show = try await show(seriesId, client: client, userId: account.userId)
-        if let rule = rule(for: seriesId) {
-            let wanted = SmartDownloadPlanner.episodesToDownload(show.states, nextUpId: show.nextUpId, count: rule.episodesAhead)
-            _ = try await queue(wanted, startedByUser: seriesSetUpByUser.contains(seriesId), client: client, userId: account.userId)
-            seriesSetUpByUser.remove(seriesId)
-        }
-        if settings.deleteWatchedEpisodes {
-            for id in SmartDownloadPlanner.watchedDownloads(show.states) {
-                // A player opened while the server was answering could be playing this one.
-                guard openPlayers.isEmpty else { return }
-                Self.log.info("Deleting watched episode \(id, privacy: .public)")
-                downloads.deleteDownloads(ofItem: id)
-            }
-        }
+        let wanted = SmartDownloadPlanner.episodesToDownload(show.states, nextUpId: show.nextUpId, count: rule.episodesAhead)
+        _ = try await queue(wanted, startedByUser: seriesSetUpByUser.contains(seriesId), client: client, userId: account.userId)
+        seriesSetUpByUser.remove(seriesId)
     }
 
     /// Queues the next `count` episodes to watch of a show, once, as Siri and Shortcuts ask.
@@ -189,17 +187,26 @@ final class SmartDownloads {
             .filter { $0.parentIndexNumber != 0 }
         let nextUp = try await client.nextUp(userId: userId, seriesId: seriesId, limit: 1).items.first?.id
         let states = episodes.map { episode in
-            let downloadedAt = downloads.jobs(forItem: episode.id).compactMap(\.completedAt).min()
-            return SmartDownloadPlanner.Episode(
+            SmartDownloadPlanner.Episode(
                 id: episode.id,
                 played: isPlayed(episode),
                 inProgress: isInProgress(episode),
-                isQueued: !downloads.jobs(forItem: episode.id).isEmpty,
-                isDownloaded: downloads.isDownloaded(episode.id),
-                watchedSinceDownload: downloadedAt.map { watched(episode, since: $0) } ?? false
+                isQueued: !downloads.jobs(forItem: episode.id).isEmpty
             )
         }
         return (episodes, states, nextUp)
+    }
+
+    /// Asks the server how every finished download was watched, a page of them at a time.
+    private func refreshWatchState() async throws {
+        guard let client = accounts.client, let account = accounts.account else { return }
+        let ids = Set(downloads.jobs.filter { $0.status == .completed }.map(\.itemId)).sorted()
+        for start in stride(from: 0, to: ids.count, by: Self.watchStatePage) {
+            let page = Array(ids[start..<min(ids.count, start + Self.watchStatePage)])
+            var query = JellyfinClient.ItemQuery(types: ["Movie", "Episode"], ids: page)
+            query.limit = page.count
+            downloads.recordWatchState(from: try await client.items(userId: account.userId, query).items)
+        }
     }
 
     /// Queues each episode's version closest to the download quality, and returns the episodes
@@ -215,21 +222,8 @@ final class SmartDownloads {
         return queued
     }
 
-    private func deleteWatchedOffline(seriesId: String) {
-        guard settings.deleteWatchedEpisodes, openPlayers.isEmpty else { return }
-        for job in downloads.jobs where job.seriesId == seriesId && job.status == .completed {
-            guard let entry = history.entry(for: job.itemId), let completedAt = job.completedAt else { continue }
-            if entry.played, entry.updatedAt > completedAt { downloads.deleteDownloads(ofItem: job.itemId) }
-        }
-    }
-
-    /// Finished since `date`, when it was downloaded, rather than watched before and downloaded
-    /// to see again. Where this device played it since, its own record decides: a rewatch stopped
-    /// early leaves the server still calling the episode watched.
-    private func watched(_ episode: JellyfinItem, since date: Date) -> Bool {
-        if let local = history.entry(for: episode.id), local.updatedAt > date { return local.played }
-        return (episode.lastPlayedDate ?? .distantPast) > date
-    }
+    /// Item ids per request, which keeps its address well under what servers accept.
+    private static let watchStatePage = 100
 
     /// Watched on the server, or here since the server was last told.
     private func isPlayed(_ episode: JellyfinItem) -> Bool {
@@ -265,13 +259,10 @@ nonisolated enum SmartDownloadPlanner {
     struct Episode: Equatable, Sendable {
         let id: String
         let played: Bool
-        /// Partway through, as when picking a watched episode up again. Kept, never deleted.
+        /// Partway through, as when picking a watched episode up again.
         let inProgress: Bool
         /// Has a download in any state.
         let isQueued: Bool
-        let isDownloaded: Bool
-        /// Finished after its download did; one downloaded already watched is being kept to see again.
-        var watchedSinceDownload = false
     }
 
     /// The episodes to queue: `count` episodes from the next one to watch, which is the server's
@@ -292,11 +283,6 @@ nonisolated enum SmartDownloadPlanner {
         guard start < episodes.count else { return [] }
         let end = min(episodes.count, start + max(0, count))
         return episodes[start..<end].filter { !$0.isQueued && !$0.isFinished }.map(\.id)
-    }
-
-    /// The downloads to delete: episodes finished since they were downloaded.
-    static func watchedDownloads(_ episodes: [Episode]) -> [String] {
-        episodes.filter { $0.isFinished && $0.isDownloaded && $0.watchedSinceDownload }.map(\.id)
     }
 }
 
