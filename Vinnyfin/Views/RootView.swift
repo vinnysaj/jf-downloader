@@ -12,7 +12,6 @@ struct RootView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     #endif
     #if !os(tvOS)
-    @Environment(DownloadManager.self) private var downloads
     @Environment(SmartDownloads.self) private var smartDownloads
     #endif
 
@@ -65,28 +64,15 @@ struct RootView: View {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             player.playFile(url)
         }
-        #if !os(tvOS)
-        .onChange(of: scenePhase, initial: true) { _, phase in
-            downloads.sceneChanged(isActive: phase == .active, isInBackground: phase == .background)
-        }
-        #endif
         // Runs while the app is open, and stops as it goes to the background.
         .task(id: scenePhase == .background) {
-            guard scenePhase != .background else {
-                #if os(iOS) || os(visionOS)
-                await SmartDownloads.scheduleBackgroundRefresh()
-                #endif
-                return
-            }
+            guard scenePhase != .background else { return }
             // What was watched offline goes to the server first, so smart downloads plan from it.
             if let session { await history.syncPending(using: session.client, userId: session.userId) }
             #if !os(tvOS)
             await smartDownloads.refreshWhileOpen()
             #endif
         }
-        #if !os(tvOS)
-        .task { await downloads.trackProgress() }
-        #endif
     }
 }
 

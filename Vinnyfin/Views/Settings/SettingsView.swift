@@ -65,10 +65,18 @@ struct SettingsView: View {
                     Toggle("Delete Watched Episodes", isOn: $settings.deleteWatchedEpisodes)
                         .accessibilityIdentifier("settings.deleteWatched")
                     Stepper("Smart Downloads Keep \(settings.smartDownloadCount) Episodes", value: $settings.smartDownloadCount, in: 1...50)
+                    #if os(iOS) || os(visionOS)
+                    NavigationLink("Diagnostics") { DiagnosticsView() }
+                        .accessibilityIdentifier("settings.diagnostics")
+                    #endif
                 } header: {
                     Text("Downloads")
                 } footer: {
+                    #if os(iOS) || os(visionOS)
+                    Text("Downloads are always the original file: the version closest to this quality. Watched episodes are deleted once they're watched here or on any of your devices. Diagnostics shows what the system reports about why vinnyfin stopped running.")
+                    #else
                     Text("Downloads are always the original file: the version closest to this quality. Watched episodes are deleted once they're watched here or on any of your devices.")
+                    #endif
                 }
                 #endif
                 Section("About") {

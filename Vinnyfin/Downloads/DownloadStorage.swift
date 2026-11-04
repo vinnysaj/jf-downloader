@@ -15,9 +15,13 @@ nonisolated struct DownloadStorage: Sendable {
     let root: URL
 
     var jobsFile: URL { root.appending(path: "jobs.json") }
+    /// The transfers last handed to the session, by tag.
+    var handedOutFile: URL { root.appending(path: "handed-out.json") }
     var partials: URL { root.appending(path: "Partials", directoryHint: .isDirectory) }
     var staging: URL { root.appending(path: "Staging", directoryHint: .isDirectory) }
     var artwork: URL { root.appending(path: "Artwork", directoryHint: .isDirectory) }
+    /// Resume data of ranges cancelled for a playback, one file per range.
+    var held: URL { root.appending(path: "Held", directoryHint: .isDirectory) }
 
     static let standard = DownloadStorage(
         finished: finishedFolder,
@@ -35,7 +39,7 @@ nonisolated struct DownloadStorage: Sendable {
 
     func prepare() throws {
         let manager = FileManager.default
-        for directory in [finished, partials, staging, artwork] {
+        for directory in [finished, partials, staging, artwork, held] {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         var excluded = URLResourceValues()
@@ -100,6 +104,42 @@ nonisolated struct DownloadStorage: Sendable {
 
     func saveJobs(_ jobs: [DownloadJob]) throws {
         try JSONEncoder().encode(jobs).write(to: jobsFile, options: .atomic)
+    }
+
+    // MARK: Transfers
+
+    func loadHandedOut() throws -> [TransferTag] {
+        guard FileManager.default.fileExists(atPath: handedOutFile.path) else { return [] }
+        return try JSONDecoder().decode([String].self, from: Data(contentsOf: handedOutFile)).compactMap(TransferTag.init(encoded:))
+    }
+
+    func saveHandedOut(_ tags: some Sequence<TransferTag>) throws {
+        try JSONEncoder().encode(tags.map(\.encoded)).write(to: handedOutFile, options: .atomic)
+    }
+
+    private func heldFile(for tag: TransferTag) -> URL {
+        held.appending(path: tag.encoded.replacing(" ", with: "_") + ".resume")
+    }
+
+    func loadHeld() throws -> [TransferTag: Data] {
+        var data: [TransferTag: Data] = [:]
+        for file in try FileManager.default.contentsOfDirectory(at: held, includingPropertiesForKeys: nil) {
+            guard let tag = TransferTag(encoded: file.deletingPathExtension().lastPathComponent.replacing("_", with: " ")) else { continue }
+            data[tag] = try Data(contentsOf: file)
+        }
+        return data
+    }
+
+    func saveHeld(_ data: Data, for tag: TransferTag) throws {
+        try data.write(to: heldFile(for: tag), options: .atomic)
+    }
+
+    /// Removes the held resume data of the tags `matching` accepts.
+    func removeHeld(where matching: (TransferTag) -> Bool) throws {
+        for file in try FileManager.default.contentsOfDirectory(at: held, includingPropertiesForKeys: nil) {
+            let tag = TransferTag(encoded: file.deletingPathExtension().lastPathComponent.replacing("_", with: " "))
+            if tag.map(matching) ?? true { try FileManager.default.removeItem(at: file) }
+        }
     }
 
     // MARK: Files
