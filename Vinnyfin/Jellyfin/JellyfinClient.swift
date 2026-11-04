@@ -478,7 +478,6 @@ nonisolated struct DeviceProfile: Encodable, Sendable {
         let Context: String
         let MaxAudioChannels: String
         let MinSegments: Int
-        let BreakOnNonKeyFrames: Bool
     }
 
     struct ProfileCondition: Encodable, Sendable {
@@ -522,7 +521,7 @@ nonisolated struct DeviceProfile: Encodable, Sendable {
             TranscodingProfiles: [
                 TranscodingProfile(
                     Container: "mp4", Type: "Video", VideoCodec: "hevc,h264", AudioCodec: "aac,eac3,ac3,flac,alac",
-                    Protocol: "hls", Context: "Streaming", MaxAudioChannels: "8", MinSegments: 1, BreakOnNonKeyFrames: true
+                    Protocol: "hls", Context: "Streaming", MaxAudioChannels: "8", MinSegments: 1
                 ),
             ],
             CodecProfiles: conditions.isEmpty ? [] : [CodecProfile(Type: "Video", Conditions: conditions)],
