@@ -95,7 +95,7 @@ struct SettingsView: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("Settings")
+            .screenTitle("Settings")
             #if os(macOS)
             // The Mac's Settings window is a window of its own, outside the root view.
             .preferredColorScheme(settings.appearance.colorScheme)
@@ -257,7 +257,10 @@ struct AcknowledgementsView: View {
         var id: String { name }
     }
 
-    private let components = [
+    /// Static, not stored: Settings builds this page anew each time it renders, and a stored list
+    /// SwiftUI can't compare makes each one look changed, which on Apple TV re-renders the two
+    /// screens in turn without end once the page is open.
+    private static let components = [
         Component(name: "AetherEngine", license: "LGPL-3.0 with App Store exception",
                   summary: "Copyright (C) 2026 Vincent Herbst. The playback engine. Source: github.com/superuser404notfound/AetherEngine",
                   file: "AetherEngine"),
@@ -274,26 +277,53 @@ struct AcknowledgementsView: View {
     ]
 
     var body: some View {
-        List(components) { component in
-            NavigationLink {
-                ScrollView {
-                    Text(Self.text(named: component.file))
-                        .font(.caption.monospaced())
-                        .padding()
-                        #if !os(tvOS)
-                        .textSelection(.enabled)
-                        #endif
+        List {
+            Section {
+                ForEach(Self.components) { component in
+                    NavigationLink {
+                        LicenseView(name: component.name, file: component.file)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(component.name).font(.headline)
+                            Text(component.license).font(.subheadline).foregroundStyle(.secondary)
+                            Text(component.summary).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
-                .navigationTitle(component.name)
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(component.name).font(.headline)
-                    Text(component.license).font(.subheadline).foregroundStyle(.secondary)
-                    Text(component.summary).font(.caption).foregroundStyle(.secondary)
-                }
+            } header: {
+                #if os(tvOS)
+                Text("Acknowledgements").font(.title2.bold()).foregroundStyle(.primary).textCase(nil)
+                #endif
             }
         }
-        .navigationTitle("Acknowledgements")
+        .screenTitle("Acknowledgements")
+    }
+}
+
+/// A component's license. On Apple TV focus moves through it a paragraph at a time: a page with
+/// nothing to focus can't be scrolled with the remote, and Menu there leaves the app instead of
+/// going back.
+private struct LicenseView: View {
+    let name: String
+    /// The license's text file in the app's resources.
+    let file: String
+
+    var body: some View {
+        let text = Self.text(named: file)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                #if os(tvOS)
+                Text(name).font(.title2.bold())
+                ForEach(Array(Self.paragraphs(of: text).enumerated()), id: \.offset) { _, paragraph in
+                    Text(paragraph).font(.caption.monospaced()).focusable()
+                }
+                #else
+                Text(text).font(.caption.monospaced()).textSelection(.enabled)
+                #endif
+            }
+            .padding()
+        }
+        .screenTitle(name)
     }
 
     static func text(named name: String) -> String {
@@ -301,5 +331,9 @@ struct AcknowledgementsView: View {
               let text = try? String(contentsOf: url, encoding: .utf8)
         else { return "The license text is missing from this build." }
         return text
+    }
+
+    static func paragraphs(of text: String) -> [String] {
+        text.components(separatedBy: "\n\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 }

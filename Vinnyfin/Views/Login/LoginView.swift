@@ -224,12 +224,8 @@ struct LoginView: View {
         do {
             let info = try await accounts.probe(url)
             check = .found(name: info.serverName ?? url.host() ?? "server", version: info.version)
-        } catch is CancellationError {
-            return
-        } catch let error as URLError where error.code == .cancelled {
-            return
         } catch {
-            check = .failed(error.localizedDescription)
+            if !error.isCancellation { check = .failed(error.localizedDescription) }
         }
     }
 

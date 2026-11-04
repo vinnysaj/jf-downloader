@@ -10,6 +10,8 @@ struct RootView: View {
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    #elseif os(visionOS)
+    @Environment(\.pushWindow) private var pushWindow
     #endif
     #if !os(tvOS)
     @Environment(SmartDownloads.self) private var smartDownloads
@@ -34,13 +36,18 @@ struct RootView: View {
         }
         .environment(\.session, session)
         .preferredColorScheme(settings.appearance.colorScheme)
-        #if os(macOS)
+        #if os(macOS) || os(visionOS)
         .onChange(of: player.pendingWindowRequest) { _, request in
             guard let request else { return }
             player.pendingWindowRequest = nil
+            #if os(visionOS)
+            // The player takes this window's place, and closing it brings the library back.
+            pushWindow(id: PlayerWindow.id, value: request)
+            #else
             // One engine plays one thing: a new playback replaces the window of the last.
             dismissWindow(id: PlayerWindow.id)
             openWindow(id: PlayerWindow.id, value: request)
+            #endif
         }
         #else
         .fullScreenCover(item: $player.presented) { model in
@@ -120,7 +127,7 @@ struct MainTabs: View {
     /// A title a link asked to open, shown on Home as the page after it.
     @Binding var linkedItem: JellyfinItem?
     @State private var selection = Destination.home
-    @State private var homePath: [JellyfinItem] = []
+    @State private var homePath = NavigationPath()
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
     #endif
@@ -132,14 +139,12 @@ struct MainTabs: View {
             }
             Tab("Movies", systemImage: "film", value: .movies) {
                 NavigationStack {
-                    LibraryGridView(kind: .movies)
-                        .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
+                    LibraryGridView(list: .movies).itemDestinations()
                 }
             }
             Tab("Shows", systemImage: "tv", value: .shows) {
                 NavigationStack {
-                    LibraryGridView(kind: .shows)
-                        .navigationDestination(for: JellyfinItem.self) { ItemDestination(item: $0) }
+                    LibraryGridView(list: .shows).itemDestinations()
                 }
             }
             #if os(tvOS)
@@ -160,7 +165,7 @@ struct MainTabs: View {
         .onChange(of: linkedItem, initial: true) {
             guard let linkedItem else { return }
             selection = .home
-            homePath = [linkedItem]
+            homePath = NavigationPath([linkedItem])
             self.linkedItem = nil
         }
     }

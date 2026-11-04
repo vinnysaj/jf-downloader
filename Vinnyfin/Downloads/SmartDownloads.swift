@@ -128,7 +128,8 @@ final class SmartDownloads {
             do {
                 try await refresh(seriesId: seriesId)
             } catch {
-                if Self.isCancellation(error) { return }
+                // The background refresh ran out of time, or the app is closing.
+                if error.isCancellation { return }
                 if Self.isOffline(error) { continue }
                 let name = rule(for: seriesId)?.seriesName ?? "a show"
                 problem = "Couldn't update downloads for \(name): \(error.localizedDescription)"
@@ -138,7 +139,7 @@ final class SmartDownloads {
         do {
             try await refreshWatchState()
         } catch {
-            if Self.isCancellation(error) { return }
+            if error.isCancellation { return }
             if !Self.isOffline(error) {
                 problem = "Couldn't check which downloads were watched: \(error.localizedDescription)"
                 Self.log.error("Watch state refresh failed: \(String(describing: error), privacy: .public)")
@@ -148,16 +149,11 @@ final class SmartDownloads {
         if settings.deleteWatchedEpisodes, openPlayers.isEmpty { downloads.deleteWatchedEpisodes() }
     }
 
-    /// The background refresh ran out of time, or the app is closing.
-    private static func isCancellation(_ error: any Error) -> Bool {
-        error is CancellationError || (error as? URLError)?.code == .cancelled
-    }
-
     private func refresh(seriesId: String) async throws {
         guard let client = accounts.client, let account = accounts.account, let rule = rule(for: seriesId) else { return }
         let episodes = try await client.episodes(seriesId: seriesId, seasonId: nil, userId: account.userId, fields: "MediaSources")
             .filter { $0.parentIndexNumber != 0 }
-        let nextUp = try await client.nextUp(userId: account.userId, seriesId: seriesId, limit: 1).first?.id
+        let nextUp = try await client.nextUp(userId: account.userId, seriesId: seriesId, limit: 1).items.first?.id
         let states = episodes.map { episode in
             SmartDownloadPlanner.Episode(
                 id: episode.id,
