@@ -206,7 +206,13 @@ struct PlayerView: View {
         #endif
         .onChange(of: fillsScreen) { _, fills in model.engine.videoGravity = fills ? .resizeAspectFill : .resizeAspect }
         .onChange(of: model.status) { _, status in
-            if status == .playing { scheduleHide() } else { showControls(autoHide: false) }
+            switch status {
+            case .playing: scheduleHide()
+            // Up for a new title, and for what the viewer acts on. A new stream of the same title
+            // and a stall show in the picture, and leave the controls as they were.
+            case .preparing, .paused, .ended, .failed: showControls(autoHide: false)
+            case .loading, .buffering: break
+            }
             #if os(iOS) || os(macOS)
             pictureInPicture.attach(to: model.engine)
             #endif
