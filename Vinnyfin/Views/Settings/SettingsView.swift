@@ -28,6 +28,8 @@ struct SettingsView: View {
                     }
                     .accessibilityIdentifier("settings.streamingQuality")
                     Toggle("Transcode When No Version Fits", isOn: $settings.allowTranscoding)
+                    Toggle("Adaptive Quality", isOn: $settings.adaptiveQuality)
+                        .accessibilityIdentifier("settings.adaptiveQuality")
                     Toggle("Play the Next Episode Automatically", isOn: $settings.autoplayNextEpisode)
                     Toggle("Offer to Skip Intros and Credits", isOn: $settings.showSkipButtons)
                     #if os(tvOS)
@@ -36,7 +38,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Playback")
                 } footer: {
-                    Text("Plays the best version up to this quality, untouched. When every version is bigger, the server scales one down, unless transcoding is off. Skip buttons appear for the intros, recaps, previews and credits your server has marked, downloads included.")
+                    Text("Plays the best version up to this quality, untouched. When every version is bigger, the server scales one down, unless transcoding is off. Adaptive Quality switches to a smaller version, or a transcode, when the connection can't keep up. Skip buttons appear for the intros, recaps, previews and credits your server has marked, downloads included.")
                 }
                 Section("Audio and Subtitles") {
                     SettingPicker("Audio Language", selection: $settings.audioLanguage) {

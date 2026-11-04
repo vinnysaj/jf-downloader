@@ -206,6 +206,34 @@ struct SchedulingTests {
         #expect(DownloadJob.queue([first, second]).isEmpty)
     }
 
+    @Test func plansOneFileUnlessQueuingAhead() {
+        let start = Date.now
+        var first = DownloadJob(item: Samples.movie, source: Samples.source, now: start)
+        var second = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 1)
+        first.chunkSize = 100_000_000
+        second.chunkSize = 100_000_000
+        // 300 MB each: three chunks a file.
+        let alone = DownloadJob.plan([second, first], running: [], budget: 10, queuingAhead: false)
+        #expect(alone.map(\.jobId) == [first.id, first.id, first.id])
+        // The first file's last chunk under way: still nothing of the second.
+        let tail = [TransferTag(jobId: first.id, range: 200_000_000..<300_000_000)]
+        first.completed = ByteRanges([0..<200_000_000])
+        #expect(DownloadJob.plan([first, second], running: tail, budget: 10, queuingAhead: false).isEmpty)
+        let ahead = DownloadJob.plan([first, second], running: tail, budget: 10, queuingAhead: true)
+        #expect(ahead.map(\.jobId) == [second.id, second.id, second.id])
+        #expect(DownloadJob.plan([first, second], running: tail, budget: 2, queuingAhead: true).count == 2)
+    }
+
+    @Test func queuesNothingAheadOfAFileOfUnknownSize() {
+        let start = Date.now
+        var unknown = Samples.source
+        unknown.size = nil
+        let first = DownloadJob(item: Samples.movie, source: unknown, now: start)
+        let second = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 1)
+        let plan = DownloadJob.plan([first, second], running: [], budget: 10, queuingAhead: true)
+        #expect(plan == [TransferTag(jobId: first.id, range: DownloadJob.probeRange)])
+    }
+
     @Test func requestsNothingUnlessActive() {
         var job = DownloadJob(item: Samples.movie, source: Samples.source)
         job.status = .paused

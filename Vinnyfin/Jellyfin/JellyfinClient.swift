@@ -172,6 +172,21 @@ nonisolated struct JellyfinClient: Sendable {
         ])
     }
 
+    /// Shows with new episodes, newest first.
+    func latestShows(userId: String, limit: Int = 24) async throws -> [JellyfinItem] {
+        try await latest(userId: userId, types: ["Episode"], limit: limit).map(Self.show(for:))
+    }
+
+    /// Latest episodes come back grouped by show, but a lone new episode comes back as itself;
+    /// either way the list shows the show.
+    private static func show(for item: JellyfinItem) -> JellyfinItem {
+        guard item.isEpisode, let seriesId = item.seriesId else { return item }
+        var show = JellyfinItem(id: seriesId, name: item.seriesName ?? item.name, type: "Series")
+        show.imageTags = item.seriesPrimaryImageTag.map { ["Primary": $0] }
+        show.productionYear = item.productionYear
+        return show
+    }
+
     func recentlyPlayed(userId: String, limit: Int = 20) async throws -> [JellyfinItem] {
         let page: ItemsPage = try await get("Items", query: [
             "userId": userId, "recursive": "true", "includeItemTypes": "Movie,Episode",

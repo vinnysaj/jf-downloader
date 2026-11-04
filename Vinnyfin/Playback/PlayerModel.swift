@@ -32,6 +32,14 @@ struct TrackOption: Identifiable, Equatable {
     let detail: String?
 }
 
+/// The audio and subtitles chosen in a playback, described so that another version of the
+/// title, whose tracks are numbered differently, can choose the same.
+struct TrackSelection {
+    var audio: TrackChooser.Candidate?
+    /// Nil when subtitles are off.
+    var subtitle: TrackChooser.Candidate?
+}
+
 /// A playback on screen: what it is, how it's going, and the commands for it. Drives the shared
 /// engine, tells the server how far playback got, and keeps the position for offline use.
 @Observable
@@ -78,6 +86,8 @@ final class PlayerModel: Identifiable {
     private(set) var rate: Float = 1
     /// Seconds left before the next episode starts by itself; nil when it isn't counting down.
     private(set) var upNextCountdown: Int?
+    /// A word about the playback, such as a move to a lower quality, shown for a few seconds.
+    private(set) var notice: String?
     var upNextDismissed = false
     let clock = PlaybackClock()
     let engine: AetherEngine
@@ -103,9 +113,16 @@ final class PlayerModel: Identifiable {
     /// The engine's load returned, so its track lists are complete.
     @ObservationIgnored private var isLoaded = false
     @ObservationIgnored private var lastReportedPaused: Bool?
-    @ObservationIgnored private var transcodeAudioIndex: Int?
-    @ObservationIgnored private var transcodeSubtitleIndex: Int?
     @ObservationIgnored private var startedReporting = false
+    /// Telling the server that the last session stopped.
+    @ObservationIgnored private var stopReport: Task<Void, Never>?
+    /// The title whose next episode and segments were asked for.
+    @ObservationIgnored private var extrasRequestedFor: String?
+    /// The audio and subtitles chosen in the version this one stands in for.
+    @ObservationIgnored private var carriedTracks: TrackSelection?
+    @ObservationIgnored private var connectionWatch = ConnectionWatch()
+    @ObservationIgnored private var watchTask: Task<Void, Never>?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var isClosed = false
 
     private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "player")
@@ -164,7 +181,7 @@ final class PlayerModel: Identifiable {
     }
 
     private func switchTo(_ episode: JellyfinItem) async {
-        await finishSession(reachedEnd: status == .ended)
+        finishSession(reachedEnd: status == .ended)
         await load(.item(episode))
     }
 
@@ -189,7 +206,7 @@ final class PlayerModel: Identifiable {
     func retryTranscoded() async {
         guard let current, let item = current.item, let source = current.mediaSource, !current.isTranscode else { return }
         let position = clock.time > 0 ? clock.time : current.startPosition
-        await finishSession(reachedEnd: false)
+        finishSession(reachedEnd: false)
         status = .loading
         do {
             let quality = settings.streamingQuality == .original ? VideoQuality.fullHD : settings.streamingQuality
@@ -210,8 +227,11 @@ final class PlayerModel: Identifiable {
         segments = []
         upNextDismissed = false
         upNextCountdown = nil
+        extrasRequestedFor = nil
         do {
             let resolved = try await resolver.resolve(request)
+            // A download's own copy, until the server's arrive.
+            segments = resolved.segments
             await begin(resolved)
         } catch is CancellationError {
             return
@@ -220,7 +240,9 @@ final class PlayerModel: Identifiable {
         }
     }
 
-    private func begin(_ resolved: ResolvedPlayback) async {
+    /// Starts a stream of the title `load` resolved: the version it chose, or one standing in
+    /// for it, which keeps the audio and subtitles `tracks` describe.
+    private func begin(_ resolved: ResolvedPlayback, carrying tracks: TrackSelection? = nil) async {
         guard !isClosed else { return }
         current = resolved
         title = resolved.title
@@ -233,27 +255,28 @@ final class PlayerModel: Identifiable {
         selectedAudio = nil
         selectedSubtitle = nil
         cues = []
-        nextEpisode = nil
-        // A download's own copy, until the server's arrive.
-        segments = resolved.segments
-        upNextCountdown = nil
-        upNextDismissed = false
         clock.time = resolved.startPosition ?? 0
         clock.sourceTime = resolved.startPosition ?? 0
         clock.buffered = 0
-        transcodeAudioIndex = nil
-        transcodeSubtitleIndex = nil
+        carriedTracks = tracks
         appliedSubtitlePreference = false
         isLoaded = false
         startedReporting = false
         lastReportedPaused = nil
+        watchTask?.cancel()
         status = .loading
         observeEngine()
 
         var options = LoadOptions()
         options.externalSubtitles = resolved.externalSubtitles
         options.matchContentEnabled = settings.matchContent
-        if !settings.audioLanguage.isEmpty {
+        var audioStreamIndex: Int32?
+        if let audio = tracks?.audio, !resolved.isTranscode {
+            // By the server's list of the version's streams when it has one, else by language.
+            let streams = resolved.mediaSource?.audioStreams.compactMap(TrackChooser.Candidate.init) ?? []
+            audioStreamIndex = TrackChooser.same(as: audio, in: streams).map(Int32.init)
+            options.preferredAudioLanguages = [audio.language, settings.audioLanguage].compactMap { $0 }.filter { !$0.isEmpty }
+        } else if !settings.audioLanguage.isEmpty {
             options.preferredAudioLanguages = [settings.audioLanguage]
         }
         if resolved.isTranscode {
@@ -262,7 +285,8 @@ final class PlayerModel: Identifiable {
         setNowPlaying(resolved)
         lease.holder = id
         do {
-            try await engine.load(url: resolved.url, startPosition: resolved.startPosition, options: options)
+            try await engine.load(url: resolved.url, startPosition: resolved.startPosition, options: options,
+                                  audioSourceStreamIndex: audioStreamIndex)
         } catch is CancellationError {
             return
         } catch {
@@ -277,7 +301,11 @@ final class PlayerModel: Identifiable {
         registerRemoteCommands()
         Self.keepScreenAwake(true)
         startReporting()
-        Task { await loadExtras(for: resolved) }
+        if resolved.isStream { watchConnection() }
+        if extrasRequestedFor != resolved.historyKey {
+            extrasRequestedFor = resolved.historyKey
+            Task { await loadExtras(for: resolved) }
+        }
     }
 
     /// The next episode and the skippable segments, which playback doesn't wait for.
@@ -380,11 +408,11 @@ final class PlayerModel: Identifiable {
     }
 
     private func audioTracksChanged(_ tracks: [TrackInfo], active: Int?) {
-        if isTranscoding, let source = current?.mediaSource {
+        if let transcode = current?.transcode, let source = current?.mediaSource {
             audioOptions = source.audioStreams.compactMap { stream in
                 stream.index.map { TrackOption(id: $0, title: Self.streamTitle(stream), detail: stream.displayTitle) }
             }
-            selectedAudio = transcodeAudioIndex ?? source.defaultAudioStreamIndex ?? audioOptions.first?.id
+            selectedAudio = transcode.audioIndex ?? source.defaultAudioStreamIndex ?? audioOptions.first?.id
             return
         }
         audioOptions = tracks.map { TrackOption(id: $0.id, title: Self.trackTitle($0), detail: Self.audioDetail($0)) }
@@ -392,14 +420,16 @@ final class PlayerModel: Identifiable {
     }
 
     private func subtitleTracksChanged(_ tracks: [TrackInfo], active: Int?) {
-        if isTranscoding, let source = current?.mediaSource {
+        if let transcode = current?.transcode, let source = current?.mediaSource {
             subtitleOptions = source.subtitleStreams.compactMap { stream in
                 stream.index.map { TrackOption(id: $0, title: Self.streamTitle(stream), detail: stream.codec?.uppercased()) }
             }
-            selectedSubtitle = transcodeSubtitleIndex
-            // The server adds a text subtitle as an HLS rendition; turn it on.
-            if transcodeSubtitleIndex != nil, let rendition = tracks.first, active == nil {
-                engine.selectSubtitleTrack(index: rendition.id)
+            selectedSubtitle = transcode.subtitleIndex
+            // The server lists its text subtitles as HLS renditions; turn on the one asked for.
+            if let index = transcode.subtitleIndex,
+               let asked = source.subtitleStreams.first(where: { $0.index == index }).flatMap(TrackChooser.Candidate.init),
+               let rendition = TrackChooser.same(as: asked, in: tracks.map(TrackChooser.Candidate.init)), active != rendition {
+                engine.selectSubtitleTrack(index: rendition)
             }
             return
         }
@@ -409,21 +439,31 @@ final class PlayerModel: Identifiable {
     }
 
     /// Turns on the subtitle track the subtitle setting asks for, once per playback, after the
-    /// load has listed the tracks.
+    /// load has listed the tracks. A version standing in for another keeps that one's choice,
+    /// subtitles off included, when it has the same.
     private func applySubtitlePreference(_ tracks: [TrackInfo]) {
         guard !appliedSubtitlePreference, !isTranscoding, !tracks.isEmpty else { return }
         appliedSubtitlePreference = true
-        let audioLanguage = engine.audioTracks.first { $0.id == engine.activeAudioTrackIndex }?.language
-        let candidates = tracks.map {
-            TrackChooser.Candidate(id: $0.id, language: $0.language, isForced: $0.isForced,
-                                   isHearingImpaired: $0.isHearingImpaired, isDefault: $0.isDefault)
+        let candidates = tracks.map(TrackChooser.Candidate.init)
+        let choice: Int?
+        if let carried = carriedTracks, let subtitle = carried.subtitle {
+            choice = TrackChooser.same(as: subtitle, in: candidates) ?? preferredSubtitle(from: candidates)
+        } else if carriedTracks != nil {
+            choice = nil
+        } else {
+            choice = preferredSubtitle(from: candidates)
         }
-        if let choice = TrackChooser.subtitle(from: candidates, audioLanguage: audioLanguage,
-                                              mode: settings.subtitleMode, language: settings.subtitleLanguage) {
+        if let choice {
             engine.selectSubtitleTrack(index: choice)
         } else if engine.activeSubtitleTrackIndex != nil {
             engine.clearSubtitle()
         }
+    }
+
+    private func preferredSubtitle(from candidates: [TrackChooser.Candidate]) -> Int? {
+        let audioLanguage = engine.audioTracks.first { $0.id == engine.activeAudioTrackIndex }?.language
+        return TrackChooser.subtitle(from: candidates, audioLanguage: audioLanguage,
+                                     mode: settings.subtitleMode, language: settings.subtitleLanguage)
     }
 
     // MARK: Commands
@@ -442,6 +482,7 @@ final class PlayerModel: Identifiable {
     func seek(to seconds: Double) {
         let target = max(0, duration > 0 ? min(seconds, duration - 1) : seconds)
         clock.time = target
+        connectionWatch.restart()
         nowPlayingChanged()
         Task { await engine.seek(to: target) }
     }
@@ -457,9 +498,9 @@ final class PlayerModel: Identifiable {
     }
 
     func chooseAudio(_ id: Int) {
-        if isTranscoding {
-            transcodeAudioIndex = id
-            Task { await reloadTranscode() }
+        if let transcode = current?.transcode {
+            selectedAudio = id
+            Task { await reloadTranscode(audioIndex: id, subtitleIndex: transcode.subtitleIndex) }
         } else {
             engine.selectAudioTrack(index: id)
         }
@@ -467,9 +508,9 @@ final class PlayerModel: Identifiable {
 
     /// Nil turns subtitles off.
     func chooseSubtitle(_ id: Int?) {
-        if isTranscoding {
-            transcodeSubtitleIndex = id
-            Task { await reloadTranscode() }
+        if let transcode = current?.transcode {
+            selectedSubtitle = id
+            Task { await reloadTranscode(audioIndex: transcode.audioIndex, subtitleIndex: id) }
         } else if let id {
             engine.selectSubtitleTrack(index: id)
         } else {
@@ -484,30 +525,150 @@ final class PlayerModel: Identifiable {
     }
 
     /// A transcode carries its audio and subtitles in the stream, so changing them asks the
-    /// server for a new one at the same spot.
-    private func reloadTranscode() async {
-        guard let current, let item = current.item, let source = current.mediaSource else { return }
-        let audio = transcodeAudioIndex
-        let subtitles = transcodeSubtitleIndex
+    /// server for a new one at the same spot and quality.
+    private func reloadTranscode(audioIndex: Int?, subtitleIndex: Int?) async {
+        guard let current, let item = current.item, let source = current.mediaSource, let transcode = current.transcode else { return }
         let position = clock.time
-        await finishSession(reachedEnd: false)
+        finishSession(reachedEnd: false)
         status = .loading
         do {
-            let quality = settings.streamingQuality == .original ? VideoQuality.fullHD : settings.streamingQuality
-            let resolved = try await resolver.transcode(item: item, source: source, quality: quality,
-                                                        audioIndex: audio, subtitleIndex: subtitles, start: position)
+            let resolved = try await resolver.transcode(item: item, source: source, quality: transcode.quality,
+                                                        audioIndex: audioIndex, subtitleIndex: subtitleIndex, start: position)
             await begin(resolved)
-            transcodeAudioIndex = audio
-            transcodeSubtitleIndex = subtitles
         } catch {
             fail(error)
+        }
+    }
+
+    // MARK: Adaptive quality
+
+    /// Samples the playback once a second for `ConnectionWatch`, and moves to a cheaper stream of
+    /// the title when it says the connection can't keep up. The watch starts over with each
+    /// stream, and nothing moves back up: the next playback starts at the streaming quality again.
+    private func watchConnection() {
+        connectionWatch = ConnectionWatch(isTranscode: current?.isTranscode ?? false)
+        watchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
+                guard self.settings.adaptiveQuality else {
+                    self.connectionWatch.restart()
+                    continue
+                }
+                if let reason = self.connectionWatch.observe(self.connectionSample()) {
+                    // In a task of its own: starting the new stream cancels this one.
+                    Task { await self.stepDown(because: reason) }
+                    return
+                }
+            }
+        }
+    }
+
+    private func connectionSample() -> ConnectionWatch.Sample {
+        let telemetry = engine.diagnostics.liveTelemetry
+        // A stream still starting is wanted, though `status` can read loading or paused until it
+        // rolls. A source that's gone, and reconnecting, isn't slow: a cheaper version wouldn't get
+        // through either.
+        let isWanted = switch engine.playbackPhase {
+        case .playing, .loading: true
+        case .rebuffering: engine.state != .paused
+        default: false
+        }
+        let declaredBitrate = current?.transcode.map(\.quality.transcodeBitrate)
+            ?? current?.mediaSource.flatMap { VersionTraits($0).bitrate }
+        return ConnectionWatch.Sample(
+            time: ProcessInfo.processInfo.systemUptime,
+            isWanted: isWanted,
+            position: engine.clock.currentTime,
+            rate: Double(rate),
+            bufferedAhead: max(0, engine.clock.bufferedPosition - engine.clock.currentTime),
+            throughput: telemetry?.networkThroughputMbps.map { $0 * 1_000_000 },
+            bitrate: telemetry?.averageBitrateMbps.map { $0 * 1_000_000 } ?? declaredBitrate.map(Double.init)
+        )
+    }
+
+    /// Moves to a cheaper version of the title, or to a transcode, from the same spot and with
+    /// the same audio and subtitles.
+    private func stepDown(because reason: ConnectionWatch.Reason) async {
+        guard let playing = current, let item = playing.item, let plan = playing.plan else { return }
+        let bitrate = engine.diagnostics.liveTelemetry?.averageBitrateMbps.map { Int($0 * 1_000_000) }
+        let throughput = connectionWatch.throughput.map { Int($0) }
+        guard let target = VersionChooser.planStepDown(from: plan, bitrate: bitrate, throughput: throughput,
+                                                       sources: item.mediaSources ?? [], allowTranscoding: settings.allowTranscoding)
+        else {
+            Self.log.notice("The connection can't keep up (\(String(describing: reason), privacy: .public)), and nothing is cheaper")
+            return
+        }
+        let quality = target.label ?? "a lower quality"
+        let kind = if case .transcode = target { "a transcode" } else { "the version" }
+        Self.log.notice("""
+            The connection can't keep up (\(String(describing: reason), privacy: .public), \(throughput ?? 0) b/s for \
+            \(bitrate ?? 0) b/s): moving to \(kind, privacy: .public) at \(quality, privacy: .public)
+            """)
+        let tracks = currentTrackSelection()
+        var resolved: ResolvedPlayback
+        do {
+            switch target {
+            case .direct(let source):
+                resolved = try resolver.direct(item: item, source: source, start: nil)
+            case .transcode(let source, let quality):
+                resolved = try await resolver.transcode(
+                    item: item, source: source, quality: quality,
+                    audioIndex: tracks.audio.flatMap { TrackChooser.same(as: $0, in: source.audioStreams.compactMap(TrackChooser.Candidate.init)) },
+                    subtitleIndex: tracks.subtitle.flatMap { TrackChooser.same(as: $0, in: source.subtitleStreams.compactMap(TrackChooser.Candidate.init)) },
+                    start: engine.clock.currentTime)
+            }
+        } catch {
+            // The stream playing goes on as it is, and stays for this playback.
+            Self.log.error("Couldn't switch: \(String(describing: error), privacy: .public)")
+            show("Couldn't switch to \(quality): \(error.localizedDescription)", for: 8)
+            return
+        }
+        guard !isClosed, current?.reporting?.playSessionId == playing.reporting?.playSessionId else { return }
+        // Where the old stream got to while the new one was being asked for.
+        resolved.startPosition = engine.clock.currentTime
+        // Holds the picture until the new stream's first frame, where the engine can.
+        engine.prepareForItemReplacement()
+        finishSession(reachedEnd: false)
+        await begin(resolved, carrying: tracks)
+        if isLoaded { show("Switched to \(quality) to keep playing", for: 4) }
+    }
+
+    /// The audio and subtitles playing, described so another version can find its own.
+    private func currentTrackSelection() -> TrackSelection {
+        if let transcode = current?.transcode, let source = current?.mediaSource {
+            let audioIndex = transcode.audioIndex ?? source.defaultAudioStreamIndex
+            return TrackSelection(
+                audio: (source.audioStreams.first { $0.index == audioIndex } ?? source.audioStreams.first).flatMap(TrackChooser.Candidate.init),
+                subtitle: transcode.subtitleIndex.flatMap { index in source.subtitleStreams.first { $0.index == index } }
+                    .flatMap(TrackChooser.Candidate.init)
+            )
+        }
+        return TrackSelection(
+            audio: engine.audioTracks.first { $0.id == engine.activeAudioTrackIndex }.map(TrackChooser.Candidate.init),
+            subtitle: engine.subtitleTracks.first { $0.id == engine.activeSubtitleTrackIndex }.map(TrackChooser.Candidate.init)
+        )
+    }
+
+    /// Shows `text` over the picture for `seconds` of playback, so a stream slow to start keeps
+    /// saying why the picture went.
+    private func show(_ text: String, for seconds: Double) {
+        notice = text
+        noticeTask?.cancel()
+        noticeTask = Task {
+            for await status in Observations({ self.status }) where ![.preparing, .loading, .buffering, .paused].contains(status) {
+                break
+            }
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            notice = nil
         }
     }
 
     // MARK: Ending
 
     private func reachedEnd() async {
-        await finishSession(reachedEnd: true)
+        finishSession(reachedEnd: true)
         guard nextEpisode != nil, settings.autoplayNextEpisode, !upNextDismissed else { return }
         countdownTask?.cancel()
         countdownTask = Task {
@@ -525,7 +686,8 @@ final class PlayerModel: Identifiable {
     func close() async {
         guard !isClosed else { return }
         countdownTask?.cancel()
-        await finishSession(reachedEnd: status == .ended)
+        noticeTask?.cancel()
+        finishSession(reachedEnd: status == .ended)
         isClosed = true
         subscriptions.removeAll()
         if lease.holder == id {
@@ -535,21 +697,33 @@ final class PlayerModel: Identifiable {
         onClose?()
     }
 
-    /// Reports where playback stopped and lets go of the session's resources. Safe to call twice.
-    private func finishSession(reachedEnd: Bool) async {
+    /// Lets go of the session's resources and tells the server where playback stopped. The
+    /// telling doesn't hold up what plays next, as on a slow connection it can take seconds; the
+    /// next session's start waits for it instead, so the server hears them in order. Safe to
+    /// call twice.
+    private func finishSession(reachedEnd: Bool) {
         reportTask?.cancel()
         reportTask = nil
+        watchTask?.cancel()
+        watchTask = nil
         unregisterRemoteCommands()
         Self.keepScreenAwake(false)
         guard let current else { return }
         self.current = nil
         nowPlayingChanged()
-        let position = reachedEnd ? (duration > 0 ? duration : clock.time) : clock.time
-        await report(.stopped, for: current, position: position)
-        if current.isTranscode, let reporting = current.reporting, let client = accounts.client {
-            try? await client.stopTranscoding(playSessionId: reporting.playSessionId)
-        }
         current.scopedURL?.stopAccessingSecurityScopedResource()
+        let position = reachedEnd ? (duration > 0 ? duration : clock.time) : clock.time
+        let previousReport = stopReport
+        // Immediate: the report reads this session's length and pause before the next one starts.
+        stopReport = Task.immediate {
+            await self.report(.stopped, for: current, position: position, after: previousReport)
+            guard current.isTranscode, let reporting = current.reporting, let client = self.accounts.client else { return }
+            do {
+                try await client.stopTranscoding(playSessionId: reporting.playSessionId)
+            } catch {
+                Self.log.notice("Couldn't stop the server's transcode: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     // MARK: Reporting
@@ -560,7 +734,7 @@ final class PlayerModel: Identifiable {
         reportTask?.cancel()
         guard let current else { return }
         reportTask = Task { [weak self] in
-            await self?.report(.started, for: current, position: current.startPosition ?? 0)
+            await self?.report(.started, for: current, position: current.startPosition ?? 0, after: self?.stopReport)
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
                 guard let self, !Task.isCancelled else { return }
@@ -577,10 +751,13 @@ final class PlayerModel: Identifiable {
         Task { await report(.progress, for: current, position: clock.time) }
     }
 
-    /// Tells the server, and keeps the position here. A server that can't be reached is told
-    /// later, by `WatchHistory.syncPending`.
-    private func report(_ kind: ReportKind, for playback: ResolvedPlayback, position: Double) async {
+    /// Tells the server, once `previous` has, and keeps the position here. A server that can't be
+    /// reached is told later, by `WatchHistory.syncPending`.
+    private func report(_ kind: ReportKind, for playback: ResolvedPlayback, position: Double,
+                        after previous: Task<Void, Never>? = nil) async {
         let total = duration > 0 ? duration : playback.duration
+        let isPaused = status == .paused
+        await previous?.value
         var delivered = false
         if let reporting = playback.reporting, let client = accounts.client {
             let report = PlaybackReport(
@@ -589,7 +766,7 @@ final class PlayerModel: Identifiable {
                 PlaySessionId: reporting.playSessionId,
                 PlayMethod: reporting.playMethod,
                 PositionTicks: Int64(max(0, position) * 10_000_000),
-                IsPaused: status == .paused
+                IsPaused: isPaused
             )
             do {
                 switch kind {
@@ -706,10 +883,7 @@ final class PlayerModel: Identifiable {
 
     static func trackTitle(_ track: TrackInfo) -> String {
         let language = languageName(track.language)
-        var name = track.name.trimmingCharacters(in: .whitespaces)
-        // Untitled streams get a made-up "ENG (srt)" or "Track 3 (srt)" from the engine, which
-        // only repeats the language and the format shown beside it.
-        if name.hasSuffix("(\(track.codec))") { name = "" }
+        let name = TrackChooser.ownName(of: track) ?? ""
         var title = language ?? (name.isEmpty ? "Track \(track.id)" : name)
         if let language, !name.isEmpty, name.lowercased() != language.lowercased(), !name.lowercased().hasPrefix(language.lowercased()) {
             title += " (\(name))"

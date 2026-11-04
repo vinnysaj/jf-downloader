@@ -12,6 +12,8 @@ struct PlayerControls: View {
     @Binding var panel: PlayerPanel?
     /// Where the timeline and buttons start, in global coordinates, so subtitles can stay above them.
     @Binding var bottomBarTop: CGFloat?
+    /// Where the title and its buttons end, in global coordinates, so notices can stay below them.
+    @Binding var topBarBottom: CGFloat?
     let onClose: () -> Void
     /// Called on every use, so the controls stay up while they're being used.
     let onInteraction: () -> Void
@@ -153,6 +155,7 @@ struct PlayerControls: View {
             RotateButton(onUse: onInteraction)
             #endif
         }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { topBarBottom = $0 }
     }
 
     // MARK: Middle

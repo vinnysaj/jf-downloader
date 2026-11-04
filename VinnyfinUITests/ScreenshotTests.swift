@@ -174,8 +174,11 @@ final class ScreenshotTests: XCTestCase {
         tap(app.buttons["detail.play"])
         let pause = app.buttons["player.playPause"]
         XCTAssertTrue(pause.waitForExistence(timeout: uiTimeout), "The player never opened")
-        try await Task.sleep(for: .seconds(2))
-        if !pause.isHittable { app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap() }
+        // Playing, the controls hide after a few seconds; once they have, a tap on the picture
+        // brings them back for a few more. Paused, they stay up.
+        if pause.waitForNonExistence(timeout: 10) {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
+        }
         tap(pause)
         try await snap(name)
         tap(app.buttons["player.close"])
