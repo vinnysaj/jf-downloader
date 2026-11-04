@@ -17,7 +17,7 @@ final class LoadQueue<Key: Hashable> {
         self.load = load
     }
 
-    /// What's waiting for its turn, first first.
+    /// What's waiting for its turn, in the order it will run.
     var queued: [Key] { waiting }
 
     /// What's under way.
