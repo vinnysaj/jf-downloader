@@ -10,6 +10,8 @@ struct RootView: View {
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    #elseif os(visionOS)
+    @Environment(\.pushWindow) private var pushWindow
     #endif
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
@@ -35,13 +37,18 @@ struct RootView: View {
         }
         .environment(\.session, session)
         .preferredColorScheme(settings.appearance.colorScheme)
-        #if os(macOS)
+        #if os(macOS) || os(visionOS)
         .onChange(of: player.pendingWindowRequest) { _, request in
             guard let request else { return }
             player.pendingWindowRequest = nil
+            #if os(visionOS)
+            // The player takes this window's place, and closing it brings the library back.
+            pushWindow(id: PlayerWindow.id, value: request)
+            #else
             // One engine plays one thing: a new playback replaces the window of the last.
             dismissWindow(id: PlayerWindow.id)
             openWindow(id: PlayerWindow.id, value: request)
+            #endif
         }
         #else
         .fullScreenCover(item: $player.presented) { model in

@@ -3,7 +3,8 @@ import SwiftUI
 
 /// The player's controls over the picture: close and title along the top, transport in the
 /// middle, the timeline and track menus along the bottom. Below the fold of an iPhone Duo
-/// standing half open they sit under the picture instead, with the show's episodes.
+/// standing half open they sit under the picture instead, with the show's episodes, and on
+/// Vision Pro on a pane of glass below the window, with the transport in the bottom row.
 struct PlayerControls: View {
     let model: PlayerModel
     @Binding var scrubPosition: Double?
@@ -31,6 +32,8 @@ struct PlayerControls: View {
         Group {
             #if os(iOS)
             if isBelowFold { belowFold } else { overPicture }
+            #elseif os(visionOS)
+            underWindow
             #else
             overPicture
             #endif
@@ -82,11 +85,29 @@ struct PlayerControls: View {
             }
             .padding(.horizontal, Metrics.playerInset)
             if let item = model.item, item.isEpisode {
-                FoldEpisodes(model: model, playing: item)
+                EpisodeStrip(model: model, playing: item, onInteraction: onInteraction)
             }
             Spacer(minLength: 0)
         }
         .padding(.top, 16)
+    }
+    #endif
+
+    #if os(visionOS)
+    private var underWindow: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 14) {
+                topBar
+                bottomBar
+            }
+            .padding(.horizontal, 28)
+            if let item = model.item, item.isEpisode {
+                EpisodeStrip(model: model, playing: item, onInteraction: onInteraction)
+            }
+        }
+        .padding(.vertical, 22)
+        .frame(width: 920)
+        .glassBackgroundEffect(in: .rect(cornerRadius: 40))
     }
     #endif
 
@@ -138,8 +159,13 @@ struct PlayerControls: View {
 
     #if !os(tvOS)
     private var transport: some View {
-        // Smaller below the fold, where it shares the half screen with the episodes.
+        // Smaller below the fold, where it shares the half screen with the episodes, and in
+        // Vision Pro's bar, where it shares a row with the other buttons.
+        #if os(visionOS)
+        let scale: CGFloat = 0.6
+        #else
         let scale: CGFloat = isBelowFold ? 0.75 : 1
+        #endif
         return HStack(spacing: 44 * scale) {
             transportButton("gobackward.10", label: "Back 10 Seconds", size: 30 * scale) { model.skip(by: -PlayerModel.skipInterval) }
             transportButton(playPauseSymbol, label: model.isPlaying ? "Pause" : "Play", size: 44 * scale, showsProgress: isWaiting) {
@@ -235,8 +261,15 @@ struct PlayerControls: View {
                 .buttonStyle(.platformGlass)
                 .accessibilityLabel(fillsScreen ? "Fit to Screen" : "Fill Screen")
                 #endif
+                #if os(visionOS)
+                CinemaButton(onUse: onInteraction)
+                #endif
             }
             .controlSize(controlSize)
+            #if os(visionOS)
+            // In the middle of the row, whatever is at its ends.
+            .overlay { transport.controlSize(controlSize) }
+            #endif
         }
         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { bottomBarTop = $0 }
     }
@@ -271,9 +304,12 @@ struct PlayerControls: View {
     }
 }
 
-/// What's on screen when it's worth saying: Dolby Vision, HDR, or that the server is transcoding.
+/// What's on screen when it's worth saying: 3D, Dolby Vision, HDR, or that the server is transcoding.
 private struct FormatBadge: View {
     let model: PlayerModel
+    #if os(visionOS)
+    @Environment(PlayerCoordinator.self) private var coordinator
+    #endif
 
     var body: some View {
         if let text {
@@ -288,6 +324,9 @@ private struct FormatBadge: View {
 
     private var text: String? {
         var parts: [String] = []
+        #if os(visionOS)
+        if coordinator.pictureIsStereo { parts.append("3D") }
+        #endif
         switch model.videoFormat {
         case .dolbyVision: parts.append("Dolby Vision")
         case .hdr10: parts.append("HDR10")
@@ -344,7 +383,14 @@ struct Scrubber: View {
                 )
                 #endif
             }
+            #if os(visionOS)
+            // Tall enough to look at and pinch, and lit under the eyes as a slider is.
+            .frame(height: 44)
+            .contentShape(.hoverEffect, .capsule)
+            .hoverEffect(.highlight)
+            #else
             .frame(height: 24)
+            #endif
             HStack {
                 Text(Self.format(time)).monospacedDigit()
                 Spacer()

@@ -1,16 +1,25 @@
 import AetherEngine
 import AVKit
+#if os(visionOS)
+import Combine
+#endif
 import SwiftUI
 
 /// The player: the picture edge to edge, subtitles over it, and controls that fade away while
 /// it plays. Tap (or move the mouse, or press a key) to bring them back; pinch to fill the
 /// screen. On an iPhone Duo standing half open like a laptop the picture takes the top half and
-/// the controls the bottom, with the show's episodes.
+/// the controls the bottom, with the show's episodes. On Vision Pro the window is the picture,
+/// with the controls on glass below it, and the room dims while it plays; in the cinema the
+/// picture moves to the big screen, a pinch there shows the controls, and the window stays,
+/// clear, holding them.
 struct PlayerView: View {
     let model: PlayerModel
     let onClose: () -> Void
 
     @Environment(\.scenePhase) private var scenePhase
+    #if os(visionOS)
+    @Environment(PlayerCoordinator.self) private var coordinator
+    #endif
     @State private var controlsVisible = true
     @State private var hideTask: Task<Void, Never>?
     @State private var scrubPosition: Double?
@@ -34,17 +43,23 @@ struct PlayerView: View {
 
     var body: some View {
         ZStack {
-            Color.black
-                .ignoresSafeArea()
-                #if os(iOS)
-                .onGeometryChange(for: CGRect?.self) { Self.fold(in: $0) } action: { fold = $0 }
-                .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { orientationLock.windowChanged(isWide: $0) }
+            if showsPicture {
+                #if !os(visionOS)
+                // On Vision Pro the surface fills its own: RealityKit's picture draws behind the
+                // window's views, so a fill here would hide it.
+                Color.black
+                    .ignoresSafeArea()
+                    #if os(iOS)
+                    .onGeometryChange(for: CGRect?.self) { Self.fold(in: $0) } action: { fold = $0 }
+                    .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { orientationLock.windowChanged(isWide: $0) }
+                    #endif
                 #endif
-            AetherPlayerSurface(engine: model.engine)
-                .frame(height: fold?.minY)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .ignoresSafeArea()
-                .accessibilityHidden(true)
+                PlayerSurface(engine: model.engine)
+                    .frame(height: fold?.minY)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+            }
             #if os(tvOS)
             if !controlsVisible {
                 // Holds focus while the controls are hidden, so a click or a swipe brings them back.
@@ -65,11 +80,20 @@ struct PlayerView: View {
                 .frame(maxHeight: .infinity, alignment: .top)
                 .ignoresSafeArea()
                 .onTapGesture { toggleControls() }
+                // So VoiceOver, too, can bring back controls that have faded.
+                .accessibilityElement()
+                .accessibilityLabel("Video")
+                .accessibilityHint("Shows or hides the controls")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("player.picture")
                 #if os(iOS)
                 .gesture(MagnifyGesture().onEnded { pinched($0.magnification) })
                 #endif
             #endif
             inPictureArea { statusOverlay }
+            #if os(visionOS)
+            // The controls are in an ornament below the window (see `controlsOrnament`).
+            #else
             if let fold {
                 PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
                                bottomBarTop: $bottomBarTop,
@@ -83,6 +107,7 @@ struct PlayerView: View {
                                onClose: onClose, onInteraction: scheduleHide, pictureInPicture: pictureInPictureAction)
                     .transition(.opacity)
             }
+            #endif
             #if os(iOS)
             if orientationLock.isAnnouncing, !showsControls {
                 // Where it waits among the controls, so it seems to go back into them.
@@ -95,11 +120,13 @@ struct PlayerView: View {
             #endif
             // Over the controls' shading so captions stay bright; it takes no touches, and bottom
             // captions move up out of the controls' way.
-            SubtitleOverlay(model: model, videoSize: fillsScreen ? nil : model.videoSize,
-                            controlsTop: controlsVisible && fold == nil ? bottomBarTop : nil)
-                .frame(height: fold?.minY)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .ignoresSafeArea()
+            if showsPicture {
+                SubtitleOverlay(model: model, videoSize: fillsScreen ? nil : model.videoSize,
+                                controlsTop: controlsVisible && fold == nil && Self.controlsArePictureOverlay ? bottomBarTop : nil)
+                    .frame(height: fold?.minY)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .ignoresSafeArea()
+            }
             inPictureArea { extras }
             if let panel {
                 TrackPanel(model: model, panel: panel) { closePanel() }
@@ -111,6 +138,17 @@ struct PlayerView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: controlsVisible)
         .animation(.snappy, value: panel)
+        #if os(visionOS)
+        // The window has no glass of its own; the picture takes its rounded shape.
+        .clipShape(.rect(cornerRadius: 46))
+        .ornament(visibility: controlsVisible ? .visible : .hidden, attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
+            controlsOrnament
+        }
+        .preferredSurroundingsEffect(model.isPlaying && showsPicture ? .dark : nil)
+        // A new picture is flat until the screen showing it finds otherwise.
+        .onReceive(model.engine.$currentAVPlayer.removeDuplicates { $0 === $1 }) { _ in coordinator.pictureIsStereo = false }
+        .onChange(of: coordinator.screenTaps) { toggleControls() }
+        #endif
         #if os(iOS)
         .animation(.snappy, value: orientationLock.isAnnouncing)
         .animation(.smooth, value: fold)
@@ -179,6 +217,34 @@ struct PlayerView: View {
 
     /// Below the fold the controls stay, off the picture.
     private var showsControls: Bool { controlsVisible || fold != nil }
+
+    /// In the cinema the picture and its subtitles are on the big screen instead.
+    private var showsPicture: Bool {
+        #if os(visionOS)
+        !coordinator.isInCinema
+        #else
+        true
+        #endif
+    }
+
+    /// The controls lie over the picture, so what's along its bottom moves up out of their way.
+    /// On Vision Pro they're below the window instead.
+    private static var controlsArePictureOverlay: Bool {
+        #if os(visionOS)
+        false
+        #else
+        true
+        #endif
+    }
+
+    #if os(visionOS)
+    private var controlsOrnament: some View {
+        PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
+                       bottomBarTop: $bottomBarTop,
+                       onClose: onClose, onInteraction: scheduleHide, pictureInPicture: nil)
+            .padding(.top, 24)
+    }
+    #endif
 
     /// `content` over the picture: above the fold when there is one, else the whole screen.
     @ViewBuilder private func inPictureArea(@ViewBuilder _ content: () -> some View) -> some View {
@@ -282,7 +348,7 @@ struct PlayerView: View {
                     }
                 }
                 .padding(.horizontal, Metrics.playerInset)
-                .padding(.bottom, fold != nil ? 16 : controlsVisible ? 130 : 40)
+                .padding(.bottom, fold != nil ? 16 : controlsVisible && Self.controlsArePictureOverlay ? 130 : 40)
             }
         }
     }
