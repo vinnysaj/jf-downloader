@@ -282,18 +282,24 @@ private struct TitleArtwork: View {
     let title: DownloadsSnapshot.Title
 
     var body: some View {
-        if title.hasArtwork, let file = DownloadsSnapshot.artworkFile(for: title.itemId),
-           let source = CGImageSourceCreateWithURL(file as CFURL, nil),
-           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-            Image(decorative: image, scale: 1)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .clipShape(.rect(cornerRadius: 6))
-        } else {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary)
-                .overlay { Image(systemName: title.type == "Episode" ? "tv" : "film").foregroundStyle(.secondary) }
-        }
+        // The tile takes the frame it's given; the picture fills it and is cut to it.
+        RoundedRectangle(cornerRadius: 6)
+            .fill(.quaternary)
+            .overlay {
+                if let image {
+                    Image(decorative: image, scale: 1).resizable().scaledToFill()
+                } else {
+                    Image(systemName: title.type == "Episode" ? "tv" : "film").foregroundStyle(.secondary)
+                }
+            }
+            .clipShape(.rect(cornerRadius: 6))
+    }
+
+    private var image: CGImage? {
+        guard title.hasArtwork, let file = DownloadsSnapshot.artworkFile(for: title.itemId),
+              let source = CGImageSourceCreateWithURL(file as CFURL, nil)
+        else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 }
 
