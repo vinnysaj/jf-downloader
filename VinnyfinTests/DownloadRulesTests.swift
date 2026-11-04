@@ -419,21 +419,26 @@ struct DownloadNotificationTests {
         var failed = job()
         failed.status = .failed
         failed.lastError = "The server refused the download (HTTP 403)."
-        let one = AttentionNotice([.failed(failed.id)], jobs: [failed], waits: [:], serverName: "Home")
+        let one = AttentionNotice([.failed(failed.id)], jobs: [failed], waits: [:], serverName: "Home", hasStorageLimit: false)
         #expect(one.title == "Download Failed")
         #expect(one.body == "Big Test Movie (2024) couldn't download: The server refused the download (HTTP 403).")
         #expect(one.link == AppLink(.open, Samples.movie).url)
 
         let short = job(at: 1)
-        let space = AttentionNotice([.space(short.id)], jobs: [short], waits: [short.id: .space(needed: 3_200_000_000)], serverName: nil)
+        let space = AttentionNotice([.space(short.id)], jobs: [short], waits: [short.id: .space(needed: 3_200_000_000)], serverName: nil,
+                                    hasStorageLimit: false)
         #expect(space.title == "Not Enough Space for Downloads")
         #expect(space.body.hasPrefix("Big Test Movie (2024) needs \(Int64(3_200_000_000).formatted(.byteCount(style: .file))) more space."))
+        #expect(!space.body.contains("storage limit"))
+        let underLimit = AttentionNotice([.space(short.id)], jobs: [short], waits: [short.id: .space(needed: 3_200_000_000)], serverName: nil,
+                                         hasStorageLimit: true)
+        #expect(underLimit.body.hasSuffix("raise the storage limit in vinnyfin's settings."))
 
-        let away = AttentionNotice([.unreachable], jobs: [], waits: [:], serverName: "Home")
+        let away = AttentionNotice([.unreachable], jobs: [], waits: [:], serverName: "Home", hasStorageLimit: false)
         #expect(away.title == "Can't Reach Home")
         #expect(away.link == nil)
 
-        let mixed = AttentionNotice([.failed(failed.id), .unreachable], jobs: [failed], waits: [:], serverName: "Home")
+        let mixed = AttentionNotice([.failed(failed.id), .unreachable], jobs: [failed], waits: [:], serverName: "Home", hasStorageLimit: false)
         #expect(mixed.title == "Downloads Need Attention")
         #expect(mixed.link == AppLink(.open, Samples.movie).url)
     }

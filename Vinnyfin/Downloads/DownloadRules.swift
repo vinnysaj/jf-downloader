@@ -68,7 +68,7 @@ nonisolated struct NetworkAccess: Equatable, Sendable {
     }
 
     var summary: String {
-        self == .any ? "any network" : allowsExpensive ? "no Low Data Mode" : "Wi-Fi only"
+        self == .any ? "any network" : allowsExpensive ? "any network outside Low Data Mode" : "Wi-Fi only"
     }
 }
 
@@ -236,6 +236,13 @@ nonisolated extension DownloadJob {
 /// they were downloaded go, the one watched longest ago first, and only as many as the queue
 /// needs. Unwatched and partly watched downloads stay.
 nonisolated enum StorageBudget {
+    /// What someone can do about a download waiting for room.
+    static func advice(hasLimit: Bool) -> String {
+        hasLimit
+            ? "Delete downloads you've finished with or other things you don't need, or raise the storage limit in vinnyfin's settings."
+            : "Delete downloads you've finished with or other things you don't need."
+    }
+
     struct Deletable: Equatable, Sendable {
         let id: UUID
         let bytes: Int64

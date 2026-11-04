@@ -110,7 +110,8 @@ final class DownloadNotifications: NSObject, UNUserNotificationCenterDelegate {
             pendingAttention = nil
             isAttentionResolved = true
         } else if isNew {
-            pendingAttention = AttentionNotice(current, jobs: jobs, waits: waits, serverName: serverName)
+            pendingAttention = AttentionNotice(current, jobs: jobs, waits: waits, serverName: serverName,
+                                               hasStorageLimit: settings.downloadStorageLimit > 0)
             isAttentionResolved = false
         } else {
             return
@@ -312,7 +313,7 @@ nonisolated struct AttentionNotice: Equatable, Sendable {
     /// The title concerned, when it's one download.
     let link: URL?
 
-    init(_ attention: Set<DownloadAttention>, jobs: [DownloadJob], waits: [UUID: DownloadWait], serverName: String?) {
+    init(_ attention: Set<DownloadAttention>, jobs: [DownloadJob], waits: [UUID: DownloadWait], serverName: String?, hasStorageLimit: Bool) {
         var failed: [DownloadJob] = []
         var short: [(job: DownloadJob, needed: Int64)] = []
         let unreachable = attention.contains(.unreachable)
@@ -333,7 +334,7 @@ nonisolated struct AttentionNotice: Equatable, Sendable {
             sentences.append(short.count == 1
                 ? "\(first.job.shortName) needs \(needed) more space."
                 : "\(short.count) downloads are waiting for space; the next needs \(needed) more.")
-            sentences.append("Delete downloads you've finished with or other things you don't need, or raise the storage limit in vinnyfin's settings.")
+            sentences.append(StorageBudget.advice(hasLimit: hasStorageLimit))
         }
         if unreachable {
             sentences.append("vinnyfin hasn't been able to reach \(server) for over an hour. Downloads carry on once it can.")

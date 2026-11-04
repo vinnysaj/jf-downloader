@@ -11,6 +11,7 @@ struct DownloadsView: View {
     @Environment(LocalLibrary.self) private var localLibrary
     @Environment(WatchHistory.self) private var history
     @Environment(PlayerCoordinator.self) private var player
+    @Environment(AppSettings.self) private var settings
     #if os(iOS) || os(visionOS)
     @Environment(BackgroundDownloads.self) private var backgroundDownloads
     #endif
@@ -140,7 +141,7 @@ struct DownloadsView: View {
                     Label("Not enough space for downloads", systemImage: "externaldrive.badge.exclamationmark")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.orange)
-                    Text(StorageUsage.waitingAdvice)
+                    Text("Downloads wait until there's room. \(StorageBudget.advice(hasLimit: settings.downloadStorageLimit > 0)) \(StorageUsage.deletionPolicy)")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -424,7 +425,7 @@ struct StorageUsage: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(AppSettings.self) private var settings
 
-    static let waitingAdvice = "Downloads wait until there's room. Delete downloads you've finished with or other things you don't need, or raise the storage limit in Settings. Downloads you've watched are deleted to make room by themselves; unwatched and partly watched ones never are."
+    static let deletionPolicy = "Downloads you've watched are deleted to make room by themselves; unwatched and partly watched ones never are."
 
     var body: some View {
         let used = downloads.storageUsed
