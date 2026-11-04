@@ -81,7 +81,7 @@ final class ScreenshotTests: XCTestCase {
         tap(tab("Shows", in: app))
         tap(app.buttons["poster.Port Ellery"])
         tap(app.buttons["episode.3"])
-        XCTAssertTrue(app.buttons["fold.episode.3"].waitForExistence(timeout: uiTimeout), "The player didn't split at the fold")
+        XCTAssertTrue(app.buttons["episodes.episode.3"].waitForExistence(timeout: uiTimeout), "The player didn't split at the fold")
         tap(app.buttons["player.playPause"])
         try await snap("01-player")
     }

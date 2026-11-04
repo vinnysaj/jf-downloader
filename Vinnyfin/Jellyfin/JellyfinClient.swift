@@ -235,8 +235,10 @@ nonisolated struct JellyfinClient: Sendable {
         return page.items.dropFirst().first { $0.parentIndexNumber != 0 }
     }
 
+    /// Every kind of segment; `MediaSegment.skipTitle` picks the ones worth skipping. Jellyfin's
+    /// type filter wants the parameter repeated, and answers a comma-separated list with a 400.
     func mediaSegments(itemId: String) async throws -> [MediaSegment] {
-        let page: MediaSegmentsPage = try await get("MediaSegments/\(itemId)", query: ["includeSegmentTypes": "Intro,Outro,Recap,Preview"])
+        let page: MediaSegmentsPage = try await get("MediaSegments/\(itemId)")
         return page.items
     }
 
