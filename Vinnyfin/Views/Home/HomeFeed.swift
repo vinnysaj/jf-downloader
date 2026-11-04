@@ -10,6 +10,9 @@ final class HomeFeed {
     /// Rows past the last one on screen to load ahead of scrolling.
     static let lookahead = 2
 
+    /// The rows in order; while the first round of requests is out, the ones it fills, as
+    /// placeholders. It starts empty: on Apple TV, focus goes to the sidebar at launch and moves
+    /// to Home when something focusable arrives there after Home's first frame.
     private(set) var rows: [HomeRow] = []
     /// Each row's titles, once loaded; empty rows aren't shown.
     private(set) var items: [HomeRow.ID: [JellyfinItem]] = [:]
@@ -17,13 +20,14 @@ final class HomeFeed {
     private(set) var problems: [HomeRow.ID: String] = [:]
     /// The titles the banner turns through.
     private(set) var featured: [JellyfinItem] = []
-    private(set) var isLoading = false
     /// Why Home couldn't load, when the server can't be reached.
     private(set) var loadError: String?
     /// The server turned the saved sign-in away (HTTP 401), so retrying won't help.
     private(set) var sessionEnded = false
 
     @ObservationIgnored private var session: ServerSession?
+    /// The first round of requests is out; the rows it fills don't load on their own meanwhile.
+    @ObservationIgnored private var isSeeding = false
     /// Picks the rows chosen at random; the same from one load to the next.
     @ObservationIgnored private var randomSeed = UInt64.random(in: .min ... .max)
     /// How many views of each row are on screen; a row's view is replaced as it loads, and the
@@ -40,8 +44,12 @@ final class HomeFeed {
     func load(session: ServerSession, reshuffling: Bool = false) async {
         self.session = session
         if reshuffling { randomSeed = .random(in: .min ... .max) }
-        isLoading = true
-        defer { isLoading = false }
+        if rows.isEmpty { rows = HomeRows.leading }
+        isSeeding = true
+        defer {
+            isSeeding = false
+            schedule()
+        }
         let client = session.client
         let userId = session.userId
         func seed(_ row: HomeRow, fields: String) async throws -> [JellyfinItem] {
@@ -85,12 +93,19 @@ final class HomeFeed {
             featured = Self.featured(from: inProgress + seeded[HomeRows.recentMovies.id, default: []] + seeded[HomeRows.recentShows.id, default: []])
             loadError = nil
             sessionEnded = false
-            schedule()
         } catch JellyfinError.http(status: 401, _) {
             sessionEnded = true
+            dropPlaceholders()
         } catch {
-            if !error.isCancellation { loadError = error.localizedDescription }
+            guard !error.isCancellation else { return }
+            loadError = error.localizedDescription
+            dropPlaceholders()
         }
+    }
+
+    /// Placeholders of a Home that never loaded give way to what went wrong.
+    private func dropPlaceholders() {
+        if items.isEmpty { rows = [] }
     }
 
     func rowAppeared(_ id: HomeRow.ID) {
@@ -119,6 +134,7 @@ final class HomeFeed {
 
     /// Loads the rows on screen and the next few below them, and stops loading those gone.
     private func schedule() {
+        guard !isSeeding else { return }
         let positions = rows.indices.filter { onScreen[rows[$0].id] != nil }
         guard let first = positions.min(), let last = positions.max() else {
             queue.retain { _ in false }

@@ -38,6 +38,11 @@ struct ItemDetailView: View {
     @State private var loadError: String?
     /// A version the user picked; nil lets playback and downloads choose by quality.
     @State private var pickedSourceId: String?
+    #if os(tvOS)
+    @FocusState private var playFocused: Bool
+    /// Focus has been put on Play, as the page first appeared.
+    @State private var placedFocus = false
+    #endif
 
     private var shown: JellyfinItem { detail ?? item }
     private var sources: [MediaSource] { detail?.mediaSources ?? [] }
@@ -77,6 +82,15 @@ struct ItemDetailView: View {
         .inlineNavigationTitle()
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
         .task(id: item.id) { await load() }
+        #if os(tvOS)
+        // Focus starts on Play, also for a page opened from a link at launch, while focus is
+        // still in the sidebar. Coming back to the page leaves focus where it was.
+        .task {
+            guard !placedFocus else { return }
+            placedFocus = true
+            playFocused = true
+        }
+        #endif
     }
 
     /// One row, or on a narrow screen Play above the rest.
@@ -94,7 +108,11 @@ struct ItemDetailView: View {
     }
 
     private var playButton: some View {
+        #if os(tvOS)
+        PlayButton(item: shown, mediaSourceId: pickedSourceId, focus: $playFocused)
+        #else
         PlayButton(item: shown, mediaSourceId: pickedSourceId)
+        #endif
     }
 
     @ViewBuilder private var secondaryButtons: some View {
@@ -144,6 +162,10 @@ struct ItemDetailView: View {
 struct PlayButton: View {
     let item: JellyfinItem
     var mediaSourceId: String?
+    #if os(tvOS)
+    /// Play's focus, which the page starts on.
+    let focus: FocusState<Bool>.Binding
+    #endif
     @Environment(PlayerCoordinator.self) private var player
 
     var body: some View {
@@ -156,6 +178,9 @@ struct PlayButton: View {
         .buttonStyle(.platformGlassProminent)
         .controlSize(.large)
         .accessibilityIdentifier("detail.play")
+        #if os(tvOS)
+        .focused(focus)
+        #endif
         if item.resumeSeconds != nil {
             Button {
                 player.play(.item(item, mediaSourceId: mediaSourceId, fromBeginning: true))

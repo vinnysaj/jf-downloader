@@ -260,8 +260,15 @@ struct ShelfPlaceholder: View {
     var body: some View {
         Shelf(title: title, items: (0..<8).map(Slot.init), cardWidth: style.cardWidth) { _ in
             CardPlaceholder(style: style)
+                #if os(tvOS)
+                // Holds focus while the row loads, so it goes to Home rather than the sidebar.
+                .focusable()
+                #endif
         }
+        #if !os(tvOS)
+        // On Apple TV that would keep focus from the cards too.
         .scrollDisabled(true)
+        #endif
     }
 }
 

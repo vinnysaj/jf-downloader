@@ -22,6 +22,16 @@ struct SeriesView: View {
     @State private var isSelecting = false
     @State private var selection = Set<String>()
     @State private var batch: Batch?
+    #if os(tvOS)
+    @FocusState private var focusedAction: Action?
+    /// Focus has been put on the page's buttons, as it first appeared.
+    @State private var placedFocus = false
+
+    /// The buttons over the artwork that focus starts on.
+    private enum Action {
+        case play, watched
+    }
+    #endif
 
     struct Batch: Identifiable {
         let id = UUID()
@@ -70,6 +80,18 @@ struct SeriesView: View {
                 selection.removeAll()
             }
         }
+        #else
+        // Focus starts on Play, or until the next episode is in, on Watched; also for a page
+        // opened from a link at launch, while focus is still in the sidebar. Coming back to the
+        // page leaves focus where it was.
+        .task {
+            guard !placedFocus else { return }
+            placedFocus = true
+            focusedAction = nextUp == nil ? .watched : .play
+        }
+        .onChange(of: nextUp?.id) {
+            if nextUp != nil, focusedAction == .watched { focusedAction = .play }
+        }
         #endif
         .task(id: series.id) { await load() }
         .task(id: seasonId) { await loadEpisodes() }
@@ -101,6 +123,9 @@ struct SeriesView: View {
             .buttonStyle(.platformGlassProminent)
             .controlSize(.large)
             .accessibilityIdentifier("series.play")
+            #if os(tvOS)
+            .focused($focusedAction, equals: .play)
+            #endif
         }
     }
 
@@ -109,6 +134,9 @@ struct SeriesView: View {
         smartDownloadMenu
         #endif
         WatchedButton(item: shown) { detail = $0 }
+            #if os(tvOS)
+            .focused($focusedAction, equals: .watched)
+            #endif
         FavoriteButton(item: shown) { detail = $0 }
     }
 

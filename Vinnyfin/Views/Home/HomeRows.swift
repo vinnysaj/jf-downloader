@@ -61,6 +61,9 @@ nonisolated enum HomeRows {
         $0.isPlayed = true
     }), style: .landscape)
 
+    /// The rows Home always starts with, filled by its first round of requests.
+    static let leading = [continueWatching, nextUp, recentMovies, recentShows]
+
     static func becauseYouWatched(_ title: JellyfinItem) -> HomeRow {
         row("becauseYouWatched.\(title.id)", "Because You Watched \(title.name)", .similar(toItemId: title.id))
     }
@@ -102,7 +105,7 @@ nonisolated enum HomeRows {
         var genreRows = rankedGenres(inputs).map { genre($0.name, type: $0.type) }
         let different = differentGenre(inputs, using: &random).map(somethingDifferent)
 
-        var rows = [continueWatching, nextUp, recentMovies, recentShows]
+        var rows = leading
         func take(_ queue: inout [HomeRow]) {
             if !queue.isEmpty { rows.append(queue.removeFirst()) }
         }

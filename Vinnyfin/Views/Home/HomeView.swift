@@ -33,9 +33,6 @@ struct HomeView: View {
                 }
                 .padding(.bottom, Metrics.edge)
             }
-            .overlay {
-                if feed.isLoading, feed.rows.isEmpty { ProgressView() }
-            }
             .ignoresSafeArea(edges: feed.featured.isEmpty ? [] : .top)
             // The page color the hero artwork fades into.
             .background(Color.pageBackground.ignoresSafeArea())
