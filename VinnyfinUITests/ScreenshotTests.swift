@@ -103,23 +103,6 @@ final class ScreenshotTests: XCTestCase {
         tap(app.buttons["poster.The Quiet Meridian"])
         try await snapPlayer(app, name: "03-player")
     }
-
-    /// Half open like a laptop: the picture above the fold, the episodes below.
-    @MainActor
-    func testDuoLaptop() async throws {
-        XCUIDevice.shared.orientation = .landscapeLeft
-        let app = try launch()
-        let window = app.windows.firstMatch.frame.size
-        XCTAssertGreaterThan(window.height, window.width, "The inner display never turned to stand like a laptop")
-        tap(tab("Shows", in: app))
-        tap(app.buttons["poster.Port Ellery"])
-        // Resume S01E03: half open, the episode's row is off the screen below.
-        tap(app.buttons["series.play"])
-        XCTAssertTrue(app.buttons["episodes.episode.3"].waitForExistence(timeout: uiTimeout), "The player didn't split at the fold")
-        waitForPicture(app)
-        tap(app.buttons["player.playPause"])
-        try await snap("01-player")
-    }
     #endif
 
     #if os(tvOS)

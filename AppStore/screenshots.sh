@@ -230,10 +230,6 @@ if wants duo; then
   fold open
   prepare "$duo"
   shoot "iPhone Duo inner" testDuoInner "id=$duo"
-  fold half-open
-  prepare "$duo"
-  shoot "iPhone Duo half open" testDuoLaptop "id=$duo"
-  fold open
 fi
 if wants tv; then
   tv=$(simulator "Apple TV 4K (4th generation)")
