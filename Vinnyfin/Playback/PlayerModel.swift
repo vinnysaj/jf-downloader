@@ -116,8 +116,11 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored private var isLoaded = false
     @ObservationIgnored private var lastReportedPaused: Bool?
     @ObservationIgnored private var startedReporting = false
-    /// Telling the server that the last session stopped.
-    @ObservationIgnored private var stopReport: Task<Void, Never>?
+    /// Telling the server that the last session stopped, and giving the title its position.
+    @ObservationIgnored private(set) var stopReport: Task<Void, Never>?
+    /// The server's titles played here, and the shows of the episodes among them, whose watch
+    /// state the playback changed.
+    @ObservationIgnored private(set) var playedTitleIds: Set<String> = []
     /// The title whose next episode and segments were asked for.
     @ObservationIgnored private var extrasRequestedFor: String?
     /// The audio and subtitles chosen in the version this one stands in for.
@@ -858,6 +861,9 @@ final class PlayerModel: Identifiable {
     /// next session's start waits for it instead, so the server hears them in order. Safe to
     /// call twice.
     private func finishSession(reachedEnd: Bool) {
+        // The stop waits for the periodic report in flight, and the title's position it gives, so
+        // nothing lands after the stop that finished the title and marked it watched.
+        let progress = reportTask
         reportTask?.cancel()
         reportTask = nil
         watchTask?.cancel()
@@ -872,7 +878,9 @@ final class PlayerModel: Identifiable {
         let previousReport = stopReport
         // Immediate: the report reads this session's length and pause before the next one starts.
         stopReport = Task.immediate {
-            await self.report(.stopped, for: current, position: position, after: previousReport)
+            if await self.report(.stopped, for: current, position: position, after: [previousReport, progress]) {
+                await self.giveTitleThePosition(of: current)
+            }
             guard current.isTranscode, let reporting = current.reporting, let client = self.accounts.client else { return }
             do {
                 try await client.stopTranscoding(playSessionId: reporting.playSessionId)
@@ -889,13 +897,21 @@ final class PlayerModel: Identifiable {
     private func startReporting() {
         reportTask?.cancel()
         guard let current else { return }
+        if let reporting = current.reporting {
+            playedTitleIds.insert(reporting.itemId)
+            if let seriesId = current.item?.seriesId { playedTitleIds.insert(seriesId) }
+        }
+        // Read now: the stop `finishSession` makes for this session waits for this task, which
+        // would then wait for it in turn and never report again.
+        let previousStop = stopReport
         reportTask = Task { [weak self] in
-            await self?.report(.started, for: current, position: current.startPosition ?? 0, after: self?.stopReport)
+            await self?.report(.started, for: current, position: current.startPosition ?? 0, after: [previousStop])
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
                 guard let self, !Task.isCancelled else { return }
-                if self.status == .playing || self.status == .paused || self.status == .buffering {
-                    await self.report(.progress, for: current, position: self.clock.time)
+                if self.status == .playing || self.status == .paused || self.status == .buffering,
+                   await self.report(.progress, for: current, position: self.clock.time), !Task.isCancelled {
+                    await self.giveTitleThePosition(of: current)
                 }
             }
         }
@@ -914,16 +930,18 @@ final class PlayerModel: Identifiable {
         Task { await report(.progress, for: current, position: clock.time) }
     }
 
-    /// Tells the server, once `previous` has, and keeps the position here. A server that can't be
-    /// reached is told later, by `WatchHistory.syncPending`.
+    /// Tells the server, once the `earlier` reports have, and keeps the position here. A server
+    /// that can't be reached is told later, by `WatchHistory.syncPending`. Says whether the server
+    /// was told.
+    @discardableResult
     private func report(_ kind: ReportKind, for playback: ResolvedPlayback, position: Double,
-                        after previous: Task<Void, Never>? = nil) async {
+                        after earlier: [Task<Void, Never>?] = []) async -> Bool {
         let total = duration > 0 ? duration : playback.duration
         let isPaused = status == .paused
         let isCurrent = current?.reporting?.playSessionId == playback.reporting?.playSessionId
         let audioStream = isCurrent ? audioStreamIndex : nil
         let subtitleStream = isCurrent ? subtitleStreamIndex : nil
-        await previous?.value
+        for report in earlier { await report?.value }
         var delivered = false
         if let reporting = playback.reporting, let client = accounts.client {
             let report = PlaybackReport(
@@ -950,9 +968,28 @@ final class PlayerModel: Identifiable {
             }
         }
         // A start says nothing new about the position.
-        guard kind != .started else { return }
+        guard kind != .started else { return delivered }
         let isServerItem = playback.reporting != nil
         history.record(key: playback.historyKey, position: position, duration: total, needsSync: isServerItem && !delivered)
+        return delivered
+    }
+
+    /// Gives the title the position the server keeps for the version playing, when that isn't the
+    /// title's own (after a step down, for a version picked, for one of Gelato's other streams),
+    /// so lists, Smart Downloads and other clients see where the title got to. Playback goes on
+    /// as it is when the server doesn't take it.
+    private func giveTitleThePosition(of playback: ResolvedPlayback) async {
+        guard let reporting = playback.reporting, let versionId = reporting.mediaSourceId, versionId != reporting.itemId,
+              let client = accounts.client, let account = accounts.account else { return }
+        do {
+            try await client.givePosition(ofVersion: versionId, toItem: reporting.itemId, userId: account.userId)
+        } catch {
+            guard !error.isCancellation else { return }
+            Self.log.notice("""
+                Couldn't give \(reporting.itemId, privacy: .public) the position of its version \(versionId, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+        }
     }
 
     // MARK: Now Playing

@@ -7,6 +7,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
+    @Environment(DownloadNotifications.self) private var downloadNotifications
+    @Environment(\.openURL) private var openURL
     #endif
     @State private var confirmingSignOut = false
 
@@ -81,6 +83,9 @@ struct SettingsView: View {
                     Text("Downloads are always the original file: the version closest to this quality. Watched episodes are deleted once they're watched here or on any of your devices.")
                     #endif
                 }
+                whenToDownload
+                storage
+                notifications
                 #endif
                 Section("About") {
                     LabeledContent("Version", value: Self.version)
@@ -138,6 +143,82 @@ struct SettingsView: View {
             }
         }
     }
+
+    #if !os(tvOS)
+    @ViewBuilder private var whenToDownload: some View {
+        @Bindable var settings = settings
+        Section {
+            Toggle(Self.cellularLabel, isOn: $settings.downloadOverCellular)
+                .accessibilityIdentifier("settings.downloadOverCellular")
+            Toggle("Only While Charging", isOn: $settings.downloadOnlyWhileCharging)
+                .accessibilityIdentifier("settings.onlyWhileCharging")
+            Toggle("Overnight Only", isOn: $settings.downloadOvernightOnly)
+                .accessibilityIdentifier("settings.overnightOnly")
+        } header: {
+            Text("When to Download")
+        } footer: {
+            Text("Downloads also wait while Low Data Mode is on. Overnight is \(Self.overnightWindow). vinnyfin starts waiting downloads when the system next lets it, so they can begin a while after you plug in or the night starts. Download Now on a waiting download starts it anyway.")
+        }
+    }
+
+    @ViewBuilder private var storage: some View {
+        @Bindable var settings = settings
+        Section {
+            SettingPicker("Storage Limit", selection: $settings.downloadStorageLimit) {
+                ForEach(AppSettings.storageLimitChoices, id: \.self) { gigabytes in
+                    Text(gigabytes == 0 ? "No Limit" : DownloadManager.bytes(Int64(gigabytes) * 1_000_000_000)).tag(gigabytes)
+                }
+            }
+            .accessibilityIdentifier("settings.storageLimit")
+            StorageUsage()
+        } header: {
+            Text("Storage")
+        } footer: {
+            Text("When a download needs room, under the limit or on this \(Device.name), the downloads you watched longest ago are deleted to make it. Unwatched and partly watched downloads are never deleted; if there's still no room, the download waits.")
+        }
+    }
+
+    @ViewBuilder private var notifications: some View {
+        @Bindable var settings = settings
+        Section {
+            Toggle("Download Notifications", isOn: $settings.downloadNotifications)
+                .accessibilityIdentifier("settings.downloadNotifications")
+                .onChange(of: settings.downloadNotifications) { _, isOn in
+                    if isOn { downloadNotifications.requestAuthorizationIfNeeded() }
+                }
+            if settings.downloadNotifications, downloadNotifications.isDenied {
+                #if os(macOS)
+                Text("Notifications are off for vinnyfin in System Settings › Notifications.")
+                    .foregroundStyle(.secondary)
+                #else
+                Button("Turn On Notifications in Settings") {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                }
+                #endif
+            }
+        } footer: {
+            Text("Tells you when downloads are ready to watch offline, a show's episodes together, and when one needs you: it failed, there's no room for it, or your server has been out of reach for a while.")
+        }
+        .task { await downloadNotifications.refreshAuthorization() }
+    }
+
+    #if os(iOS)
+    private static let cellularLabel: LocalizedStringKey = "Download Over Cellular"
+    #else
+    private static let cellularLabel: LocalizedStringKey = "Download Over Personal Hotspot"
+    #endif
+
+    /// "1 AM to 7 AM", in the person's own time format.
+    private static var overnightWindow: String {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let hours = DownloadRules.overnightHours
+        let times = [hours.lowerBound, hours.upperBound].map { hour in
+            (calendar.date(bySettingHour: hour, minute: 0, second: 0, of: today) ?? today).formatted(date: .omitted, time: .shortened)
+        }
+        return "\(times[0]) to \(times[1])"
+    }
+    #endif
 
     static var version: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"

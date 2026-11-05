@@ -1,6 +1,7 @@
 import AetherEngine
 import Foundation
 import Observation
+import OSLog
 
 /// Starts playbacks and owns the one playback engine, which is built once and reused for every
 /// title, as the engine expects. On iPhone, iPad and Apple TV the player covers the app; on the
@@ -26,6 +27,11 @@ final class PlayerCoordinator {
     var stopRequest: PlayerModel.ID?
     /// Offers to watch what starts with the people on a FaceTime call.
     @ObservationIgnored weak var sharePlay: SharePlay?
+    /// What the last player to close played, once the server has heard it stop: pages showing a
+    /// title's watch state load it again, and lists put it on their cards.
+    private(set) var endedPlayback = EndedPlayback()
+
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "player")
 
     @ObservationIgnored private let accounts: AccountStore
     @ObservationIgnored private let settings: AppSettings
@@ -146,12 +152,42 @@ final class PlayerCoordinator {
         downloads.playerChanged(id, isPlaying: true)
         smartDownloads.playerOpened(id)
         model.onUnderwayChanged = { [downloads] underway in downloads.playerChanged(id, isPlaying: underway) }
-        model.onClose = { [downloads, smartDownloads] in
-            downloads.playerClosed(id)
-            smartDownloads.playerClosed(id)
-        }
         #endif
+        model.onClose = { [weak self, weak model] in
+            #if !os(tvOS)
+            self?.downloads.playerClosed(id)
+            self?.smartDownloads.playerClosed(id)
+            #endif
+            let reported = model?.stopReport
+            let played = model?.playedTitleIds ?? []
+            Task {
+                await reported?.value
+                await self?.endPlayback(of: played)
+            }
+        }
         return model
+    }
+
+    /// Asks the server for the watch state of what was played. A title it can't be asked about
+    /// keeps the state its cards show until they load again.
+    private func endPlayback(of titleIds: Set<String>) async {
+        var userData: [String: UserItemData] = [:]
+        if let client = accounts.client, let account = accounts.account {
+            let userId = account.userId
+            await withTaskGroup(of: (String, Result<UserItemData, any Error>).self) { group in
+                for id in titleIds {
+                    group.addTask { (id, await Result { try await client.userData(itemId: id, userId: userId) }) }
+                }
+                for await (id, result) in group {
+                    switch result {
+                    case .success(let data): userData[id] = data
+                    case .failure(let error):
+                        Self.log.notice("Couldn't load the watch state of \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+            }
+        }
+        endedPlayback = EndedPlayback(count: endedPlayback.count + 1, userData: userData)
     }
 
     private func sharedEngine() -> AetherEngine? {
@@ -171,5 +207,25 @@ final class PlayerCoordinator {
             problem = "The player couldn't start: \(error.localizedDescription)"
             return nil
         }
+    }
+}
+
+/// A player that closed: the watch state of what it played, as the server has it.
+nonisolated struct EndedPlayback: Equatable, Sendable {
+    /// Counts the players closed, so the same titles played again still change it.
+    var count = 0
+    /// By id: the titles played, and the shows of the episodes among them.
+    var userData: [String: UserItemData] = [:]
+
+    /// `item` with the watch state the playback left it in.
+    func applied(to item: JellyfinItem) -> JellyfinItem {
+        guard let data = userData[item.id] else { return item }
+        var updated = item
+        updated.userData = data
+        return updated
+    }
+
+    func applied(to items: [JellyfinItem]) -> [JellyfinItem] {
+        items.map(applied(to:))
     }
 }

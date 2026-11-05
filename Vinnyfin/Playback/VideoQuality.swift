@@ -124,9 +124,10 @@ nonisolated enum PlaybackPlan: Equatable, Sendable {
 }
 
 nonisolated enum VersionChooser {
-    /// The version to play or download at `quality`: the best one that fits, in the server's
-    /// order (Gelato ranks streams best first). When none fits, the smallest one that doesn't,
-    /// which `planStreaming` then has the server scale down.
+    /// The version to play or download at `quality`: the best one that fits, in the order of
+    /// `sources`, which is the item's own version first and the rest in the server's order, as
+    /// `JellyfinClient.item` lists them (Gelato ranks streams best first). When none fits, the
+    /// smallest one that doesn't, which `planStreaming` then has the server scale down.
     static func choose(from sources: [MediaSource], quality: VideoQuality) -> MediaSource? {
         guard let cap = quality.maxHeight else { return sources.first }
         let known = sources.compactMap { source in VersionTraits(source).resolutionClass.map { (source, $0) } }

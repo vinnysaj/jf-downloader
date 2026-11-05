@@ -232,6 +232,7 @@ struct PlaybackResolver {
             quality: settings.streamingQuality, allowTranscoding: settings.allowTranscoding
         ) else { throw PlaybackError.noVersions }
 
+        // Where the version played last got to, whichever version plays now.
         var start = request.startFromBeginning ? nil : item.resumeSeconds
         if !request.startFromBeginning, let local = history.entry(for: itemId), local.needsSync, !local.played {
             start = local.position > 0 ? local.position : start
@@ -319,7 +320,7 @@ struct PlaybackResolver {
     }
 
     /// A resume position, unless it's at or past the end of this version, which happens when the
-    /// position was left in a longer one: the server keeps one position per title.
+    /// position was reached in a longer one: a title resumes where its version played last got to.
     static func resumable(_ start: Double?, length: Double?) -> Double? {
         guard let start, start > 0 else { return nil }
         guard let length, length > 0 else { return start }

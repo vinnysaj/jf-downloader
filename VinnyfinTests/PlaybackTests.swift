@@ -181,14 +181,10 @@ struct JellyfinFormatTests {
 }
 
 struct SmartDownloadPlannerTests {
-    /// Downloaded episodes were watched after downloading unless listed in `watchedBefore`.
-    private func episodes(played: Int, total: Int, queued: Set<Int> = [], downloaded: Set<Int> = [],
-                          inProgress: Set<Int> = [], watchedBefore: Set<Int> = []) -> [SmartDownloadPlanner.Episode] {
+    private func episodes(played: Int, total: Int, queued: Set<Int> = [], inProgress: Set<Int> = []) -> [SmartDownloadPlanner.Episode] {
         (1...total).map { number in
             SmartDownloadPlanner.Episode(id: "e\(number)", played: number <= played, inProgress: inProgress.contains(number),
-                                         isQueued: queued.contains(number) || downloaded.contains(number),
-                                         isDownloaded: downloaded.contains(number),
-                                         watchedSinceDownload: downloaded.contains(number) && !watchedBefore.contains(number))
+                                         isQueued: queued.contains(number))
         }
     }
 
@@ -211,18 +207,8 @@ struct SmartDownloadPlannerTests {
         #expect(SmartDownloadPlanner.episodesToDownload(episodes(played: 10, total: 10), nextUpId: nil, count: nil).isEmpty)
     }
 
-    @Test func findsWatchedDownloadsToDelete() {
-        #expect(SmartDownloadPlanner.watchedDownloads(episodes(played: 3, total: 5, downloaded: [2, 3, 4])) == ["e2", "e3"])
-    }
-
-    @Test func keepsAnEpisodeDownloadedToWatchAgain() {
-        let list = episodes(played: 3, total: 5, downloaded: [1, 2, 3], watchedBefore: [1, 3])
-        #expect(SmartDownloadPlanner.watchedDownloads(list) == ["e2"])
-    }
-
-    @Test func keepsAnEpisodeBeingWatchedAgain() {
-        let list = episodes(played: 3, total: 6, downloaded: [2, 3], inProgress: [3])
-        #expect(SmartDownloadPlanner.watchedDownloads(list) == ["e2"])
+    @Test func startsFromAnEpisodeBeingWatchedAgain() {
+        let list = episodes(played: 3, total: 6, queued: [2, 3], inProgress: [3])
         #expect(SmartDownloadPlanner.episodesToDownload(list, nextUpId: "e3", count: 2) == ["e4"])
     }
 

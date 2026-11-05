@@ -20,6 +20,7 @@ struct RootView: View {
     #endif
     #if !os(tvOS)
     @Environment(SmartDownloads.self) private var smartDownloads
+    @Environment(DownloadNotifications.self) private var downloadNotifications
     #endif
     /// A title a link asked to open, for Home to show.
     @State private var linkedItem: JellyfinItem?
@@ -85,17 +86,15 @@ struct RootView: View {
             guard socketConnection != nil, let client = accounts.client else { return }
             await socket.run(client: client)
         }
-        .onOpenURL { url in
-            if url.isFileURL {
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                player.playFile(url)
-            } else if let link = AppLink(url) {
-                open(link)
-            } else {
-                messages.show("vinnyfin can't open \(url.absoluteString).")
-            }
+        .onOpenURL { url in open(url) }
+        #if !os(tvOS)
+        // A tapped notification opens its title as a link would, launching the app or not.
+        .onChange(of: downloadNotifications.openedLink, initial: true) { _, link in
+            guard let link else { return }
+            downloadNotifications.openedLink = nil
+            open(link)
         }
+        #endif
         // Runs while the app is open, and stops as it goes to the background.
         .task(id: scenePhase == .background) {
             guard scenePhase != .background else {
@@ -137,6 +136,19 @@ struct RootView: View {
         if scenePhase == .background, player.presented?.isPlaying != true { return nil }
         #endif
         return "\(client.serverURL.absoluteString) \(account.userId) \(client.token ?? "")"
+    }
+
+    /// Plays a file, or follows a vinnyfin:// link.
+    private func open(_ url: URL) {
+        if url.isFileURL {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            player.playFile(url)
+        } else if let link = AppLink(url) {
+            open(link)
+        } else {
+            messages.show("vinnyfin can't open \(url.absoluteString).")
+        }
     }
 
     /// Plays the title, or shows its page on Home in place of the player.
