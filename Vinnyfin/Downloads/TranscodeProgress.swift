@@ -3,10 +3,11 @@ import Foundation
 
 /// How far a transcoded download has got, kept with its job.
 ///
-/// The server cuts the transcode into pieces (HLS segments) of about `segmentDuration` seconds,
-/// numbered from 0; each is fetched as a transfer of its own (`TransferTag.segment`), in any
-/// order, and appended to the download's partial file once every piece before it is in. A piece
-/// that arrives early waits beside the file. `TranscodedDownloads` runs it.
+/// The server cuts the transcode into pieces (HLS segments), numbered from where each run of its
+/// transcode starts, each about `TranscodeRequest.segmentLength` seconds; each is fetched as a
+/// transfer of its own (`TransferTag.segment`), in any order, and joins the download's partial
+/// file once it's the one the file takes next and follows on from it (`TranscodeTimeline`). A
+/// piece that arrives early waits beside the file. `TranscodedDownloads` runs it.
 nonisolated struct TranscodeState: Codable, Equatable, Sendable {
     let request: TranscodeRequest
     /// The server's play session; every request of the download names it, and the server's
@@ -14,11 +15,9 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
     var playSessionId: String?
     /// The path, from the server's address, the playlist's addresses are relative to: "videos/<id>/".
     var playlistBase: String?
-    /// The pieces to fetch. A last piece shorter than a frame isn't one: the server makes nothing for it.
-    var segmentCount: Int?
-    /// Seconds of each piece but the last.
-    var segmentDuration: Double = Double(TranscodeRequest.segmentLength)
-    var finalSegmentDuration: Double?
+    /// How many pieces the transcode came to, once its last is in the file: the server's
+    /// playlist doesn't say, as it counts them at a length the server doesn't cut them at.
+    var pieceCount: Int?
     /// The media source's tag when the transcode started. Another means the file changed.
     var sourceTag: String?
     /// The video and audio bitrates the server settled on, from its transcoding address.
@@ -29,8 +28,10 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
 
     /// Pieces on disk, in the file or beside it.
     var collected = IndexSet()
-    /// Pieces 0..<appended are in the file.
+    /// The piece the file takes next: those before it are in the file, or were left out.
     var appended = 0
+    /// Pieces a restarted transcode made of a stretch the file had already, left out of it.
+    var skipped: IndexSet?
     /// The bytes the file holds for certain: the init segment and the pieces appended. Anything
     /// past it was appended by a run that ended before it could say so.
     var fileLength: Int64 = 0
@@ -46,11 +47,15 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
     /// What the server's playlist says of the stream it makes: `CODECS="avc1.640028,ac-3",
     /// RESOLUTION=1280x720` and the like.
     var variant: String?
+    /// The picture's dynamic range as the transcode's init segment says it was made: "SDR",
+    /// "HDR10", "HLG".
+    var videoRangeType: String?
 
     /// Where the first piece's picture starts, in seconds of the transcode's timeline: the
-    /// server keeps the source's timestamps, which don't start at 0 for every source. Each
-    /// piece's place counts from it.
+    /// server keeps the source's timestamps, which don't start at 0 for every source.
     var timelineOrigin: Double?
+    /// Where the file's picture ends, in seconds of the transcode's timeline.
+    var contentEnd: Double?
 
     /// When the pieces left were found waiting on the server, its transcode ended: pieces asked
     /// for while it wasn't transcoding came, and it still wasn't once they had. It had finished,
@@ -76,9 +81,9 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
         heldSince.map { now.timeIntervalSince($0) < TranscodeServer.keptFor } ?? false
     }
 
-    /// Where, in seconds, the server's transcode was last started again after it had ended
-    /// short of every piece having come, having been seen transcoding since the time before;
-    /// and how many times in a row that was about there.
+    /// Where the file ended, in seconds of the transcode's timeline, when the server's transcode
+    /// was last found stopped short of the end; and how many times in a row it stopped with the
+    /// file ending there.
     var lastStopPosition: Double?
     var stopsAtSamePlace = 0
 
@@ -87,52 +92,55 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
     var startOvers = 0
     /// The joined file checked out (`TranscodeVerifier`).
     var isVerified = false
-    /// Pieces in the file that didn't check out, and the bytes each takes there, to fetch again.
-    var repairs: [Int: Range<Int64>] = [:]
-    /// How many checks of the joined file in a row found something to repair.
+    /// Pieces in the file that didn't check out, by their numbers, to fetch again.
+    var mends: [Int: Mend]?
+    /// How many checks of the joined file in a row found something to mend.
     var repairRounds = 0
     /// Why the last check of the joined file failed, while it's put right.
     var verifyFailure: String?
+
+    /// A piece of the file to fetch again: the bytes it takes, and the stretch of the picture in
+    /// seconds a piece has to cover exactly to go in its place; one that doesn't, from a
+    /// transcode started again, takes over from the file cut back to there.
+    struct Mend: Codable, Equatable, Sendable {
+        var bytes: Range<Int64>
+        var start: Double
+        var end: Double?
+    }
 
     init(request: TranscodeRequest) {
         self.request = request
     }
 
-    var isPrepared: Bool { playSessionId != nil && segmentCount != nil && playlistBase != nil }
+    var isPrepared: Bool { playSessionId != nil && playlistBase != nil }
 
     /// Every byte the download holds on disk.
     var bytes: Int64 { fileLength + sideBytes }
 
-    /// Every piece is in the file, and none waits for a check or a repair.
+    /// Every piece is in the file, the last among them, and none waits for a check or a mend.
     var isCollected: Bool {
-        guard let segmentCount else { return false }
-        return appended >= segmentCount && unchecked.isEmpty && repairs.isEmpty
+        guard let pieceCount else { return false }
+        return appended >= pieceCount && unchecked.isEmpty && (mends ?? [:]).isEmpty
     }
 
-    var runtimeSeconds: Double? {
-        request.runtimeSeconds ?? segmentCount.map { Double(max(0, $0 - 1)) * segmentDuration + (finalSegmentDuration ?? segmentDuration) }
-    }
+    var runtimeSeconds: Double? { request.runtimeSeconds }
 
-    func duration(of segment: Int) -> Double {
-        guard let segmentCount, segment == segmentCount - 1, let finalSegmentDuration else { return segmentDuration }
-        return finalSegmentDuration
-    }
+    /// How long each piece is, give or take a frame: the last is usually shorter.
+    var pieceLength: Double { Double(request.segmentLength) }
 
-    /// Where the last piece starts: a transcode that got there made every piece.
-    var endPosition: Double {
-        Double(max(0, (segmentCount ?? 1) - 1)) * segmentDuration
-    }
+    /// The pieces in the file, by their numbers, in its order.
+    var piecesInFile: IndexSet { IndexSet(integersIn: 0..<appended).subtracting(skipped ?? IndexSet()) }
 
-    /// The end of the furthest piece collected, which is as far as the server counts the
-    /// download as having got when it paces itself.
+    /// The end of the file's picture, from the start of the transcode's timeline, which is as far
+    /// as the server counts the download as having got when it paces itself.
     var downloadPosition: Double {
-        guard let last = collected.last else { return 0 }
-        return Double(last) * segmentDuration + duration(of: last)
+        guard let contentEnd else { return 0 }
+        return contentEnd - (timelineOrigin ?? 0)
     }
 
-    /// Seconds of the picture collected.
+    /// Seconds of the picture collected: the file's, and the pieces beside it.
     var collectedSeconds: Double {
-        collected.reduce(0) { $0 + duration(of: $1) }
+        downloadPosition + Double(collected.count(in: appended...)) * pieceLength
     }
 
     /// What the file is expected to come to: once a few pieces are in, what they weigh per
@@ -148,13 +156,6 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
         return max(bytes, Int64(measured * weight + asked * (1 - weight)))
     }
 
-    /// The pieces that can go into the file now: the run of checked pieces after it.
-    var appendable: Range<Int> {
-        var end = appended
-        while collected.contains(end), !unchecked.contains(end) { end += 1 }
-        return appended..<end
-    }
-
     /// Back to nothing collected, keeping what was asked and how often this happened.
     mutating func reset() {
         let kept = self
@@ -164,11 +165,11 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
         stopsAtSamePlace = kept.stopsAtSamePlace
     }
 
-    /// Takes in where the server's transcode is being started again because it ended short,
-    /// `seenRunning` since the time before: three times in a row about the same place, it's
-    /// failing there. Returns how many times that was.
-    mutating func noteRestart(at position: Double, seenRunning: Bool) -> Int {
-        let again = seenRunning && (lastStopPosition.map { abs($0 - position) <= 2 * segmentDuration } ?? false)
+    /// Takes in that the server's transcode was found stopped with the file ending at `position`
+    /// seconds, having been `seenRunning` since the time before: at the same place as then, it
+    /// got no further. Returns how many times in a row that was.
+    mutating func noteStop(at position: Double, seenRunning: Bool) -> Int {
+        let again = seenRunning && (lastStopPosition.map { abs($0 - position) < 0.001 } ?? false)
         stopsAtSamePlace = again ? stopsAtSamePlace + 1 : 1
         lastStopPosition = position
         return stopsAtSamePlace
@@ -243,6 +244,7 @@ nonisolated struct TranscodingSession: Decodable, Sendable {
     }
 }
 
+
 // MARK: Which pieces to ask for
 
 nonisolated enum SegmentPlanner {
@@ -255,8 +257,8 @@ nonisolated enum SegmentPlanner {
 
     /// The server starts its transcode again at a piece more than 24 / length pieces past the
     /// newest it has made. Asking for at most this many past it keeps well inside that.
-    static func aheadLimit(segmentDuration: Double) -> Int {
-        max(1, min(4, Int(24 / max(1, segmentDuration.rounded())) / 2))
+    static func aheadLimit(pieceLength: Double) -> Int {
+        max(1, min(4, Int(24 / max(1, pieceLength.rounded())) / 2))
     }
 
     /// In front, pieces waiting on the server are handed to the session this many at a time,
@@ -264,63 +266,57 @@ nonisolated enum SegmentPlanner {
     /// be there after all.
     static let finishedBatch = 16
 
-    /// The server starts a transcode it's asked to start at a piece no later than 5 seconds
-    /// before the title's end (half a second earlier still when it copies the video), and
-    /// numbers what it makes from that piece all the same, so pieces it makes after starting
-    /// later are out of place. This much before the end leaves room for both.
-    static let restartMargin: TimeInterval = 6
-
-    /// The piece to start the server's transcode at to get `firstOutstanding`: that one, unless
-    /// the server would start too late for it to be in place, then the last that's early enough.
-    static func restartPiece(firstOutstanding: Int, segmentDuration: Double, runtime: Double?) -> Int {
-        guard let runtime, runtime > restartMargin else { return firstOutstanding }
-        return min(firstOutstanding, Int(((runtime - restartMargin) / segmentDuration).rounded(.down)))
+    /// The number of the piece that starts about `time` seconds into the transcode's timeline,
+    /// counted from `next`, the piece the file takes next, which starts where the file ends
+    /// (`contentEnd`): a run's pieces follow each other at about the length the server cuts them.
+    static func piece(at time: Double, next: Int, contentEnd: Double?, pieceLength: Double) -> Int {
+        next + Int(((time - (contentEnd ?? 0)) / pieceLength).rounded(.down))
     }
 
-    /// Whether the last piece coming back as something else (unreadable, without pictures, or
-    /// out of place) shows the transcode ends before it. The server lists pieces to the end of
-    /// the title as it knows its length, and a transcode can end sooner: one that starts the
-    /// picture at the source's first frame (subtitles burned in) makes a source whose clock
-    /// starts late that much shorter. Asked for a piece its transcode never made, the server
-    /// transcodes again from too late to put it in place, so for the last piece, when that's
-    /// all asking can get, it isn't there to get.
-    static func endsBefore(_ segment: Int, segmentCount: Int, segmentDuration: Double, runtime: Double?) -> Bool {
-        segment == segmentCount - 1
-            && restartPiece(firstOutstanding: segment, segmentDuration: segmentDuration, runtime: runtime) < segment
-    }
-
-    /// The pieces that may be asked for now, lowest first, leaving out those collected and
-    /// those `claimed` by transfers under way.
+    /// The pieces that may be asked for now, lowest first, leaving out those collected, those
+    /// `claimed` by transfers under way, and any from `end` on, when the transcode's end is known.
+    /// `mends` come first, which the server makes again where it's asked. `serverPiece` is the
+    /// piece the server's transcode is making, when it runs; `lastPiece` the one the title's
+    /// length makes the last.
     ///
     /// - While the server transcodes, the pieces it has made (each ends at least a piece behind
-    ///   it), then, once fewer than `aheadLimit` of those are left, up to `aheadLimit` past its
-    ///   position, which it serves as it makes them, when `mayAskAhead`.
-    /// - Not transcoding, with the pieces left known to wait on it (`isHeld`): every piece left,
-    ///   up to `limit`.
+    ///   it), then, once fewer than `aheadLimit` of those are left, up to `aheadLimit` past it,
+    ///   which it serves as it makes them, when `mayAskAhead`.
+    /// - Not transcoding, with the pieces left known to wait on it (`isHeld`): every piece left up
+    ///   to the last, up to `limit`; past it, one at a time, as each beyond the transcode's end
+    ///   starts the server's transcode again.
     /// - Otherwise (not transcoding, gone, not known), one piece, alone, once nothing else is out:
-    ///   the server sends it from what it kept, or starts its transcode again there, which then
-    ///   shows. That's the first piece missing (`restartPiece`), from which the output joins
-    ///   cleanly; near the end, an earlier piece, already here.
-    static func window(segmentCount: Int, segmentDuration: Double, runtime: Double?, collected: IndexSet, claimed: Set<Int>,
-                       server: TranscodeServer, isHeld: Bool, mayAskAhead: Bool, limit: Int? = nil) -> Window {
-        let outstanding = (0..<segmentCount).filter { !collected.contains($0) }
-        let missing = outstanding.filter { !claimed.contains($0) }
-        guard let firstOutstanding = outstanding.first, !missing.isEmpty else { return Window() }
+    ///   the server sends it from what it kept, or starts its transcode again where it's asked to
+    ///   (`TranscodedDownloads.request(for:of:)`), which then shows.
+    static func window(next: Int, end: Int?, mends: [Int] = [], collected: IndexSet, claimed: Set<Int>, server: TranscodeServer,
+                       serverPiece: Int?, lastPiece: Int?, isHeld: Bool, mayAskAhead: Bool, pieceLength: Double,
+                       limit: Int? = nil) -> Window {
+        let bound = end ?? Int.max
+        func missing(through last: Int) -> [Int] {
+            guard last >= next else { return [] }
+            return (next...min(last, bound - 1)).filter { !collected.contains($0) && !claimed.contains($0) }
+        }
+        let mending = mends.filter { !collected.contains($0) && !claimed.contains($0) }.sorted()
+        guard let firstOutstanding = mends.filter({ !collected.contains($0) }).min()
+            ?? (next..<bound).lazy.first(where: { !collected.contains($0) })
+        else { return Window() }
         var window: Window
         switch server {
         case .ended where isHeld:
-            window = Window(segments: missing)
+            let last = max(next, lastPiece ?? next)
+            var segments = mending + missing(through: last)
+            if segments.isEmpty, claimed.isEmpty, firstOutstanding >= next { segments = [firstOutstanding] }
+            window = Window(segments: segments)
         case .ended, .gone, .unknown:
-            let start = restartPiece(firstOutstanding: firstOutstanding, segmentDuration: segmentDuration, runtime: runtime)
-            window = claimed.isEmpty ? Window(segments: [start], isProbe: true) : Window()
-        case .running(let position):
-            let current = Int(position / segmentDuration)
-            let made = missing.filter { $0 + 2 <= current }
+            window = claimed.isEmpty ? Window(segments: [firstOutstanding], isProbe: true) : Window()
+        case .running:
+            let current = serverPiece ?? next
+            let made = mending + missing(through: current - 2)
             window = Window(segments: made)
-            let ahead = aheadLimit(segmentDuration: segmentDuration)
+            let ahead = aheadLimit(pieceLength: pieceLength)
             if mayAskAhead, made.count < ahead {
-                let next = missing.filter { $0 + 2 > current && $0 <= current + ahead }
-                window.segments += next.prefix(ahead - made.count)
+                let upcoming = missing(through: current + ahead).filter { $0 + 2 > current }
+                window.segments += upcoming.prefix(ahead - made.count)
             }
         }
         if let limit { window.segments = Array(window.segments.prefix(max(0, limit))) }
@@ -329,16 +325,15 @@ nonisolated enum SegmentPlanner {
 
     /// Whether a piece handed to the session that hasn't started yet may stay there: asking for
     /// it now doesn't start the server's transcode somewhere else.
-    static func mayStay(_ segment: Int, segmentDuration: Double, runtime: Double?, firstOutstanding: Int?, server: TranscodeServer,
-                        isHeld: Bool) -> Bool {
+    static func mayStay(_ segment: Int, firstOutstanding: Int?, server: TranscodeServer, serverPiece: Int?, lastPiece: Int?,
+                        isHeld: Bool, pieceLength: Double) -> Bool {
         switch server {
-        case .running(let position):
-            return segment <= Int(position / segmentDuration) + aheadLimit(segmentDuration: segmentDuration)
+        case .running:
+            return segment <= (serverPiece ?? segment) + aheadLimit(pieceLength: pieceLength)
         case .ended where isHeld:
-            return true
+            return segment <= max(lastPiece ?? segment, firstOutstanding ?? segment)
         case .ended, .gone, .unknown:
-            guard let firstOutstanding else { return false }
-            return segment == restartPiece(firstOutstanding: firstOutstanding, segmentDuration: segmentDuration, runtime: runtime)
+            return segment == firstOutstanding
         }
     }
 
@@ -348,14 +343,6 @@ nonisolated enum SegmentPlanner {
     static func fetchable(within seconds: Double, bytesPerSecond: Double?, bytesPerSegment: Double) -> Int {
         guard let bytesPerSecond, bytesPerSecond > 0, bytesPerSegment > 0 else { return 2 }
         return max(2, Int(bytesPerSecond * seconds / bytesPerSegment))
-    }
-
-    /// The pieces the playlist lists, leaving out a last one shorter than a frame, which the
-    /// server has nothing to put in.
-    static func usableCount(durations: [Double], frameRate: Double?) -> Int {
-        guard let last = durations.last else { return 0 }
-        let frame = 1 / (frameRate.flatMap { $0 > 0 ? $0 : nil } ?? 24)
-        return last < frame ? durations.count - 1 : durations.count
     }
 }
 

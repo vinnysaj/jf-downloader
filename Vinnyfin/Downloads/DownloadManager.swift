@@ -579,9 +579,10 @@ final class DownloadManager {
         pump()
     }
 
-    /// Continues every paused job and retries every failed one.
+    /// Continues every paused job: what Pause All paused. A failed one stopped for a reason it
+    /// shows, and waits for its own Retry.
     func resumeAll() {
-        let ids = jobs.filter { $0.status == .paused || $0.status == .failed }.map(\.id)
+        let ids = jobs.filter { $0.status == .paused }.map(\.id)
         guard !ids.isEmpty else { return }
         for index in jobs.indices where ids.contains(jobs[index].id) { jobs[index].resume() }
         noteStartedByUser(ids)
@@ -1745,7 +1746,7 @@ final class DownloadManager {
     /// as it counts a chunk.
     private func acceptSegment(_ finished: TransferDelegate.Finished, segment: Int, of job: DownloadJob, received: Int64,
                                attemptStart: Date?) async {
-        let outcome = await transcodes.accept(finished, segment: segment, of: job)
+        let outcome = await transcodes.accept(finished, segment: segment, of: job, requestedAt: attemptStart)
         guard let index = index(of: job.id) else { return }
         switch outcome {
         case .collected:
@@ -2211,6 +2212,13 @@ extension DownloadManager: TranscodeHost {
     func stopJob(_ id: UUID, because message: String) {
         guard let index = index(of: id), jobs[index].status != .completed else { return }
         stop(index, because: message)
+    }
+
+    func transcodeFailed(_ id: UUID, _ failure: TransferFailure) {
+        guard let index = index(of: id), jobs[index].status == .active else { return }
+        jobs[index].recordFailure(failure, receivedBytes: 0, attemptStart: .now, otherArrival: otherArrival(than: id))
+        if jobs[index].status == .failed { cancelTransfers(of: id) }
+        save()
     }
 
     /// The next plan holds the queue to the room that's free.

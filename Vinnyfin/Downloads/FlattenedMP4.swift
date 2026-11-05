@@ -6,17 +6,25 @@ import Foundation
 /// the last piece, pointing at each sample where it already lies, and the 16 bytes after the
 /// ftyp box become the header of one media data box spanning everything up to the index. The
 /// init segment's moov and the pieces' boxes stay where they were, inside that media data, which
-/// players skip over as they do anything no index points at.
+/// players skip over as they do anything no index points at. Both changes are written into the
+/// joined file itself and can be taken back (`undo`), so indexing takes no room but the index's,
+/// on any volume.
 ///
 /// The player reads every fragment's header of a fragmented MP4 as it opens it, a few hundred
 /// KB per piece read from storage: a few thousand pieces take it seconds and most of a GB, every
 /// time the title is opened. It reads an ordinary MP4's index in one go, as long as it is.
 ///
+/// Every sample keeps its own time: its decode time and composition offset as the server wrote
+/// them. Where a restarted transcode's piece takes over (`TranscodeTimeline`), the pictures from
+/// its first one on are left out, which have to be the last decoded, and so are its audio frames
+/// the file already has; anything else that doesn't follow on, a gap or an overlap in any track,
+/// names the piece, and nothing is moved to hide it.
+///
 /// The index also puts the title's start at 0. The server's transcode keeps the source's
 /// timestamps (`-copyts`), so a source whose clock doesn't start at 0, as broadcast recordings'
 /// don't, makes pieces that start that far in; positions to resume from, and markers for intros
-/// and credits, count from the title's start. The first picture's decode time becomes 0, and
-/// each track keeps its place against it, by an edit list.
+/// and credits, count from the title's start. The first picture is shown at 0, each track keeps
+/// its place against it, and each plays to the end of its last sample, by an edit list.
 nonisolated enum FlattenedMP4 {
     /// What makes a joined file an ordinary MP4: `mdatHeader` goes at `mdatOffset` and `moov` at
     /// the end.
@@ -28,8 +36,16 @@ nonisolated enum FlattenedMP4 {
         var origin: Double
     }
 
+    /// Why a piece can't be indexed where it lies: `piece` is its place among the pieces given.
+    struct Misfit: Error, Equatable, LocalizedError {
+        let piece: Int
+        let message: String
+        var errorDescription: String? { message }
+    }
+
     /// Builds the index for a joined file of `fileLength` bytes that starts with the init segment
-    /// `header` and holds `pieces`, as read from it in order.
+    /// `header` and holds `pieces`, as read from it in order. Throws `Misfit` for a piece that
+    /// doesn't follow on from the ones before it.
     static func index(header: Data, parsed: FragmentedMP4.Header, pieces: [FragmentedMP4.Piece], fileLength: Int64) throws -> Index {
         let top = try FragmentedMP4.boxes(in: header, range: 0..<Int(parsed.length))
         guard let ftyp = top.first, ftyp.type == "ftyp", let moov = top.first(where: { $0.type == "moov" }),
@@ -38,32 +54,55 @@ nonisolated enum FlattenedMP4 {
         guard let videoId = parsed.videoTrack else { throw FragmentedMP4.Problem(message: "The header has no video track.") }
 
         var tracks: [UInt32: Samples] = [:]
-        for piece in pieces {
-            for run in piece.runs where !run.samples.isEmpty {
-                tracks[run.track, default: Samples()].add(run)
+        for (id, track) in parsed.tracks { tracks[id] = Samples(timescale: Int64(track.timescale), presentationOffset: track.presentationOffset) }
+        for (place, piece) in pieces.enumerated() {
+            guard let picture = piece.spans[videoId] else { throw Misfit(piece: place, message: "Piece \(place) has no pictures.") }
+            guard place == 0 || piece.startsWithSync else {
+                throw Misfit(piece: place, message: "Piece \(place) doesn't start with a keyframe.")
+            }
+            do {
+                try tracks[videoId]?.takeOver(at: picture.start)
+                for run in piece.runs where !run.samples.isEmpty && run.track == videoId { try tracks[videoId]?.add(run) }
+                for (id, span) in piece.spans where id != videoId {
+                    for run in piece.runs where !run.samples.isEmpty && run.track == id {
+                        let end = tracks[id]?.end
+                        try tracks[id]?.add(run, after: end, halfSample: span.sampleDuration / 2)
+                    }
+                }
+            } catch let problem as FragmentedMP4.Problem {
+                throw Misfit(piece: place, message: "Piece \(place): \(problem.message)")
             }
         }
-        guard let video = tracks[videoId], let videoStart = video.decodeTimes.first, let videoTrack = parsed.tracks[videoId] else {
+        guard let video = tracks[videoId], let originTicks = video.firstShown else {
             throw FragmentedMP4.Problem(message: "The file has no pictures.")
         }
-        let origin = Double(videoStart) / Double(videoTrack.timescale)
+        let origin = Double(originTicks) / Double(video.timescale)
         let movieTimescale = Int64(parsed.movieTimescale)
 
         var traks: [UInt32: Data] = [:]
         var movieDuration: Int64 = 0
         for child in try FragmentedMP4.boxes(in: header, range: moov.payload) where child.type == "trak" {
-            guard let id = try trackId(of: child, in: header), let info = parsed.tracks[id], let samples = tracks[id] else { continue }
-            let timescale = Int64(info.timescale)
-            let durations = samples.flatDurations()
+            guard let id = try trackId(of: child, in: header), let samples = tracks[id], let first = samples.decodeTimes.first else { continue }
+            let durations = try samples.durations()
+            let timescale = samples.timescale
             let mediaDuration = durations.reduce(Int64(0)) { $0 + Int64($1) }
-            // Where this track's presentation starts once the picture's first decode time is 0.
-            let shift = info.presentationOffset - (samples.decodeTimes.first ?? 0) + Int64((origin * Double(timescale)).rounded())
-            let emptyEdit = shift < 0 ? (-shift * movieTimescale + timescale / 2) / timescale : 0
-            let mediaTime = max(0, shift)
-            let shown = max(0, mediaDuration - mediaTime)
+            // In the track's media time, which starts at its first decode time: where the movie's
+            // 0 falls, when its first sample is shown, and when its last stops being shown.
+            let zero = (origin * Double(timescale)).rounded() + Double(samples.presentationOffset) - Double(first)
+            var earliest = Int64.max
+            var latest = Int64.min
+            for index in durations.indices {
+                let shown = samples.decodeTimes[index] - first + Int64(samples.compositionOffsets[index])
+                earliest = min(earliest, shown)
+                latest = max(latest, shown + Int64(durations[index]))
+            }
+            let mediaTime = max(Int64(zero), earliest)
+            let emptyEdit = mediaTime > Int64(zero) ? ((mediaTime - Int64(zero)) * movieTimescale + timescale / 2) / timescale : 0
+            let shown = max(0, latest - mediaTime)
             let shownInMovie = (shown * movieTimescale + timescale / 2) / timescale
             movieDuration = max(movieDuration, emptyEdit + shownInMovie)
-            traks[id] = try rebuildTrack(child, in: header, samples: samples, durations: durations, mediaDuration: mediaDuration,
+            traks[id] = try rebuildTrack(child, in: header, samples: samples, durations: durations,
+                                         rollDistance: parsed.tracks[id]?.rollDistance, mediaDuration: mediaDuration,
                                          trackDuration: emptyEdit + shownInMovie,
                                          edits: (emptyEdit > 0 ? [(emptyEdit, Int64(-1))] : []) + [(shownInMovie, mediaTime)])
         }
@@ -91,15 +130,11 @@ nonisolated enum FlattenedMP4 {
         return Index(mdatOffset: mdatOffset, mdatHeader: mdatHeader, moov: box("moov", children), origin: origin)
     }
 
-    /// Writes `index` into a copy of `source` at `destination`, over any earlier one, and returns
-    /// its length. The copy is a clone where the file system makes them (APFS), which shares the
-    /// source's blocks: only the blocks written take room of their own.
-    static func write(_ index: Index, from source: URL, to destination: URL) throws -> Int64 {
-        let manager = FileManager.default
-        if manager.fileExists(atPath: destination.path) { try manager.removeItem(at: destination) }
-        try manager.copyItem(at: source, to: destination)
-        let handle = try FileHandle(forWritingTo: destination)
+    /// Writes `index` into the joined `file` of `length` bytes and returns its new length.
+    static func write(_ index: Index, into file: URL, length: Int64) throws -> Int64 {
+        let handle = try FileHandle(forWritingTo: file)
         defer { try? handle.close() }
+        try handle.truncate(atOffset: UInt64(length))
         try handle.seek(toOffset: UInt64(index.mdatOffset))
         try handle.write(contentsOf: index.mdatHeader)
         try handle.seekToEnd()
@@ -108,45 +143,141 @@ nonisolated enum FlattenedMP4 {
         return Int64(try handle.offset())
     }
 
+    /// Takes an index out of the joined `file` again, whatever got written of it: the file goes
+    /// back to `length` bytes, and the bytes after the ftyp box to the init segment's `header`.
+    static func undo(_ file: URL, header: Data, length: Int64) throws {
+        let handle = try FileHandle(forUpdating: file)
+        defer { try? handle.close() }
+        try handle.truncate(atOffset: UInt64(length))
+        let ftypEnd = Int(header.uint32(at: 0))
+        guard header.count >= ftypEnd + 16 else { return }
+        try handle.seek(toOffset: UInt64(ftypEnd))
+        if try handle.read(upToCount: 16) != header.subdata(in: ftypEnd..<(ftypEnd + 16)) {
+            try handle.seek(toOffset: UInt64(ftypEnd))
+            try handle.write(contentsOf: header.subdata(in: ftypEnd..<(ftypEnd + 16)))
+        }
+        try handle.synchronize()
+    }
+
     // MARK: Samples
 
-    /// One track's samples across the file, in order.
+    /// One track's samples across the file, in decode order, each at its own time.
     private struct Samples {
+        let timescale: Int64
+        let presentationOffset: Int64
         var decodeTimes: [Int64] = []
-        var durations: [UInt32] = []
+        var ownDurations: [UInt32] = []
         var sizes: [UInt32] = []
         var compositionOffsets: [Int32] = []
         var syncs: [Bool] = []
         /// Each run is a chunk: its samples lie one after another from `offset`.
         var chunks: [(offset: Int, count: Int)] = []
 
-        mutating func add(_ run: FragmentedMP4.Run) {
+        init(timescale: Int64, presentationOffset: Int64) {
+            self.timescale = timescale
+            self.presentationOffset = presentationOffset
+        }
+
+        private func shown(_ index: Int) -> Int64 {
+            decodeTimes[index] + Int64(compositionOffsets[index]) - presentationOffset
+        }
+
+        var firstShown: Int64? { decodeTimes.indices.map(shown).min() }
+
+        /// When the last sample stops being shown: one of the last few decoded, as no codec
+        /// reorders further than that.
+        var end: Int64? {
+            decodeTimes.indices.suffix(Self.reorderWindow).map { shown($0) + Int64(ownDurations[$0]) }.max()
+        }
+
+        /// More samples than any codec decodes ahead of showing them.
+        private static let reorderWindow = 64
+
+        /// A restarted transcode's pictures take over at `time`: the pictures shown from then on
+        /// go, which have to be the last decoded, and the ones kept have to end there.
+        mutating func takeOver(at time: Int64) throws {
+            guard let end else { return }
+            let slack = max(1, timescale / 1000)
+            if time > end + slack { throw FragmentedMP4.Problem(message: "its pictures start \(Self.seconds(time - end, timescale)) s after the ones before end.") }
+            guard time < end - slack else { return }
+            var keep = decodeTimes.count
+            while keep > 0, shown(keep - 1) >= time - slack { keep -= 1 }
+            guard (0..<keep).allSatisfy({ shown($0) < time - slack }) else {
+                throw FragmentedMP4.Problem(message: "it takes over where the pictures before it can't be cut.")
+            }
+            removeLast(decodeTimes.count - keep)
+            let keptEnd = self.end ?? time
+            guard abs(keptEnd - time) <= slack else {
+                throw FragmentedMP4.Problem(message: "it takes over \(Self.seconds(keptEnd - time, timescale)) s from where the pictures kept end.")
+            }
+        }
+
+        /// Adds a run's samples. For a track other than the pictures, with the file's samples of it
+        /// ending at `end`, the run's samples that start before it, by more than `halfSample`, go:
+        /// a restarted transcode's audio that the file has already.
+        mutating func add(_ run: FragmentedMP4.Run, after end: Int64? = nil, halfSample: Int64 = 0) throws {
             var time = run.decodeTime
+            var offset = run.dataOffset
+            var count = 0
             for sample in run.samples {
+                let shown = time + Int64(sample.compositionOffset) - presentationOffset
+                if let end, shown < end - halfSample {
+                    time += Int64(sample.duration)
+                    offset += Int(sample.size)
+                    continue
+                }
+                if count == 0, let end, shown > end + halfSample {
+                    throw FragmentedMP4.Problem(message: "a track starts \(Self.seconds(shown - end, timescale)) s after it ends in the piece before.")
+                }
+                if let last = decodeTimes.last, time <= last {
+                    throw FragmentedMP4.Problem(message: "its samples are decoded before the ones before them.")
+                }
                 decodeTimes.append(time)
-                durations.append(sample.duration)
+                ownDurations.append(sample.duration)
                 sizes.append(sample.size)
                 compositionOffsets.append(sample.compositionOffset)
                 syncs.append(sample.isSync)
                 time += Int64(sample.duration)
+                count += 1
             }
-            chunks.append((run.dataOffset, run.samples.count))
+            if count > 0 { chunks.append((offset, count)) }
         }
 
-        /// Each sample's duration on a timeline that starts at the track's first decode time and
-        /// keeps every sample at its own: a gap between pieces lengthens the sample before it,
-        /// and a piece that starts before the one ahead of it ends starts at that end.
-        func flatDurations() -> [UInt32] {
-            guard let first = decodeTimes.first else { return [] }
-            var positions: [Int64] = []
-            positions.reserveCapacity(decodeTimes.count)
-            for (index, time) in decodeTimes.enumerated() {
-                let target = time - first
-                positions.append(index == 0 ? 0 : max(target, positions[index - 1] + Int64(durations[index - 1])))
+        private mutating func removeLast(_ count: Int) {
+            guard count > 0 else { return }
+            decodeTimes.removeLast(count)
+            ownDurations.removeLast(count)
+            sizes.removeLast(count)
+            compositionOffsets.removeLast(count)
+            syncs.removeLast(count)
+            var left = count
+            while left > 0, let last = chunks.last {
+                if last.count <= left {
+                    chunks.removeLast()
+                    left -= last.count
+                } else {
+                    chunks[chunks.count - 1].count -= left
+                    left = 0
+                }
             }
-            var flat = zip(positions, positions.dropFirst()).map { UInt32(clamping: $1 - $0) }
-            flat.append(durations.last ?? 0)
-            return flat
+        }
+
+        /// Each sample's duration in the index: up to the next one's decode time, so each keeps
+        /// its own; the last keeps its own duration.
+        func durations() throws -> [UInt32] {
+            var durations: [UInt32] = []
+            durations.reserveCapacity(decodeTimes.count)
+            for index in decodeTimes.indices.dropLast() {
+                let gap = decodeTimes[index + 1] - decodeTimes[index]
+                guard gap > 0, gap <= Int64(UInt32.max) else { throw FragmentedMP4.Problem(message: "Its samples are out of order.") }
+                durations.append(UInt32(gap))
+            }
+            if let last = ownDurations.last { durations.append(last) }
+            return durations
+        }
+
+        private static func seconds(_ ticks: Int64, _ timescale: Int64) -> String {
+            (Double(ticks) / Double(timescale)).formatted(.number.precision(.fractionLength(3)))
         }
     }
 
@@ -159,7 +290,7 @@ nonisolated enum FlattenedMP4 {
     }
 
     private static func rebuildTrack(_ trak: FragmentedMP4.Box, in data: Data, samples: Samples, durations: [UInt32],
-                                     mediaDuration: Int64, trackDuration: Int64, edits: [(duration: Int64, mediaTime: Int64)]) throws -> Data {
+                                     rollDistance: Int16?, mediaDuration: Int64, trackDuration: Int64, edits: [(duration: Int64, mediaTime: Int64)]) throws -> Data {
         var children = Data()
         for part in try FragmentedMP4.boxes(in: data, range: trak.payload) {
             switch part.type {
@@ -188,7 +319,8 @@ nonisolated enum FlattenedMP4 {
                                 guard let stsd = try FragmentedMP4.boxes(in: data, range: leaf.payload).first(where: { $0.type == "stsd" }) else {
                                     throw FragmentedMP4.Problem(message: "A track in the header has no sample description.")
                                 }
-                                minf += sampleTable(stsd: data.subdata(in: stsd.range), samples: samples, durations: durations)
+                                minf += sampleTable(stsd: data.subdata(in: stsd.range), samples: samples, durations: durations,
+                                                    rollDistance: rollDistance)
                             } else {
                                 minf += data.subdata(in: leaf.range)
                             }
@@ -206,7 +338,7 @@ nonisolated enum FlattenedMP4 {
         return box("trak", children)
     }
 
-    private static func sampleTable(stsd: Data, samples: Samples, durations: [UInt32]) -> Data {
+    private static func sampleTable(stsd: Data, samples: Samples, durations: [UInt32], rollDistance: Int16?) -> Data {
         var table = stsd
         let times = runLengths(durations)
         var stts = Data()
@@ -265,6 +397,20 @@ nonisolated enum FlattenedMP4 {
             for chunk in samples.chunks { offsets.append(uint64: UInt64(chunk.offset)) }
             table += fullBox("co64", offsets)
         }
+        // Every sample in the one roll group. The server's fragments don't carry it, and without it
+        // AVFoundation plays AAC about 44 ms ahead of the picture.
+        if let rollDistance {
+            var description = Data("roll".utf8)
+            description.append(uint32: 2)
+            description.append(uint32: 1)
+            description.append(uint16: UInt16(bitPattern: rollDistance))
+            table += fullBox("sgpd", version: 1, description)
+            var grouping = Data("roll".utf8)
+            grouping.append(uint32: 1)
+            grouping.append(uint32: UInt32(samples.sizes.count))
+            grouping.append(uint32: 1)
+            table += fullBox("sbgp", grouping)
+        }
         return box("stbl", table)
     }
 
@@ -321,6 +467,10 @@ nonisolated enum FlattenedMP4 {
 }
 
 private nonisolated extension Data {
+    mutating func append(uint16 value: UInt16) {
+        Swift.withUnsafeBytes(of: value.bigEndian) { append(contentsOf: $0) }
+    }
+
     mutating func append(uint32 value: UInt32) {
         Swift.withUnsafeBytes(of: value.bigEndian) { append(contentsOf: $0) }
     }
