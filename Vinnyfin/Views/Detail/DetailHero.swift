@@ -9,15 +9,33 @@ struct DetailHero<Actions: View>: View {
     @ViewBuilder let actions: () -> Actions
 
     @Environment(\.session) private var session
+    @Environment(\.barInsets) private var barInsets
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
     #endif
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        VStack(alignment: .leading, spacing: 10) {
+            if let eyebrow {
+                Text(eyebrow).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            title
+            Text(Self.facts(for: item))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if let badgesSource { MediaBadges(source: badgesSource) }
+            actions()
+                .padding(.top, 4)
+        }
+        .edgePadding()
+        .padding(.bottom, 8)
+        .frame(maxWidth: 900, alignment: .leading)
+        // Taller than the artwork's height when the title and actions need it, so none of them
+        // goes under the bars over the page's top.
+        .padding(.top, barInsets.top)
+        .frame(maxWidth: .infinity, minHeight: heroHeight, alignment: .bottomLeading)
+        .background {
             Artwork(url: backdropURL, aspectRatio: nil, cornerRadius: 0, placeholder: item.isSeries ? "tv" : "film")
-                .frame(height: heroHeight)
-                .frame(maxWidth: .infinity)
                 .ignoresSafeArea(edges: .horizontal)
                 .clipped()
                 .overlay {
@@ -30,21 +48,6 @@ struct DetailHero<Actions: View>: View {
                         startPoint: .top, endPoint: .bottom
                     )
                 }
-            VStack(alignment: .leading, spacing: 10) {
-                if let eyebrow {
-                    Text(eyebrow).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                }
-                title
-                Text(Self.facts(for: item))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                if let badgesSource { MediaBadges(source: badgesSource) }
-                actions()
-                    .padding(.top, 4)
-            }
-            .edgePadding()
-            .padding(.bottom, 8)
-            .frame(maxWidth: 900, alignment: .leading)
         }
     }
 

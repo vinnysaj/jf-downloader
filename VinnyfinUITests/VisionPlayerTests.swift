@@ -4,7 +4,7 @@ import XCTest
 /// Plays on Apple Vision Pro from the server, a download and a file on the device, and works the
 /// player: the timeline, audio and subtitle choices, skipping the intro, the next episode and the
 /// up-next card, the cinema, 3D titles and closing. When `VINNYFIN_SHOTS` names a folder, each
-/// step leaves a screenshot there (see `snap`).
+/// step leaves a screenshot there (see `requestScreenshot`).
 ///
 /// Expects a server at `VINNYFIN_TEST_SERVER` (default http://localhost:8096) with a user
 /// "viewer" without a password. Tests skip without what they play: "Subtitle Test" (`testserver/`),
@@ -29,7 +29,7 @@ final class VisionPlayerTests: XCTestCase {
     override func tearDown() async throws {
         guard let run = testRun, run.totalFailureCount > 0 else { return }
         let test = name.split(separator: " ").last.map { String($0.dropLast()) } ?? "test"
-        try await Self.snap(test + "-failed")
+        try await requestScreenshot(test + "-failed")
     }
 
     @MainActor
@@ -42,12 +42,12 @@ final class VisionPlayerTests: XCTestCase {
         showControls(app)
         // Paused, the controls stay up while the panels are worked.
         tap(app.buttons["player.playPause"])
-        try await Self.snap("movie-controls")
+        try await requestScreenshot("movie-controls")
 
         tap(app.buttons["player.subtitles"])
         let subtitles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'panel.subtitle.' AND identifier != 'panel.subtitle.off'"))
         let subtitlesAppeared = subtitles.firstMatch.waitForExistence(timeout: uiTimeout)
-        try await Self.snap("movie-subtitles")
+        try await requestScreenshot("movie-subtitles")
         XCTAssertTrue(subtitlesAppeared, "The subtitle choices never appeared")
         subtitles.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["panel.subtitle.off"].waitForNonExistence(timeout: uiTimeout), "The subtitle panel didn't close")
@@ -55,16 +55,16 @@ final class VisionPlayerTests: XCTestCase {
         tap(app.buttons["player.audio"])
         let audio = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'panel.audio.'"))
         let audioAppeared = audio.firstMatch.waitForExistence(timeout: uiTimeout)
-        try await Self.snap("movie-audio")
+        try await requestScreenshot("movie-audio")
         XCTAssertTrue(audioAppeared, "The audio choices never appeared")
         audio.element(boundBy: 0).tap()
 
         try scrub(to: 0.5, in: app, expecting: "1:")
-        try await Self.snap("movie-scrubbed")
+        try await requestScreenshot("movie-scrubbed")
         tap(app.buttons["player.playPause"])
         let line = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH 'on the big screen'")).firstMatch
         let lineAppeared = line.waitForExistence(timeout: uiTimeout)
-        try await Self.snap("movie-subtitle-on")
+        try await requestScreenshot("movie-subtitle-on")
         XCTAssertTrue(lineAppeared, "No subtitle showed over the picture")
         close(app, returningTo: app.buttons["detail.play"])
     }
@@ -80,7 +80,7 @@ final class VisionPlayerTests: XCTestCase {
         waitForPlayer(in: app)
         let skip = app.buttons["player.skip"]
         XCTAssertTrue(skip.waitForExistence(timeout: uiTimeout), "Skip Intro never appeared")
-        try await Self.snap("episode-intro")
+        try await requestScreenshot("episode-intro")
         skip.tap()
         try await Task.sleep(for: .seconds(2))
         showControls(app)
@@ -90,18 +90,18 @@ final class VisionPlayerTests: XCTestCase {
         XCTAssertTrue(position.map { (25...60).contains($0.time) } ?? false,
                       "Skipping didn't land past the intro (\(timeline.value ?? ""))")
         XCTAssertTrue(app.buttons["episodes.episode.2"].waitForExistence(timeout: uiTimeout), "The episodes aren't in the controls")
-        try await Self.snap("episode-controls")
+        try await requestScreenshot("episode-controls")
 
         // Into the credits, where the next episode is offered.
         try scrub(to: 0.88, in: app, expecting: "2:3")
         let playNext = app.buttons["player.playNext"]
         XCTAssertTrue(playNext.waitForExistence(timeout: uiTimeout), "The up-next card never appeared")
-        try await Self.snap("episode-up-next")
+        try await requestScreenshot("episode-up-next")
         playNext.tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'S01E02'")).firstMatch.waitForExistence(timeout: uiTimeout),
                       "The next episode never started")
         XCTAssertTrue(skip.waitForExistence(timeout: uiTimeout), "The next episode's intro isn't offered to skip")
-        try await Self.snap("episode-next")
+        try await requestScreenshot("episode-next")
         close(app, returningTo: app.buttons["episode.1"])
     }
 
@@ -135,7 +135,7 @@ final class VisionPlayerTests: XCTestCase {
             let badge = app.staticTexts["player.format"]
             XCTAssertTrue(badge.waitForExistence(timeout: uiTimeout), "\(title) shows no format badge")
             XCTAssertTrue(badge.label.contains("3D"), "\(title) isn't playing in 3D (\(badge.label))")
-            try await Self.snap(shot)
+            try await requestScreenshot(shot)
             close(app, returningTo: app.buttons["detail.play"])
             app.navigationBars.buttons.firstMatch.tap()
         }
@@ -158,7 +158,7 @@ final class VisionPlayerTests: XCTestCase {
         waitForPlayback(in: app)
         showControls(app)
         XCTAssertTrue(app.staticTexts["player.format"].label.contains("Downloaded"), "The download isn't what's playing")
-        try await Self.snap("download-playing")
+        try await requestScreenshot("download-playing")
         close(app, returningTo: downloaded)
 
         // Once played, it's among the recent files too.
@@ -168,24 +168,19 @@ final class VisionPlayerTests: XCTestCase {
         waitForPlayer(in: app)
         waitForPlayback(in: app)
         showControls(app)
-        try await Self.snap("file-playing")
+        try await requestScreenshot("file-playing")
         close(app, returningTo: file)
     }
 
     // MARK: Steps
 
-    /// Signs in with the form as the last sign-in left it. Text typed by a UI test doesn't reach
-    /// visionOS's text fields, so the app's defaults name the server and user beforehand:
-    /// `lastServer` (an archived URL) and `lastUserName`. The build must be signed, even ad hoc,
-    /// for the Keychain to take the sign-in.
+    /// Signs in with the form as the last sign-in left it: the app's defaults name the server and
+    /// user beforehand, `lastServer` (an archived URL) and `lastUserName` (see `signInArguments`).
     @MainActor
     private func launchSignedIn() async throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launch()
-        let connect = app.buttons["welcome.connect"]
-        guard connect.waitForExistence(timeout: 5) else { return app }
-        connect.tap()
-        tap(app.buttons["login.submit"])
+        signInIfNeeded(app)
         XCTAssertTrue(app.buttons["Movies"].firstMatch.waitForExistence(timeout: uiTimeout), "Signing in never finished")
         return app
     }
@@ -210,7 +205,7 @@ final class VisionPlayerTests: XCTestCase {
         tap(app.buttons["detail.play"])
         waitForPlayer(in: app)
         waitForPlayback(in: app)
-        try await Self.snap(shot + "-window")
+        try await requestScreenshot(shot + "-window")
         showControls(app)
         tap(app.buttons["player.playPause"])
         try scrub(to: fraction, in: app, expecting: expecting)
@@ -219,13 +214,13 @@ final class VisionPlayerTests: XCTestCase {
         let leave = app.buttons["Leave Cinema"]
         XCTAssertTrue(leave.waitForExistence(timeout: uiTimeout), "The cinema never opened")
         XCTAssertTrue(wait(until: { !controlsAreUp(app) }, timeout: uiTimeout), "The controls never faded in the cinema")
-        try await Self.snap(shot)
+        try await requestScreenshot(shot)
         XCTAssertTrue(wait(until: { controlsAreUp(app) }, timeout: 60), "The controls never came back at the end")
-        try await Self.snap(shot + "-ended")
+        try await requestScreenshot(shot + "-ended")
         tap(leave)
         XCTAssertTrue(app.buttons["Cinema"].waitForExistence(timeout: uiTimeout), "The cinema never closed")
         try await Task.sleep(for: .seconds(2))
-        try await Self.snap(shot + "-left")
+        try await requestScreenshot(shot + "-left")
         close(app, returningTo: app.buttons["detail.play"])
     }
 
@@ -326,22 +321,6 @@ final class VisionPlayerTests: XCTestCase {
         tap(app.buttons["player.close"])
         XCTAssertTrue(app.buttons["player.close"].waitForNonExistence(timeout: uiTimeout), "The player never closed")
         XCTAssertTrue(landmark.waitForExistence(timeout: uiTimeout), "\(landmark) didn't come back")
-    }
-
-    /// Asks for a screenshot named `name` and waits for it. On visionOS a UI test's own
-    /// screenshots come back empty, so `simctl io screenshot` on the Mac takes it: the test
-    /// leaves `<name>.request` in `VINNYFIN_SHOTS` and a watcher there answers with `<name>.png`.
-    /// Without the folder there's nothing to take it, and the step goes on.
-    private static func snap(_ name: String) async throws {
-        guard let folder = ProcessInfo.processInfo.environment["VINNYFIN_SHOTS"] else { return }
-        try await Task.sleep(for: .seconds(1))
-        let request = URL(filePath: folder).appending(path: name + ".request")
-        try Data().write(to: request)
-        let deadline = Date.now.addingTimeInterval(15)
-        while FileManager.default.fileExists(atPath: request.path), Date.now < deadline {
-            try await Task.sleep(for: .seconds(0.3))
-        }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: request.path), "No screenshot was taken for \(name)")
     }
 }
 #endif

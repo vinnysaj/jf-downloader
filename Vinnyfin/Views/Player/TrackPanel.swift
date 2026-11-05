@@ -29,6 +29,8 @@ enum PlayerPanel: Identifiable {
 struct TrackPanel: View {
     let model: PlayerModel
     let panel: PlayerPanel
+    /// The height there's room for. The panel is as tall as its rows, up to that or its own limit.
+    let room: CGFloat
     let onClose: () -> Void
 
     private struct Row: Identifiable {
@@ -131,7 +133,7 @@ struct TrackPanel: View {
             .scrollBounceBehavior(.basedOnSize)
         }
         .frame(width: Self.width)
-        .frame(maxHeight: 440)
+        .frame(maxHeight: min(440, room))
         .fixedSize(horizontal: false, vertical: true)
         .platformGlass(in: .rect(cornerRadius: 24))
         #if os(tvOS)

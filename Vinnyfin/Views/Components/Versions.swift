@@ -211,8 +211,9 @@ struct JobStatusLine: View {
         }
     }
 
+    /// On one line however the status wraps: split, the number and its unit read as two things.
     private static func speed(_ bytesPerSecond: Int64) -> String {
-        "\(bytesPerSecond.formatted(.byteCount(style: .file)))/s"
+        "\(bytesPerSecond.formatted(.byteCount(style: .file)))/s".replacingOccurrences(of: " ", with: "\u{00A0}")
     }
 }
 

@@ -32,7 +32,7 @@ struct Slot {
         case "iPhone 6.9-inch": CGSize(width: 1320, height: 2868)
         case "iPhone 6.3-inch": CGSize(width: 1206, height: 2622)
         case "iPad 13-inch": CGSize(width: 2752, height: 2064)
-        case "Apple TV": CGSize(width: 3840, height: 2160)
+        case "Apple TV", "Apple Vision Pro": CGSize(width: 3840, height: 2160)
         case "Mac": CGSize(width: 2880, height: 1800)
         // iPhone Duo takes both displays, upright or sideways: 1398×2034 outer, 2007×2853 inner.
         default:
@@ -50,6 +50,7 @@ let slots = [
     Slot(raw: "iPhone Duo inner", folder: "iPhone Duo", prefix: "inner", landscape: true, cornerRadius: 0.035, set: "duo"),
     Slot(raw: "iPhone Duo half open", folder: "iPhone Duo", prefix: "half-open", cornerRadius: 0.05, set: "duo"),
     Slot(raw: "Apple TV", folder: "Apple TV", landscape: true, cornerRadius: 0.012, set: "tv"),
+    Slot(raw: "Apple Vision Pro", folder: "Apple Vision Pro", landscape: true, cornerRadius: 0.012, set: "vision"),
     Slot(raw: "Mac", folder: "Mac", landscape: true, cornerRadius: 0, set: "mac"),
 ]
 
@@ -64,16 +65,20 @@ let captions: [String: Caption] = [
     "02-show": Caption(title: "Every season, every episode", detail: "Pick up right where you left off."),
     "03-movie": Caption(title: "Choose your version", detail: "4K or 1080p, it's up to you."),
     "03-movies": Caption(title: "Your whole collection", detail: "Every film on your server, sorted how you like."),
-    "04-downloads": Caption(title: "Downloads that keep going", detail: "Even with your phone asleep in your pocket."),
-    "05-downloads": Caption(title: "Downloads that keep going", detail: "Even with your iPad asleep in your bag."),
+    "04-downloads": Caption(title: "Downloads that keep going", detail: "Whole seasons, even with your phone asleep in your pocket."),
+    "05-downloads": Caption(title: "Downloads that keep going", detail: "Whole seasons, even with your iPad asleep in your bag."),
     "05-search": Caption(title: "Find it in a moment", detail: "Search every movie, show and episode."),
-    "03-player": Caption(title: "Plays almost anything", detail: "4K, HDR and lossless audio, straight from your server."),
-    "04-player": Caption(title: "Plays almost anything", detail: "4K, HDR and lossless audio, straight from your server."),
+    "06-remote": Caption(title: "Your iPhone is the remote", detail: "Send a film to your Apple TV, then pause and scrub from here."),
+    "03-player": Caption(title: "Plays almost anything", detail: "4K, HDR and lossless audio, with every chapter a tap away."),
+    "04-player": Caption(title: "Plays almost anything", detail: "4K, HDR and lossless audio, with every chapter a tap away."),
     "iPhone Duo outer/01-home": Caption(title: "Folded, it's all there", detail: "The whole library on the outer display."),
-    "iPhone Duo outer/02-show": Caption(title: "Every episode, one hand", detail: "Pick up right where you left off."),
+    "iPhone Duo outer/02-show": Caption(title: "Every episode, folded", detail: "Pick up right where you left off."),
     "iPhone Duo inner/01-home": Caption(title: "Open up to more", detail: "The inner display, edge to edge."),
     "iPhone Duo half open/01-player": Caption(title: "Made for iPhone Duo", detail: "Half open, the picture sits above the fold and your episodes below."),
     "Apple TV/01-home": Caption(title: "Made for the big screen", detail: "Your Jellyfin library, front and center."),
+    "Apple TV/04-player": Caption(title: "Plays almost anything", detail: "See where you're going as you scrub, chapter by chapter."),
+    "Apple Vision Pro/01-home": Caption(title: "Made for Apple Vision Pro", detail: "Your Jellyfin library, right in your room."),
+    "Apple Vision Pro/03-player": Caption(title: "A screen as big as you like", detail: "The picture in a window of its own, the controls on glass below."),
     "Mac/01-home": Caption(title: "At home on your Mac", detail: "Your Jellyfin library, in a window of its own."),
 ]
 
@@ -89,9 +94,16 @@ func color(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat =
 let brandTop = color(0.13, 0.16, 0.52)
 let brandBottom = color(0.60, 0.20, 0.86)
 
+/// The image at `url`, upright: a capture of a screen held sideways keeps the screen's own
+/// orientation and says how to turn it.
 func image(at url: URL) -> CGImage? {
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-    return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? Int,
+          let height = properties[kCGImagePropertyPixelHeight] as? Int else { return nil }
+    let upright = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                   kCGImageSourceThumbnailMaxPixelSize: max(width, height)] as CFDictionary
+    return CGImageSourceCreateThumbnailAtIndex(source, 0, upright)
 }
 
 /// An opaque Display P3 canvas with a top-left origin, written without alpha as a JPEG or a

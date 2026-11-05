@@ -18,7 +18,7 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            EdgeToEdgeScrollView {
+            EdgeToEdgeScrollView(underTopBars: !feed.featured.isEmpty) {
                 LazyVStack(alignment: .leading, spacing: 34) {
                     if !feed.featured.isEmpty {
                         HeroBanner(items: feed.featured) { path.append($0) }
@@ -34,7 +34,6 @@ struct HomeView: View {
                 }
                 .padding(.bottom, Metrics.edge)
             }
-            .ignoresSafeArea(edges: feed.featured.isEmpty ? [] : .top)
             // The page color the hero artwork fades into.
             .background(Color.pageBackground.ignoresSafeArea())
             .screenTitle("Home")
@@ -180,7 +179,8 @@ private struct HomeRowView: View {
     }
 }
 
-/// The featured titles, one at a time across the top, turning every few seconds.
+/// The featured titles, one at a time across the top, turning every few seconds. It holds still
+/// while one of its buttons has focus, so the title they act on doesn't change under them.
 private struct HeroBanner: View {
     let items: [JellyfinItem]
     let openDetails: (JellyfinItem) -> Void
@@ -190,6 +190,11 @@ private struct HeroBanner: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var index = 0
     @State private var isInteracting = false
+    @FocusState private var focusedButton: HeroButton?
+
+    private enum HeroButton {
+        case play, details
+    }
 
     var body: some View {
         let item = items[min(index, items.count - 1)]
@@ -230,6 +235,7 @@ private struct HeroBanner: View {
                             Label(item.resumeSeconds != nil ? "Resume" : "Play", systemImage: "play.fill")
                         }
                         .buttonStyle(.platformGlassProminent)
+                        .focused($focusedButton, equals: .play)
                     }
                     Button {
                         openDetails(item)
@@ -237,6 +243,7 @@ private struct HeroBanner: View {
                         Label("Details", systemImage: "info.circle")
                     }
                     .buttonStyle(.platformGlass)
+                    .focused($focusedButton, equals: .details)
                 }
                 .controlSize(.large)
                 if items.count > 1 {
@@ -270,7 +277,7 @@ private struct HeroBanner: View {
         .task(id: items.map(\.id)) {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(8))
-                if !isInteracting, !Task.isCancelled { index = (index + 1) % max(1, items.count) }
+                if !isInteracting, focusedButton == nil, !Task.isCancelled { index = (index + 1) % max(1, items.count) }
             }
         }
         .accessibilityElement(children: .contain)

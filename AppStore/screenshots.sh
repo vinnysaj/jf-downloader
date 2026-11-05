@@ -7,7 +7,7 @@
 # titles drawn by Showcase.swift, so nothing on screen belongs to anyone else. The simulators are
 # its own, created on first use, with the status bar at 9:41 and full signal and battery.
 #
-# Usage: AppStore/screenshots.sh [iphone] [ipad] [duo] [tv] [mac] [marketing]   (default: all)
+# Usage: AppStore/screenshots.sh [iphone] [ipad] [duo] [tv] [vision] [mac] [marketing]   (default: all)
 # Needs Xcode, Docker (Colima works), ffmpeg, and agent-device to fold the iPhone Duo.
 set -euo pipefail
 
@@ -17,10 +17,8 @@ output="$here/Output"
 server="$output/Server"
 raw="$output/Raw"
 build="$output/Build"
-port=8099
-address="http://localhost:$port"
 sets=("$@")
-[ ${#sets[@]} -gt 0 ] || sets=(iphone ipad duo tv mac marketing)
+[ ${#sets[@]} -gt 0 ] || sets=(iphone ipad duo tv vision mac marketing)
 
 wants() { [[ " ${sets[*]} " == *" $1 "* ]]; }
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -37,15 +35,29 @@ docker info >/dev/null 2>&1 || fail "Docker isn't running (with Colima: colima s
 say "Drawing the showcase library"
 swift "$here/Showcase.swift" "$server/media"
 
-say "Starting the showcase server at $address"
+json() { python3 -c "import sys, json; print($1)"; }
+
+say "Starting the showcase server"
 mkdir -p "$server/config" "$server/cache"
-if ! docker container inspect vinnyfin-showcase >/dev/null 2>&1; then
-  docker run -d --name vinnyfin-showcase -p "$port:8096" \
-    -v "$server/config:/config" -v "$server/cache:/cache" -v "$server/media:/media:ro" \
-    jellyfin/jellyfin:latest >/dev/null
-elif [ "$(docker container inspect -f '{{.State.Running}}' vinnyfin-showcase)" != true ]; then
-  docker start vinnyfin-showcase >/dev/null
+# The server is whichever container serves this checkout's Server folder, so another checkout's,
+# with the library it drew, is never used. A new one goes on a port Docker picks.
+container=""
+containers=$(docker ps -aq)
+if [ -n "$containers" ]; then
+  # shellcheck disable=SC2086 # One argument per container.
+  container=$(docker container inspect $containers |
+    json "next((c['Id'] for c in json.load(sys.stdin) if any(m['Source'] == '$server/config' for m in c['Mounts'])), '')")
 fi
+if [ -z "$container" ]; then
+  container=$(docker run -d --name "vinnyfin-showcase-$(basename "$root")" -p 127.0.0.1::8096 \
+    -v "$server/config:/config" -v "$server/cache:/cache" -v "$server/media:/media:ro" \
+    jellyfin/jellyfin:latest)
+elif [ "$(docker container inspect -f '{{.State.Running}}' "$container")" != true ]; then
+  docker start "$container" >/dev/null
+fi
+published=$(docker port "$container" 8096/tcp | head -1)
+address="http://localhost:${published##*:}"
+echo "$(docker container inspect -f '{{.Name}}' "$container" | tr -d /) at $address"
 # While starting, Jellyfin answers with a loading page instead of the JSON.
 until curl -sf "$address/System/Info/Public" | grep -q StartupWizardCompleted; do sleep 2; done
 
@@ -54,7 +66,6 @@ api() { # method, path, [json body]
   curl -sf -X "$1" -H "Content-Type: application/json" -H "Authorization: $client${token:+, Token=\"$token\"}" \
     "$address$2" -d "${3:-{\}}"
 }
-json() { python3 -c "import sys, json; print($1)"; }
 token=""
 if curl -sf "$address/System/Info/Public" | grep -q '"StartupWizardCompleted":false'; then
   api POST /Startup/Configuration '{"UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}' >/dev/null
@@ -64,19 +75,37 @@ if curl -sf "$address/System/Info/Public" | grep -q '"StartupWizardCompleted":fa
 fi
 token=$(api POST /Users/AuthenticateByName '{"Username":"showcase","Pw":"showcase"}' | json 'json.load(sys.stdin)["AccessToken"]')
 if ! api GET /Library/VirtualFolders | grep -q '"Name":"Movies"'; then
-  # The NFOs lock the metadata against online lookups; nothing else needs extracting.
-  options='{"LibraryOptions":{"EnableRealtimeMonitor":false,"EnableTrickplayImageExtraction":false,"ExtractTrickplayImagesDuringLibraryScan":false,"EnableChapterImageExtraction":false,"ExtractChapterImagesDuringLibraryScan":false}}'
-  api POST "/Library/VirtualFolders?name=Movies&collectionType=movies&paths=%2Fmedia%2Fmovies&refreshLibrary=false" "$options" >/dev/null
-  api POST "/Library/VirtualFolders?name=Shows&collectionType=tvshows&paths=%2Fmedia%2Ftv&refreshLibrary=false" "$options" >/dev/null
+  api POST "/Library/VirtualFolders?name=Movies&collectionType=movies&paths=%2Fmedia%2Fmovies&refreshLibrary=false" >/dev/null
+  api POST "/Library/VirtualFolders?name=Shows&collectionType=tvshows&paths=%2Fmedia%2Ftv&refreshLibrary=false" >/dev/null
   # The one the app signs in as: no password, so no Save Password sheet.
   api POST /Users/New '{"Name":"Alex","Password":""}' >/dev/null
 fi
-api POST /Library/Refresh >/dev/null
-scan_idle() {
-  api GET /ScheduledTasks | json '"".join(t["State"] for t in json.load(sys.stdin) if t["Key"] == "RefreshLibrary")'
+# Sets these of a library's options on every run, so a server set up before them has them too.
+library_options() { # library name, options as JSON
+  local update
+  update=$(api GET /Library/VirtualFolders | python3 -c '
+import json, sys
+name, changes = sys.argv[1], json.loads(sys.argv[2])
+library = next(library for library in json.load(sys.stdin) if library["Name"] == name)
+print(json.dumps({"Id": library["ItemId"], "LibraryOptions": {**library["LibraryOptions"], **changes}}))' "$1" "$2")
+  api POST /Library/VirtualFolders/LibraryOptions "$update" >/dev/null
 }
-sleep 2
-until [ "$(scan_idle)" = Idle ]; do sleep 2; done
+# The NFOs lock the metadata against online lookups. The player's scrub previews and chapter
+# pictures are drawn from the films, which the player shots show; nothing else needs extracting.
+library_options Movies '{"EnableRealtimeMonitor":false,"EnableTrickplayImageExtraction":true,"ExtractTrickplayImagesDuringLibraryScan":false,"EnableChapterImageExtraction":true,"ExtractChapterImagesDuringLibraryScan":true}'
+library_options Shows '{"EnableRealtimeMonitor":false,"EnableTrickplayImageExtraction":false,"ExtractTrickplayImagesDuringLibraryScan":false,"EnableChapterImageExtraction":false,"ExtractChapterImagesDuringLibraryScan":false}'
+task_state() { # task key
+  api GET /ScheduledTasks | json "''.join(t['State'] for t in json.load(sys.stdin) if t['Key'] == '$1')"
+}
+# Runs one of the server's scheduled tasks now, and waits for it to finish.
+run_task() { # task key
+  api POST "/ScheduledTasks/Running/$(api GET /ScheduledTasks | json "next(t['Id'] for t in json.load(sys.stdin) if t['Key'] == '$1')")" >/dev/null
+  sleep 2
+  until [ "$(task_state "$1")" = Idle ]; do sleep 2; done
+}
+run_task RefreshLibrary
+# The scan makes chapter pictures but leaves scrub previews to a task of their own.
+run_task RefreshTrickplayImages
 count=$(api GET "/Items?recursive=true&includeItemTypes=Movie,Episode" | json 'json.load(sys.stdin)["TotalRecordCount"]')
 echo "Library scanned: $count movies and episodes"
 
@@ -91,12 +120,13 @@ simulator() {
   echo "$udid"
 }
 
-# A fresh install, dark, with the status bar Apple shows in its own marketing (Apple TV has none).
+# A fresh install, dark, with the status bar Apple shows in its own marketing (Apple TV and
+# Vision Pro have none). Apple TV is dark from the start, and simctl can't set its appearance.
 prepare() {
   local udid=$1 kind=${2:-phone}
-  xcrun simctl ui "$udid" appearance dark
+  [ "$kind" = tv ] || xcrun simctl ui "$udid" appearance dark
   xcrun simctl uninstall "$udid" net.vinnysaj.vinnyfin
-  [ "$kind" = tv ] && return
+  [ "$kind" = phone ] || return 0
   xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
     --cellularMode active --cellularBars 4 --operatorName "" --batteryState discharging --batteryLevel 100
 }
@@ -112,17 +142,42 @@ build_for() {
   built+=("$platform")
 }
 
-# Runs one screenshot test and saves its attachments as Raw/<folder>/<name>.png.
+# Answers a test's requests for screenshots, each a <name>.request in `folder`, with <name>.png.
+answer_requests() { # simulator, folder
+  local request
+  while true; do
+    for request in "$2"/*.request; do
+      [ -e "$request" ] || continue
+      xcrun simctl io "$1" screenshot "${request%.request}.png" >/dev/null && rm "$request"
+    done
+    sleep 0.3
+  done
+}
+
+# Runs one screenshot test and saves its attachments as Raw/<folder>/<name>.png. A test on
+# Vision Pro, whose own screenshots come back empty, asks for them instead; the simulator given
+# as `answering` takes them.
 shoot() {
-  local folder=$1 test=$2 destination=$3 results="$output/Results/$1.xcresult"
+  local folder=$1 test=$2 destination=$3 answering=${4:-} results="$output/Results/$1.xcresult" answerer=""
   say "Shooting $folder"
-  rm -rf "$results" "$raw/$folder" "$output/Results/$folder"
+  rm -rf "$results" "${raw:?}/$folder" "$output/Results/$folder"
   mkdir -p "$raw/$folder" "$output/Results"
+  if [ -n "$answering" ]; then
+    answer_requests "$answering" "$raw/$folder" &
+    answerer=$!
+  fi
   # xcodebuild hands the test runner its TEST_RUNNER_ variables, without the prefix.
-  TEST_RUNNER_VINNYFIN_SCREENSHOT_SERVER="$address" \
+  local status=0
+  TEST_RUNNER_VINNYFIN_SCREENSHOT_SERVER="$address" TEST_RUNNER_VINNYFIN_SHOTS="$raw/$folder" \
     xcodebuild test-without-building -project "$root/Vinnyfin.xcodeproj" -scheme Vinnyfin -destination "$destination" \
     -derivedDataPath "$build" -resultBundlePath "$results" -only-testing:"VinnyfinUITests/ScreenshotTests/$test" -quiet \
-    || fail "The $test screenshots failed; the run is in $results"
+    || status=$?
+  if [ -n "$answerer" ]; then
+    kill "$answerer"
+    # Reaped here, so the shell doesn't report the job it stopped as terminated.
+    wait "$answerer" 2>/dev/null || true
+  fi
+  [ "$status" = 0 ] || fail "The $test screenshots failed; the run is in $results"
   xcrun xcresulttool export attachments --path "$results" --output-path "$output/Results/$folder" >/dev/null
   python3 - "$output/Results/$folder" "$raw/$folder" <<'PY'
 import json, re, shutil, sys
@@ -158,29 +213,39 @@ if wants duo; then
   build_for iOS "id=$duo"
   # Its own agent-device session, so one bound to another simulator doesn't get in the way.
   agent-device open --session vinnyfin-screenshots --platform ios --udid "$duo" >/dev/null
+  # Closed however the run ends: a session left open stops the next run opening it.
+  trap 'agent-device close --session vinnyfin-screenshots >/dev/null' EXIT
   # A just-booted Duo can take a while to report its hinge angle, which the fold is checked by.
   fold() {
-    local attempt
-    for attempt in 1 2 3 4 5; do
+    for _ in 1 2 3 4 5; do
       agent-device fold "$1" --session vinnyfin-screenshots >/dev/null 2>&1 && return
       sleep 5
     done
     agent-device fold "$1" --session vinnyfin-screenshots >/dev/null
   }
+  # Each pose from a fresh install, signed in just before its shots like every other device's:
+  # the home's hero turns to its next title a few seconds after it shows.
   fold closed
   shoot "iPhone Duo outer" testDuoOuter "id=$duo"
   fold open
+  prepare "$duo"
   shoot "iPhone Duo inner" testDuoInner "id=$duo"
   fold half-open
+  prepare "$duo"
   shoot "iPhone Duo half open" testDuoLaptop "id=$duo"
   fold open
-  agent-device close --session vinnyfin-screenshots >/dev/null
 fi
 if wants tv; then
   tv=$(simulator "Apple TV 4K (4th generation)")
   prepare "$tv" tv
   build_for tvOS "id=$tv"
   shoot "Apple TV" testTV "id=$tv"
+fi
+if wants vision; then
+  vision=$(simulator "Apple Vision Pro")
+  prepare "$vision" vision
+  build_for visionOS "id=$vision"
+  shoot "Apple Vision Pro" testVision "id=$vision" "$vision"
 fi
 if wants mac; then
   if automationmodetool | grep -q "requires user authentication"; then

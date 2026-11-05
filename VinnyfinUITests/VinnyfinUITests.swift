@@ -26,10 +26,16 @@ final class VinnyfinUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchSignedIn() -> XCUIApplication {
+    private func launchSignedIn() throws -> XCUIApplication {
         let app = XCUIApplication()
+        #if os(visionOS)
+        app.launchArguments = try signInArguments(server: server, username: "viewer")
+        app.launch()
+        signInIfNeeded(app)
+        #else
         app.launch()
         signInIfNeeded(app, server: server, username: "viewer")
+        #endif
         return app
     }
 
@@ -96,7 +102,7 @@ final class VinnyfinUITests: XCTestCase {
     @MainActor
     func testBrowseAndPlayAVersion() async throws {
         try await requireServer()
-        let app = launchSignedIn()
+        let app = try launchSignedIn()
         tap(app.buttons["Movies"].firstMatch)
 
         // The index jumps past everything before B.
@@ -136,7 +142,7 @@ final class VinnyfinUITests: XCTestCase {
         try await requireServer()
         // Three episodes ahead needs three unwatched ones.
         try await markEveryEpisodeUnwatched(of: "Test Show")
-        let app = launchSignedIn()
+        let app = try launchSignedIn()
         tap(app.buttons["Shows"].firstMatch)
         tap(app.buttons["poster.Test Show"])
         tap(app.descendants(matching: .any)["series.smartDownload"].firstMatch)

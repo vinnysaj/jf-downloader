@@ -50,7 +50,7 @@ struct SeriesView: View {
     private var shown: JellyfinItem { detail ?? series }
 
     var body: some View {
-        EdgeToEdgeScrollView {
+        EdgeToEdgeScrollView(underTopBars: true) {
             VStack(alignment: .leading, spacing: 24) {
                 DetailHero(item: shown) { actions }
                 VStack(alignment: .leading, spacing: 24) {
@@ -83,7 +83,6 @@ struct SeriesView: View {
             }
         }
         #endif
-        .ignoresSafeArea(edges: .top)
         // The page color the hero artwork fades into.
         .background(Color.pageBackground.ignoresSafeArea())
         .screenTitle(series.name)
@@ -148,6 +147,8 @@ struct SeriesView: View {
             }
             .buttonStyle(.platformGlassProminent)
             .controlSize(.large)
+            // Its title on one line: the row's other buttons would otherwise take width it needs.
+            .fixedSize(horizontal: true, vertical: false)
             .accessibilityIdentifier("series.play")
             #if os(tvOS)
             .focused($focusedAction, equals: .play)
@@ -196,7 +197,13 @@ struct SeriesView: View {
                 .accessibilityIdentifier("series.downloadSeries")
             }
         } label: {
-            Label(rule == nil ? "Download" : "Smart Download On", systemImage: rule == nil ? "arrow.down.circle" : "sparkles.rectangle.stack.fill")
+            let title = rule == nil ? "Download" : "Smart Download On"
+            let symbol = rule == nil ? "arrow.down.circle" : "sparkles.rectangle.stack.fill"
+            // Just the symbol in a row too narrow for the title, as on iPhone Duo's outer display.
+            ViewThatFits(in: .horizontal) {
+                Label(title, systemImage: symbol)
+                Label(title, systemImage: symbol).labelStyle(.iconOnly)
+            }
         }
         .buttonStyle(.platformGlass)
         .controlSize(.large)
@@ -404,7 +411,9 @@ private struct SeasonChipStyle: ButtonStyle {
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .foregroundStyle(isSelected ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
+            // Chosen, the page's color on the text's: the background style is light glass on
+            // Vision Pro, as light as the chip.
+            .foregroundStyle(isSelected ? AnyShapeStyle(Color.pageBackground) : AnyShapeStyle(.primary))
             .background(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(.quaternary), in: .capsule)
             #if os(tvOS)
             .scaleEffect(isFocused ? 1.12 : 1)
