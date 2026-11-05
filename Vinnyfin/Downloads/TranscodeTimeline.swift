@@ -37,8 +37,9 @@ nonisolated struct TranscodeTimeline: Equatable, Sendable {
         /// It starts earlier, at a clean cut of the file's pictures, with keyframe and audio to
         /// take over there: a restarted transcode's.
         case joins
-        /// It starts before the file ends but not at a clean cut of it: the next piece of its run
-        /// may take over.
+        /// It starts before the file ends but not at a clean cut of it: a later piece of its run
+        /// may take over. A remuxed run's pieces start at source keyframes, so one can; an encoded
+        /// run's start on its own 3 s grid, each as far off the file's cuts as its first.
         case early
         /// It starts after the file ends, in its pictures or its audio, or without a keyframe:
         /// something would be lost between them.
@@ -59,10 +60,11 @@ nonisolated struct TranscodeTimeline: Equatable, Sendable {
     static let cutsKept: TimeInterval = 120
 
     /// How far before the latest clean cut each attempt at a restart aims, one after another.
-    /// An MKV or MP4 source lands where it's asked, so the first does. MPEG-TS and M2TS land on a
-    /// source keyframe, usually after the cut and so past the file's end; aimed further back,
-    /// the new run lands within the file, and its first piece, or one of the next, starts at a
-    /// clean cut of it (about a third of frame times are one).
+    /// An MKV or MP4 source lands where it's asked, so the first does. MPEG-TS and M2TS land on
+    /// the first source keyframe at or after it (Jellyfin 12.4 lands on the frame asked for only
+    /// within a frame or two after one), usually past the file's end; aimed further back, the
+    /// new run lands within the file, and takes over when that keyframe is one of the file's
+    /// clean cuts, in an encoded transcode one frame time in five.
     static let searchBack: [TimeInterval] = [0, 10, 20, 40, 80]
 
     var video: Track { tracks[videoTrack] ?? Track(timescale: 1, end: 0, sampleDuration: 1) }

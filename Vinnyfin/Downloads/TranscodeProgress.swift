@@ -293,8 +293,9 @@ nonisolated enum SegmentPlanner {
                        limit: Int? = nil) -> Window {
         let bound = end ?? Int.max
         func missing(through last: Int) -> [Int] {
-            guard last >= next else { return [] }
-            return (next...min(last, bound - 1)).filter { !collected.contains($0) && !claimed.contains($0) }
+            let upper = min(last, bound - 1)
+            guard upper >= next else { return [] }
+            return (next...upper).filter { !collected.contains($0) && !claimed.contains($0) }
         }
         let mending = mends.filter { !collected.contains($0) && !claimed.contains($0) }.sorted()
         guard let firstOutstanding = mends.filter({ !collected.contains($0) }).min()

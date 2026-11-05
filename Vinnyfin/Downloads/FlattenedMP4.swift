@@ -213,15 +213,21 @@ nonisolated enum FlattenedMP4 {
         }
 
         /// Adds a run's samples. For a track other than the pictures, with the file's samples of it
-        /// ending at `end`, the run's samples that start before it, by more than `halfSample`, go:
-        /// a restarted transcode's audio that the file has already.
-        mutating func add(_ run: FragmentedMP4.Run, after end: Int64? = nil, halfSample: Int64 = 0) throws {
+        /// ending at `fileEnd`, the run's samples that start before it, by more than `halfSample`, go,
+        /// and so do any that start no later than the file's last: a restarted transcode's audio
+        /// that the file has already. A run the server stopped can end on a sample it cut short,
+        /// which the next run has whole at the same time: the file reaches as far as that one.
+        mutating func add(_ run: FragmentedMP4.Run, after fileEnd: Int64? = nil, halfSample: Int64 = 0) throws {
             var time = run.decodeTime
             var offset = run.dataOffset
             var count = 0
+            var end = fileEnd
+            let fileLast = fileEnd == nil ? nil : decodeTimes.last
             for sample in run.samples {
                 let shown = time + Int64(sample.compositionOffset) - presentationOffset
-                if let end, shown < end - halfSample {
+                let isFiles = fileLast.map { time <= $0 } ?? false
+                if isFiles { end = max(end ?? 0, shown + Int64(sample.duration)) }
+                if let end, isFiles || shown < end - halfSample {
                     time += Int64(sample.duration)
                     offset += Int(sample.size)
                     continue

@@ -243,6 +243,8 @@ struct SegmentPlannerTests {
         #expect(window(.ended, next: 140, end: 140, mends: [7], collected: Array(0..<7) + Array(8..<140)) ==
             SegmentPlanner.Window(segments: [7], isProbe: true))
         #expect(window(.running(position: 30), next: 140, end: 140, mends: [7, 3], collected: [0], serverPiece: 10).segments == [3, 7])
+        // From the pieces the server kept, with the whole file in.
+        #expect(window(.ended, next: 139, end: 139, mends: [32], collected: Array(0..<32) + Array(33..<139), isHeld: true).segments == [32])
     }
 
     @Test func takesBackPiecesThatWouldMoveTheTranscode() {
@@ -1514,6 +1516,21 @@ struct FlattenedMP4Tests {
         // Audio to frame 32 from the first run, then from 32 on from the second.
         #expect(fields(try box(videoTable + ["stsz"], in: data, track: 1), in: data) == [10, 37])
         #expect(fields(try box(videoTable + ["stts"], in: data, track: 1), in: data) == [1, 37, 2002])
+    }
+
+    /// A run the server stopped can end on an audio sample it cut short; the next run has it
+    /// whole at the same time, and it's left out of that run rather than put twice.
+    @Test func leavesOutTheAudioSampleARunCutShort() throws {
+        var first = Film.sound(from: 0, count: 32)
+        first.samples[31].duration = 700
+        let pieces = [MP4.piece([Film.pictures(from: 0, count: 32), first]),
+                      MP4.piece([Film.pictures(from: 29, count: 8, reordered: false), Film.sound(from: 28, count: 9)])]
+        let (data, _, _) = try flatten(pieces, header: Film.header)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let table = ["moov", "trak", "mdia", "minf", "stbl"]
+        #expect(fields(try box(table + ["stsz"], in: data, track: 1), in: data) == [10, 37])
+        // The short one plays to the next, as long as a whole one.
+        #expect(fields(try box(table + ["stts"], in: data, track: 1), in: data) == [1, 37, 2002])
     }
 
     /// Anything else that doesn't follow on names the piece, in pictures or in audio, rather
