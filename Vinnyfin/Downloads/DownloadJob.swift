@@ -78,19 +78,33 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     /// Where the finished file is, relative to Documents.
     var savedPath: String?
     var completedAt: Date?
+    /// A download the server transcodes, and how far it has got; nil for a version as it is.
+    var transcode: TranscodeState?
 
     init(item: JellyfinItem, source: MediaSource, now: Date = .now) {
+        self.init(item: item, plan: .original(source), now: now)
+    }
+
+    init(item: JellyfinItem, plan: DownloadPlan, now: Date = .now) {
+        let source = plan.source
         id = UUID()
         itemId = item.id
         mediaSourceId = source.id
         title = item.titleWithYear
         subtitle = item.isEpisode ? [item.seriesName, item.episodeCode].compactMap(\.self).joined(separator: " · ") : nil
-        versionName = source.name ?? "Default"
         destinationStem = Self.destinationStem(for: item)
-        fileExtension = source.fileExtension
-        sizeHint = source.plausibleSize
         createdAt = now
         self.item = Self.snapshot(of: item, keeping: source)
+        if let request = plan.transcode {
+            versionName = request.label
+            fileExtension = "mp4"
+            sizeHint = request.estimatedBytes
+            transcode = TranscodeState(request: request)
+        } else {
+            versionName = source.name ?? "Default"
+            fileExtension = source.fileExtension
+            sizeHint = source.plausibleSize
+        }
     }
 
     /// The item the downloaded version is, whose segments and chapters are its own (see
@@ -117,14 +131,26 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
         return [series, item?.episodeCode].compactMap(\.self).joined(separator: " ")
     }
 
-    var displayTotalBytes: Int64? { totalBytes ?? sizeHint }
+    var displayTotalBytes: Int64? { totalBytes ?? transcode?.expectedBytes ?? sizeHint }
+
+    /// The bytes of the file on disk so far: its partial file, and a transcode's pieces beside it.
+    var bytesOnDisk: Int64 { transcode?.bytes ?? completed.byteCount }
 
     /// The file and its extras, as far as they're known.
     var storedBytes: Int64 { (totalBytes ?? 0) + (extrasBytes ?? 0) }
 
+    /// Every byte is in; for a transcode, in one file that checked out (`TranscodeVerifier`).
     var isTransferComplete: Bool {
+        if let transcode { return transcode.isVerified }
         guard let totalBytes else { return false }
         return completed.covers(0..<totalBytes)
+    }
+
+    /// Whether what the transfer asks for is in already.
+    func isDelivered(_ tag: TransferTag) -> Bool {
+        if let segment = tag.segment { return transcode?.collected.contains(segment) ?? true }
+        guard let range = tag.range else { return isTransferComplete }
+        return completed.covers(range)
     }
 
     // MARK: Naming

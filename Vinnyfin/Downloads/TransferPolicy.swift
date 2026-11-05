@@ -7,10 +7,19 @@ nonisolated struct TransferTag: Hashable, Sendable {
     let jobId: UUID
     /// The bytes asked for; nil for a whole-file request without a Range header.
     let range: Range<Int64>?
+    /// The piece of a transcoded download asked for, whole (`TranscodedDownloads`).
+    let segment: Int?
 
     init(jobId: UUID, range: Range<Int64>?) {
         self.jobId = jobId
         self.range = range
+        segment = nil
+    }
+
+    init(jobId: UUID, segment: Int) {
+        self.jobId = jobId
+        range = nil
+        self.segment = segment
     }
 
     init?(encoded: String?) {
@@ -19,6 +28,9 @@ nonisolated struct TransferTag: Hashable, Sendable {
         switch parts.count {
         case 1:
             self.init(jobId: jobId, range: nil)
+        case 2:
+            guard parts[1].hasPrefix("s"), let segment = Int(parts[1].dropFirst()), segment >= 0 else { return nil }
+            self.init(jobId: jobId, segment: segment)
         case 3:
             guard let lower = Int64(parts[1]), let upper = Int64(parts[2]), lower < upper else { return nil }
             self.init(jobId: jobId, range: lower..<upper)
@@ -28,18 +40,24 @@ nonisolated struct TransferTag: Hashable, Sendable {
     }
 
     var encoded: String {
+        if let segment { return "\(jobId.uuidString) s\(segment)" }
         guard let range else { return jobId.uuidString }
         return "\(jobId.uuidString) \(range.lowerBound) \(range.upperBound)"
     }
+
+    /// A request for the whole file, without a Range header: what its resume data carries on is all it has.
+    var isWholeFile: Bool { range == nil && segment == nil }
 
     /// The Range header value; HTTP ranges are inclusive.
     var rangeHeader: String? {
         range.map { "bytes=\($0.lowerBound)-\($0.upperBound - 1)" }
     }
 
-    /// Whether the two ask for some of the same bytes. A whole-file request asks for them all.
+    /// Whether the two ask for some of the same bytes. A whole-file request asks for them all;
+    /// a piece of a transcode is its own.
     func overlaps(_ other: TransferTag) -> Bool {
         guard other.jobId == jobId else { return false }
+        if segment != nil || other.segment != nil { return segment == other.segment }
         guard let range, let otherRange = other.range else { return true }
         return range.overlaps(otherRange)
     }
@@ -221,17 +239,17 @@ nonisolated extension DownloadJob {
     /// recorded as done (`DownloadStorage.releaseUnrecorded`), so these are what the device holds.
     static func bytesSoFar(_ jobs: [DownloadJob], held: [(jobId: UUID, bytes: Int64)]) -> [UUID: Int64] {
         var bytes: [UUID: Int64] = [:]
-        for job in jobs where job.status != .completed { bytes[job.id] = job.completed.byteCount }
+        for job in jobs where job.status != .completed { bytes[job.id] = job.bytesOnDisk }
         for (jobId, count) in held { bytes[jobId]? += count }
         return bytes
     }
 
-    /// Whether a one-byte probe has to come first: the server hasn't answered for this file.
-    /// Whether ranges work is a property of each file's stream, not of the server: Jellyfin
-    /// passes remote sources and .strm files through as they come, and a proxy or CDN can treat
-    /// paths differently. Chunks planned from the listed size would each fetch the whole file
-    /// from a stream that ignores Range.
-    var needsProbe: Bool { rangeSupport == .unknown }
+    /// Whether a one-byte probe has to come first: the server hasn't answered for this file, a
+    /// version as it is (a transcode comes in whole pieces). Whether ranges work is a property of
+    /// each file's stream, not of the server: Jellyfin passes remote sources and .strm files
+    /// through as they come, and a proxy or CDN can treat paths differently. Chunks planned from
+    /// the listed size would each fetch the whole file from a stream that ignores Range.
+    var needsProbe: Bool { transcode == nil && rangeSupport == .unknown }
 
     /// Its transfers have failed one after another, none coming through since.
     var isFailing: Bool { failingSince != nil }
@@ -290,10 +308,11 @@ nonisolated extension DownloadJob {
     /// once; a failing file's probe doesn't hold the others' back. In front, the files after the
     /// one in hand that need a probe get it in turn, so that all their chunks can go in the
     /// moment the app leaves the screen. Chunks are no bigger than `chunkLimit`, which room on
-    /// the device can set (`StorageBudget`).
+    /// the device can set (`StorageBudget`). A transcoded download's transfers are the pieces
+    /// `segmentWindows` gives it, planned as chunks are.
     static func plan(_ jobs: [DownloadJob], running: [TransferTag], finishing: Set<UUID> = [], held: Set<UUID> = [],
                      waitingForNetwork: Set<UUID> = [], onlyInHand: Set<UUID> = [], chunkLimit: Int64? = nil,
-                     budget: Int, queuingAhead: Bool, now: Date = .now) -> [TransferTag] {
+                     segmentWindows: [UUID: [Int]] = [:], budget: Int, queuingAhead: Bool, now: Date = .now) -> [TransferTag] {
         let notPlanned = queuingAhead ? held : held.union(waitingForNetwork)
         let inSession = sessionFiles(jobs, held: notPlanned, queuingAhead: queuingAhead, onlyInHand: onlyInHand, now: now)
         let hand = fileInHand(jobs, held: notPlanned)
@@ -307,10 +326,18 @@ nonisolated extension DownloadJob {
             let id = job.id
             let claimed = running.filter { $0.jobId == id }
             let mayProbe = !waitingForNetwork.contains(id)
+            /// Up to `limit` more transfers: a transcode's next pieces, or a file's next requests.
+            func next(_ limit: Int) -> [TransferTag] {
+                guard job.transcode != nil else {
+                    return job.nextRequests(running: claimed, limit: limit, chunkLimit: chunkLimit).map { TransferTag(jobId: id, range: $0) }
+                }
+                let window = (segmentWindows[id] ?? []).filter { segment in !claimed.contains { $0.segment == segment } }
+                return window.prefix(max(0, limit)).map { TransferTag(jobId: id, segment: $0) }
+            }
             /// A single transfer, while it has none.
             func single() -> [TransferTag] {
                 guard claimed.isEmpty, mayProbe || !job.needsProbe else { return [] }
-                return job.nextRequests(running: [], limit: 1, chunkLimit: chunkLimit).map { TransferTag(jobId: id, range: $0) }
+                return next(1)
             }
             if job.yields {
                 if inSession.contains(id) { tags += single() }
@@ -343,8 +370,7 @@ nonisolated extension DownloadJob {
                 continue
             }
             if !queuingAhead, !finishing.subtracting([id]).isEmpty { continue }
-            let limit = queuingAhead ? budget - tags.count : min(budget - tags.count, transfersInHand - claimed.count)
-            tags += job.nextRequests(running: claimed, limit: limit, chunkLimit: chunkLimit).map { TransferTag(jobId: id, range: $0) }
+            tags += next(queuingAhead ? budget - tags.count : min(budget - tags.count, transfersInHand - claimed.count))
         }
         return tags
     }
@@ -353,7 +379,7 @@ nonisolated extension DownloadJob {
     /// server has answered for the file, then byte ranges of `chunkSize`, or of `chunkLimit` when
     /// that's smaller, or nil for one whole-file request.
     func nextRequests(running: [TransferTag], limit: Int, chunkLimit: Int64? = nil) -> [Range<Int64>?] {
-        guard status == .active, limit > 0 else { return [] }
+        guard status == .active, transcode == nil, limit > 0 else { return [] }
         let size: Int64
         switch rangeSupport {
         case .unknown:
@@ -467,6 +493,7 @@ nonisolated extension DownloadJob {
     /// Back to the start, for a file that changed on the server.
     mutating func resetProgress() {
         resume()
+        transcode?.reset()
         rangeSupport = .unknown
         totalBytes = nil
         completed = ByteRanges()

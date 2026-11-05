@@ -3,8 +3,10 @@ import SwiftUI
 
 /// Picks a version for each selected episode, says how much space the versions picked take by
 /// the server's sizes, then queues them all.
-/// Each episode starts on the version closest to the download quality; choosing a version for
-/// one episode can carry the same release over to the rest.
+/// Each episode starts on what the download settings pick (`DownloadPlanner`): the version
+/// closest to the download quality, or a transcode to it when none fits and Transcode When No
+/// Version Fits is on. Choosing a version for one episode can carry the same release over to
+/// the rest.
 struct BatchDownloadSheet: View {
     let episodes: [JellyfinItem]
     let onQueued: () -> Void
@@ -14,7 +16,9 @@ struct BatchDownloadSheet: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(\.dismiss) private var dismiss
     @State private var details: [String: Result<JellyfinItem, LoadFailure>] = [:]
-    @State private var choices: [String: String] = [:]
+    @State private var plans: [String: DownloadPlan] = [:]
+    /// Why the account may not download what was picked.
+    @State private var refusal: String?
 
     struct LoadFailure: Error {
         let message: String
@@ -22,12 +26,10 @@ struct BatchDownloadSheet: View {
 
     private static let parallelLoads = 4
 
-    private var ready: [(JellyfinItem, MediaSource)] {
+    private var ready: [(JellyfinItem, DownloadPlan)] {
         episodes.compactMap { episode in
-            guard case .success(let detail) = details[episode.id],
-                  let source = detail.mediaSources?.first(where: { $0.id == choices[episode.id] })
-            else { return nil }
-            return (detail, source)
+            guard case .success(let detail) = details[episode.id], let plan = plans[episode.id] else { return nil }
+            return (detail, plan)
         }
     }
 
@@ -51,8 +53,9 @@ struct BatchDownloadSheet: View {
                 if case .success(let detail) = details[episodeId] {
                     VersionChoiceList(
                         episode: detail,
-                        selection: Binding(get: { choices[episodeId] }, set: { choices[episodeId] = $0 }),
-                        applyToAll: { source in matchAll(to: source, from: episodeId) }
+                        transcode: transcode(of: detail),
+                        selection: Binding(get: { plans[episodeId] }, set: { plans[episodeId] = $0 }),
+                        applyToAll: { plan in matchAll(to: plan, from: episodeId) }
                     )
                 }
             }
@@ -62,13 +65,16 @@ struct BatchDownloadSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Download \(ready.count)", systemImage: "arrow.down.circle") {
-                        for (episode, source) in ready { downloads.enqueue(episode, source: source, startedByUser: true) }
-                        onQueued()
-                        dismiss()
+                        Task { await queue() }
                     }
                     .disabled(ready.isEmpty)
                     .accessibilityIdentifier("batch.download")
                 }
+            }
+            .alert("Can't Download", isPresented: Binding(get: { refusal != nil }, set: { if !$0 { refusal = nil } })) {
+                Button("OK") { refusal = nil }
+            } message: {
+                Text(refusal ?? "")
             }
             .task { await loadAll() }
         }
@@ -91,7 +97,9 @@ struct BatchDownloadSheet: View {
         } footer: {
             Text(loading > 0
                  ? "Finding the versions of \(loading) more \(loading == 1 ? "episode" : "episodes")…"
-                 : "Sizes are the server's, for the versions picked.")
+                 : estimate.transcodeCount > 0
+                    ? "Sizes are the server's for versions, and estimates for transcodes, which take longer: the server works through each title as it downloads."
+                    : "Sizes are the server's, for the versions picked.")
         }
     }
 
@@ -121,12 +129,15 @@ struct BatchDownloadSheet: View {
             }
         case .success(let detail):
             let sources = detail.mediaSources ?? []
-            let chosen = sources.first { $0.id == choices[episode.id] }
             NavigationLink(value: episode.id) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                    if let chosen {
-                        VersionSummary(source: chosen)
+                    if let plan = plans[episode.id], plan.transcode != nil {
+                        Label(plan.summary, systemImage: "server.rack")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let plan = plans[episode.id] {
+                        VersionSummary(source: plan.source)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
@@ -159,39 +170,91 @@ struct BatchDownloadSheet: View {
         do {
             let detail = try await session.client.item(id: episode.id, userId: session.userId)
             details[episode.id] = .success(detail)
-            if choices[episode.id] == nil {
-                choices[episode.id] = VersionChooser.choose(from: detail.mediaSources ?? [], quality: settings.downloadQuality)?.id
+            if plans[episode.id] == nil {
+                plans[episode.id] = DownloadPlanner.plan(for: detail, settings: settings)
             }
         } catch {
             details[episode.id] = .failure(LoadFailure(message: error.localizedDescription))
         }
     }
 
-    private func matchAll(to source: MediaSource, from episodeId: String) {
+    /// The transcode the download settings would make of an episode, offered beside its versions.
+    private func transcode(of episode: JellyfinItem) -> DownloadPlan? {
+        let plan = DownloadPlanner.plan(for: episode, settings: settings)
+        return plan?.transcode != nil ? plan : nil
+    }
+
+    /// The same release for every other episode, or for a transcode, what the download settings
+    /// pick for each: their own transcodes where none of their versions fits.
+    private func matchAll(to plan: DownloadPlan, from episodeId: String) {
         for episode in episodes where episode.id != episodeId {
-            guard case .success(let detail) = details[episode.id],
-                  let match = source.closestMatch(in: detail.mediaSources ?? [])
-            else { continue }
-            choices[episode.id] = match.id
+            guard case .success(let detail) = details[episode.id] else { continue }
+            if plan.transcode != nil {
+                plans[episode.id] = DownloadPlanner.plan(for: detail, settings: settings)
+            } else if let match = plan.source.closestMatch(in: detail.mediaSources ?? []) {
+                plans[episode.id] = .original(match)
+            }
         }
+    }
+
+    /// Queues what was picked once the account may have it, saying why not when it may not.
+    private func queue() async {
+        let picked = ready
+        let kinds = [picked.first { $0.1.transcode == nil }, picked.first { $0.1.transcode != nil }].compactMap(\.self)
+        for (_, plan) in kinds {
+            if let reason = await downloads.transcodes.refusal(for: plan) {
+                refusal = reason
+                return
+            }
+        }
+        for (episode, plan) in picked { downloads.enqueue(episode, plan: plan, startedByUser: true) }
+        onQueued()
+        dismiss()
     }
 }
 
 private struct VersionChoiceList: View {
     let episode: JellyfinItem
-    @Binding var selection: String?
-    let applyToAll: (MediaSource) -> Void
+    /// What the download settings would transcode, when no version fits.
+    let transcode: DownloadPlan?
+    @Binding var selection: DownloadPlan?
+    let applyToAll: (DownloadPlan) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
             Section {
-                VersionPicker(sources: episode.mediaSources ?? [], selection: $selection)
+                VersionPicker(sources: episode.mediaSources ?? [], selection: Binding(
+                    get: { selection?.transcode == nil ? selection?.source.id : nil },
+                    set: { id in selection = episode.mediaSources?.first { $0.id == id }.map(DownloadPlan.original) }
+                ))
+            }
+            if let transcode {
+                Section {
+                    Button {
+                        selection = transcode
+                    } label: {
+                        HStack(spacing: 8) {
+                            Label(transcode.summary, systemImage: "server.rack")
+                            Spacer(minLength: 0)
+                            Image(systemName: "checkmark")
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.tint)
+                                .opacity(selection?.transcode != nil ? 1 : 0)
+                        }
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.artwork)
+                    .accessibilityAddTraits(selection?.transcode != nil ? .isSelected : [])
+                    .accessibilityIdentifier("version.transcode")
+                } footer: {
+                    Text("Every version is bigger than the download quality. The server can make one at it, which takes longer: it works through the whole title as it downloads.")
+                }
             }
             Section {
                 Button("Use the Closest Version for Every Episode", systemImage: "rectangle.stack") {
-                    if let source = episode.mediaSources?.first(where: { $0.id == selection }) {
-                        applyToAll(source)
+                    if let selection {
+                        applyToAll(selection)
                         dismiss()
                     }
                 }

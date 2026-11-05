@@ -161,7 +161,9 @@ final class PlayerCoordinator {
         let id = model.id
         downloads.playerChanged(id, isPlaying: true)
         smartDownloads.playerOpened(id)
-        model.onUnderwayChanged = { [downloads] underway in downloads.playerChanged(id, isPlaying: underway) }
+        model.onUnderwayChanged = { [downloads, weak model] underway in
+            downloads.playerChanged(id, isPlaying: underway, isTranscoding: model?.isTranscoding ?? false)
+        }
         #endif
         model.onClose = { [weak self, weak model] in
             #if !os(tvOS)

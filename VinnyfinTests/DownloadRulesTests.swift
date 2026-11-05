@@ -470,9 +470,10 @@ struct JobStatusTests {
     private let now = Date(timeIntervalSince1970: 5_000_000)
 
     /// `speed`, when given, from transfers under way unless `transferring` says otherwise.
-    private func status(_ job: DownloadJob, speed: Double? = nil, transferring: Bool? = nil, waits: [UUID: DownloadWait] = [:],
-                        held: Bool = false, reachable: Bool = true, inHand: UUID? = nil, waitsOn: [DownloadJob] = []) -> JobStatus {
-        JobStatus.of(job, bytesPerSecond: speed, isTransferring: transferring ?? (speed != nil), waits: waits,
+    private func status(_ job: DownloadJob, speed: Double? = nil, transferring: Bool? = nil, note: String? = nil,
+                        waits: [UUID: DownloadWait] = [:], held: Bool = false, reachable: Bool = true, inHand: UUID? = nil,
+                        waitsOn: [DownloadJob] = []) -> JobStatus {
+        JobStatus.of(job, bytesPerSecond: speed, isTransferring: transferring ?? (speed != nil), transcodeNote: note, waits: waits,
                      isPausedForPlayback: held, isNetworkReachable: reachable, fileInHand: inHand, waitsOn: waitsOn, now: now)
     }
 
@@ -493,6 +494,19 @@ struct JobStatusTests {
         // The smoothed speed lingers a moment after the last transfer stops: that's no longer bytes arriving.
         #expect(status(paused, speed: 500_000, transferring: false) == .paused)
         #expect(status(file, speed: 500_000, transferring: false, waits: [file.id: .wifi], inHand: UUID()) == .waiting(.wifi))
+    }
+
+    /// A transcode says what its server is doing, with its pieces' speed while they arrive, but
+    /// what holds it back comes first while nothing does.
+    @Test func saysWhatATranscodesServerDoes() {
+        let file = job()
+        #expect(status(file, speed: 300_000, note: "Server preparing 40%", inHand: file.id)
+            == .transcoding("Server preparing 40%", bytesPerSecond: 300_000, next: nil))
+        #expect(status(file, note: "Server paused until the download catches up", inHand: file.id)
+            == .transcoding("Server paused until the download catches up", bytesPerSecond: nil, next: nil))
+        #expect(status(file, note: "Server preparing 40%", waits: [file.id: .wifi], inHand: file.id) == .waiting(.wifi))
+        #expect(status(file, speed: 300_000, transferring: false, note: "Server preparing 40%", held: true, inHand: file.id)
+            == .heldForPlayback)
     }
 
     @Test func saysWhatADownloadWaitsFor() {

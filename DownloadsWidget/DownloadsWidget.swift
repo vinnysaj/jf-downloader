@@ -267,8 +267,8 @@ private struct DownloadProgress: View {
     private var state: String {
         let percent = download.percent.map { "\($0)%" }
         return switch download.state {
-        case .downloading: percent ?? "Downloading"
-        case .queued: percent.map { "Waiting · \($0)" } ?? "Waiting"
+        case .downloading: download.progress ?? "Downloading"
+        case .queued: download.progress.map { "Waiting · \($0)" } ?? "Waiting"
         case .held: "Waits while you watch"
         case .waitingForNetwork: "Waiting for network"
         case .waiting: download.wait ?? "Waiting"

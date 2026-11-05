@@ -88,6 +88,9 @@ extension MediaSource {
 /// download waits for once its transfers under way finish, if it waits.
 enum JobStatus: Equatable {
     case arriving(bytesPerSecond: Int64, next: String?)
+    /// What a transcoded download's server is doing (`TranscodedDownloads.note`), with how fast
+    /// its pieces arrive while they do.
+    case transcoding(String, bytesPerSecond: Int64?, next: String?)
     case pausing(bytesPerSecond: Int64)
     case heldForPlayback
     case waiting(DownloadWait)
@@ -103,16 +106,18 @@ enum JobStatus: Equatable {
     case downloaded
 
     /// `bytesPerSecond` is how fast the job's bytes arrive, smoothed, which counts only while
-    /// `isTransferring` (it has transfers under way); `fileInHand` the job the session works on,
-    /// and `waitsOn` the files whose transfers under way it waits for.
-    static func of(_ job: DownloadJob, bytesPerSecond: Double?, isTransferring: Bool, waits: [UUID: DownloadWait],
-                   isPausedForPlayback: Bool, isNetworkReachable: Bool, fileInHand: UUID?, waitsOn: [DownloadJob],
-                   now: Date) -> JobStatus {
+    /// `isTransferring` (it has transfers under way); `transcodeNote` what its server is doing,
+    /// for a transcode; `fileInHand` the job the session works on, and `waitsOn` the files whose
+    /// transfers under way it waits for.
+    static func of(_ job: DownloadJob, bytesPerSecond: Double?, isTransferring: Bool, transcodeNote: String? = nil,
+                   waits: [UUID: DownloadWait], isPausedForPlayback: Bool, isNetworkReachable: Bool, fileInHand: UUID?,
+                   waitsOn: [DownloadJob], now: Date) -> JobStatus {
         let speed = isTransferring && (bytesPerSecond ?? 0) >= 1024 ? Int64(bytesPerSecond ?? 0) : nil
         switch job.status {
         case .active:
             if let speed {
                 let next = waits[job.id]?.next ?? (fileInHand != job.id && !job.yields ? "then queued" : nil)
+                if let transcodeNote { return .transcoding(transcodeNote, bytesPerSecond: speed, next: next) }
                 return .arriving(bytesPerSecond: speed, next: next)
             }
             if isPausedForPlayback { return .heldForPlayback }
@@ -120,6 +125,7 @@ enum JobStatus: Equatable {
             if !isNetworkReachable { return .offline }
             let retryAt = job.retryAt.flatMap { $0 > now ? $0 : nil }
             if job.yields || retryAt != nil { return .retrying(at: retryAt, error: job.lastError, othersGoFirst: job.yields) }
+            if let transcodeNote { return .transcoding(transcodeNote, bytesPerSecond: nil, next: nil) }
             if fileInHand != job.id { return .queued }
             if let overtaken = waitsOn.first { return .startingAfter(overtaken.shortName) }
             return .waitingForServer
@@ -143,7 +149,8 @@ struct JobStatusLine: View {
     var body: some View {
         TimelineView(.explicit(job.retryAt.map { [$0, $0.addingTimeInterval(1)] } ?? [])) { _ in
             line(JobStatus.of(job, bytesPerSecond: downloads.bytesPerSecond[job.id],
-                              isTransferring: downloads.transferringJobIds.contains(job.id), waits: downloads.waits,
+                              isTransferring: downloads.transferringJobIds.contains(job.id),
+                              transcodeNote: downloads.transcodes.note(for: job), waits: downloads.waits,
                               isPausedForPlayback: downloads.isPausedForPlayback, isNetworkReachable: downloads.isNetworkReachable,
                               fileInHand: downloads.downloadingJobId,
                               waitsOn: downloads.jobs.filter { downloads.fileInHandWaitsOn.contains($0.id) }, now: .now))
@@ -156,6 +163,11 @@ struct JobStatusLine: View {
             Text([Self.speed(speed), next].compactMap(\.self).joined(separator: " · "))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+        case .transcoding(let note, let speed, let next):
+            Label([note, speed.map(Self.speed), next].compactMap(\.self).joined(separator: " · "), systemImage: "server.rack")
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .accessibilityIdentifier("job.transcodeNote")
         case .pausing(let speed):
             Label("Pausing once the parts under way finish · \(Self.speed(speed))", systemImage: "pause.circle")
                 .foregroundStyle(.secondary)
@@ -209,12 +221,14 @@ struct JobProgress: View {
     let job: DownloadJob
 
     var body: some View {
-        let received = downloads.receivedBytes[job.id] ?? job.completed.byteCount
+        let received = downloads.receivedBytes[job.id] ?? job.bytesOnDisk
         let total = job.displayTotalBytes
         VStack(alignment: .leading, spacing: 4) {
             if let total, total > 0 {
+                // A transcode's size is an estimate until it's all here.
+                let about = job.transcode != nil && job.totalBytes == nil ? "about " : ""
                 ProgressView(value: Double(min(received, total)), total: Double(total))
-                Text("\(received.formatted(.byteCount(style: .file))) of \(total.formatted(.byteCount(style: .file)))")
+                Text("\(received.formatted(.byteCount(style: .file))) of \(about)\(total.formatted(.byteCount(style: .file)))")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             } else {

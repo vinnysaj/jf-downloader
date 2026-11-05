@@ -286,7 +286,7 @@ nonisolated enum StorageBudget {
         }
         for job in queue {
             guard let total = job.displayTotalBytes else { continue }
-            let need = max(0, total - (bytesSoFar[job.id] ?? job.completed.byteCount))
+            let need = max(0, total - (bytesSoFar[job.id] ?? job.bytesOnDisk))
             let writing = job.rangeSupport == .unsupported ? 0 : DownloadJob.minimumChunkSize
             if shortfall(need, writing: writing) <= deletableBytes {
                 while shortfall(need, writing: writing) > 0, let next = candidates.popFirst() {

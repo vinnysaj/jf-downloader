@@ -293,6 +293,8 @@ nonisolated struct MediaSource: Codable, Identifiable, Hashable, Sendable {
     var defaultAudioStreamIndex: Int?
     var defaultSubtitleStreamIndex: Int?
     var mediaStreams: [MediaStream]?
+    /// Changes when the file does.
+    var eTag: String?
 
     enum CodingKeys: String, CodingKey {
         case id = "Id", name = "Name", path = "Path", `protocol` = "Protocol"
@@ -301,6 +303,7 @@ nonisolated struct MediaSource: Codable, Identifiable, Hashable, Sendable {
         case supportsTranscoding = "SupportsTranscoding", transcodingUrl = "TranscodingUrl"
         case defaultAudioStreamIndex = "DefaultAudioStreamIndex"
         case defaultSubtitleStreamIndex = "DefaultSubtitleStreamIndex", mediaStreams = "MediaStreams"
+        case eTag = "ETag"
     }
 
     init(id: String, name: String? = nil) {
@@ -373,6 +376,8 @@ nonisolated struct MediaStream: Codable, Hashable, Sendable {
     var videoRangeType: String?
     var audioSpatialFormat: String?
     var deliveryUrl: String?
+    var realFrameRate: Double?
+    var averageFrameRate: Double?
 
     enum CodingKeys: String, CodingKey {
         case type = "Type", index = "Index", displayTitle = "DisplayTitle", title = "Title"
@@ -381,7 +386,7 @@ nonisolated struct MediaStream: Codable, Hashable, Sendable {
         case isDefault = "IsDefault", isForced = "IsForced", isExternal = "IsExternal"
         case isHearingImpaired = "IsHearingImpaired", videoRange = "VideoRange"
         case videoRangeType = "VideoRangeType", audioSpatialFormat = "AudioSpatialFormat"
-        case deliveryUrl = "DeliveryUrl"
+        case deliveryUrl = "DeliveryUrl", realFrameRate = "RealFrameRate", averageFrameRate = "AverageFrameRate"
     }
 
     init(type: String) {

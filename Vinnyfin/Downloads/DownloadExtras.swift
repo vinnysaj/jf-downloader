@@ -13,8 +13,10 @@ import Foundation
 /// - Artwork goes under `DownloadStorage.artwork` by item, as offline lists find it there.
 ///
 /// Only subtitles the server keeps as files of their own count: the ones it extracts from the
-/// media are tracks the downloaded file already has, with their styling and pictures intact.
-/// `DownloadManager` fetches what's missing; this works out what that is.
+/// media are tracks the downloaded file already has, with their styling and pictures intact. A
+/// transcoded download's file has none, so its text subtitles all come as files, the server
+/// extracting those in the media; picture-based ones are burned into its picture or left out
+/// (`TranscodeRequest`). `DownloadManager` fetches what's missing; this works out what that is.
 nonisolated enum DownloadExtras {
     /// One file a download keeps, where it comes from and where it goes.
     struct File: Equatable, Sendable {
@@ -104,7 +106,7 @@ nonisolated enum DownloadExtras {
         }
         if let savedPath = job.savedPath, let source = item.mediaSources?.first {
             let video = storage.finished.appending(path: savedPath)
-            for (stream, file) in subtitleFiles(of: source, beside: video) {
+            for (stream, file) in subtitleFiles(of: source, beside: video, includingEmbedded: job.transcode != nil) {
                 files.append(File(remote: .subtitle(itemId: item.id, mediaSourceId: source.id, streamIndex: stream.index ?? 0,
                                                     format: PlaybackResolver.subtitleFormat(for: stream.codec)),
                                   local: file))
@@ -146,8 +148,13 @@ nonisolated enum DownloadExtras {
     /// Where the version's external subtitle files go beside `video`: its name, the language
     /// ("und" when the server doesn't know it), whether it's forced or for the hard of hearing,
     /// the stream's number when two would otherwise share a name, and the format.
-    static func subtitleFiles(of source: MediaSource, beside video: URL) -> [(stream: MediaStream, file: URL)] {
-        let streams = source.subtitleStreams.filter { $0.isExternal == true && $0.index != nil }
+    /// `includingEmbedded` adds the text subtitles in the media, which the server extracts, for
+    /// a transcoded download: its file carries none.
+    static func subtitleFiles(of source: MediaSource, beside video: URL, includingEmbedded: Bool = false)
+        -> [(stream: MediaStream, file: URL)] {
+        let streams = source.subtitleStreams.filter { stream in
+            stream.index != nil && (stream.isExternal == true || (includingEmbedded && !TranscodeRequest.isPictureBased(stream)))
+        }
         let stem = video.deletingPathExtension().lastPathComponent
         let folder = video.deletingLastPathComponent()
         func kind(_ stream: MediaStream) -> String {

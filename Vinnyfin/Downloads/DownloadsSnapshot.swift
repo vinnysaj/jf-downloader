@@ -50,8 +50,17 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
         let percent: Int?
         /// What a waiting download waits for, as its status line in the app says it.
         var wait: String?
+        /// What the server is doing for a transcoded download, beside `percent` here: "Server
+        /// preparing 42%".
+        var note: String?
 
         var id: String { title.id }
+
+        /// How far along, with the server's side of a transcode: "45% · Server preparing 60%".
+        var progress: String? {
+            let parts = [percent.map { "\($0)%" }, note].compactMap(\.self)
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
     }
 
     /// The unfinished downloads in queue order, the first few.
@@ -99,7 +108,9 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
             let behind = activeCount - 1
             let more = behind > 0 ? ", with \(behind) more after it" : ""
             switch current.state {
-            case .downloading: sentences.append("\(current.title.title) is downloading\(progress)\(more).")
+            case .downloading:
+                sentences.append("\(current.title.title) is downloading\(progress)\(more).")
+                if let note = current.note { sentences.append("\(note).") }
             case .held: sentences.append("Downloads wait while you watch. \(current.title.title) is next\(progress)\(more).")
             case .waitingForNetwork: sentences.append("Downloads are waiting for a network connection. \(current.title.title) is next\(progress)\(more).")
             case .waiting: sentences.append("\(current.title.title) is next\(progress)\(more). \(current.wait ?? "It's waiting").")
@@ -123,7 +134,7 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
     /// One short line, for the Lock Screen: "Pilot 45% · 2 more" or "3 ready to watch".
     var line: String {
         if let current, activeCount > 0 {
-            let progress = current.percent.map { " \($0)%" } ?? ""
+            let progress = current.progress.map { " \($0)" } ?? ""
             return activeCount > 1 ? "\(current.title.title)\(progress) · \(activeCount - 1) more" : "\(current.title.title)\(progress)"
         }
         if unfinishedCount > 0 { return "Downloads paused" }

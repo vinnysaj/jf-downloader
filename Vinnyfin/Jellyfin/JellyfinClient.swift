@@ -50,6 +50,11 @@ nonisolated struct JellyfinClient: Sendable {
     /// What the server's device list calls this device.
     let deviceName: String
     var token: String?
+    /// The app's name to the server in place of `clientName(for:)`, for requests made as another
+    /// device of this one's, such as downloads'.
+    var clientName: String?
+    /// Sent in place of the system's own, which names the app's and the system's versions.
+    var userAgent: String?
 
     /// Fields the browsing screens show, asked for on list calls.
     static let listFields = "PrimaryImageAspectRatio,SortName,Genres,Overview,ChildCount"
@@ -396,9 +401,25 @@ nonisolated struct JellyfinClient: Sendable {
         try await send("Sessions/Playing/Stopped", method: "POST", body: report)
     }
 
-    /// Ends the server's transcode for a play session.
+    /// Ends the server's transcode for a play session and deletes what it made.
     func stopTranscoding(playSessionId: String) async throws {
         try await send("Videos/ActiveEncodings", method: "DELETE", query: ["deviceId": deviceId, "playSessionId": playSessionId])
+    }
+
+    /// Keeps the server's transcode for a play session going: it stops one that has heard
+    /// nothing for a minute.
+    func pingPlaySession(_ playSessionId: String) async throws {
+        try await send("Sessions/Playing/Ping", method: "POST", query: ["playSessionId": playSessionId])
+    }
+
+    /// The signed-in user, with what their policy allows.
+    func currentUser<User: Decodable & Sendable>() async throws -> User {
+        try await get("Users/Me")
+    }
+
+    /// The server's sessions for one device of the signed-in user's, with what each transcodes.
+    func sessions<Session: Decodable & Sendable>(deviceId: String) async throws -> [Session] {
+        try await get("Sessions", query: ["deviceId": deviceId])
     }
 
     // MARK: Remote control
@@ -498,7 +519,7 @@ nonisolated struct JellyfinClient: Sendable {
 
     var authorizationHeader: String {
         var fields = [
-            "Client": Self.clientName(for: .current),
+            "Client": clientName ?? Self.clientName(for: .current),
             "Device": deviceName,
             "DeviceId": deviceId,
             "Version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
@@ -523,6 +544,7 @@ nonisolated struct JellyfinClient: Sendable {
         request.httpMethod = method
         request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let userAgent { request.setValue(userAgent, forHTTPHeaderField: "User-Agent") }
         request.timeoutInterval = 30
         return request
     }
@@ -650,6 +672,8 @@ nonisolated struct DeviceProfile: Encodable, Sendable {
 
     struct CodecProfile: Encodable, Sendable {
         let `Type`: String
+        /// The codecs it applies to; all when nil.
+        var Codec: String?
         let Conditions: [ProfileCondition]
     }
 

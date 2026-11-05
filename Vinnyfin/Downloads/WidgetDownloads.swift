@@ -14,15 +14,17 @@ extension DownloadsSnapshot {
     init(_ downloads: DownloadManager, history: WatchHistory) {
         self.init(jobs: downloads.jobs, receivedBytes: downloads.receivedBytes, downloadingJobId: downloads.downloadingJobId,
                   isHeldForPlayback: downloads.isPausedForPlayback, isNetworkReachable: downloads.isNetworkReachable,
-                  waits: downloads.waits.mapValues(\.status),
+                  waits: downloads.waits.mapValues(\.status), notes: downloads.transcodes.notes(for: downloads.jobs),
                   isWatched: { $0.watchState(local: history.entry(for: $0.itemId)).isWatched })
     }
 
     /// The unfinished downloads in the order they download, the paused and failed ones after
     /// them, and the finished ones not yet watched, one per title. `waits` says what holds
-    /// queued downloads back, in the words of their status lines.
+    /// queued downloads back, in the words of their status lines, and `notes` what the server
+    /// is doing for transcoded ones.
     init(jobs: [DownloadJob], receivedBytes: [UUID: Int64], downloadingJobId: UUID?, isHeldForPlayback: Bool,
-         isNetworkReachable: Bool, waits: [UUID: String] = [:], isWatched: (DownloadJob) -> Bool, now: Date = .now) {
+         isNetworkReachable: Bool, waits: [UUID: String] = [:], notes: [UUID: String] = [:], isWatched: (DownloadJob) -> Bool,
+         now: Date = .now) {
         self.init()
         let unfinished = jobs.filter { $0.status != .completed }
         let queue = DownloadJob.queue(jobs)
@@ -37,9 +39,9 @@ extension DownloadsSnapshot {
                 isHeldForPlayback ? .held : !isNetworkReachable ? .waitingForNetwork : wait != nil ? .waiting
                     : job.id == downloadingJobId ? .downloading : .queued
             }
-            let received = receivedBytes[job.id] ?? job.completed.byteCount
+            let received = receivedBytes[job.id] ?? job.bytesOnDisk
             let percent = job.displayTotalBytes.flatMap { total in total > 0 ? Int(min(100, received * 100 / total)) : nil }
-            return Download(title: Title(job), state: state, percent: percent, wait: wait)
+            return Download(title: Title(job), state: state, percent: percent, wait: wait, note: notes[job.id])
         }
         unfinishedCount = unfinished.count
         activeCount = unfinished.count { $0.status == .active }
