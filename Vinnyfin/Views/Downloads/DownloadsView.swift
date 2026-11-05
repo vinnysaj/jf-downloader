@@ -323,7 +323,9 @@ private struct DownloadedRow: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("downloaded.\(job.title)")
         .swipeActions(edge: .trailing) {
-            Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = true }
+            // Not the destructive role: that takes the row out of the list at once, and the
+            // dialog with it, and nothing is deleted.
+            Button("Delete", systemImage: "trash") { confirmingDelete = true }.tint(.red)
         }
         .contextMenu {
             if let file = downloads.savedFileURL(of: job) {
@@ -467,7 +469,7 @@ struct StorageUsage: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(AppSettings.self) private var settings
 
-    static let deletionPolicy = "Downloads you've watched are deleted to make room by themselves; unwatched and partly watched ones never are."
+    static let deletionPolicy = "Downloads you've watched since you downloaded them are deleted to make room by themselves; unwatched and partly watched ones never are, nor ones you'd already watched when you downloaded them."
 
     var body: some View {
         let used = downloads.storageUsed

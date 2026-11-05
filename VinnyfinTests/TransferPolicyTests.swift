@@ -108,9 +108,24 @@ struct EvaluateTests {
     }
 
     @Test func acceptsMoreThanAskedFor() {
-        // A server that answers a one-byte probe with the whole file.
+        // A server that answers a one-byte probe with the whole file, all of which arrived.
         let tag = TransferTag(jobId: UUID(), range: DownloadJob.probeRange)
         #expect(job().evaluate(partial("bytes 0-4999/5000"), stagedSize: 5000, tag: tag) == .chunk(0..<5000, total: 5000))
+    }
+
+    /// The probe reads only the byte it asked for, though the server names the whole file in
+    /// Content-Range and goes on sending it.
+    @Test func takesTheByteAProbeReadOfAWholeFileAnswer() {
+        let tag = TransferTag(jobId: UUID(), range: DownloadJob.probeRange)
+        let outcome = job().evaluate(partial("bytes 0-16177652/16177653"), stagedSize: 1, tag: tag)
+        #expect(outcome == .chunk(0..<1, total: 16_177_653))
+        // Nothing read is a cut, not the byte.
+        #expect(job().evaluate(partial("bytes 0-16177652/16177653"), stagedSize: 0, tag: tag) == .retry(.network("The transfer was cut short.")))
+        // An answer that starts elsewhere is still wrong.
+        guard case .retry(.server) = job().evaluate(partial("bytes 5-16177652/16177653"), stagedSize: 1, tag: tag) else {
+            Issue.record("expected a server retry")
+            return
+        }
     }
 
     @Test func retriesTheWrongRange() {
@@ -132,11 +147,25 @@ struct EvaluateTests {
         #expect(job().evaluate(response, stagedSize: 4000, tag: tag) == .retry(.network("The transfer was cut short.")))
     }
 
-    @Test func refusesAWholeFileOnceChunking() {
+    /// A file whose stream stops honoring Range sends itself whole: kept, if it's the size it was.
+    @Test func takesAWholeFileOnceChunkingIfItsTheSameSize() {
         let tag = TransferTag(jobId: UUID(), range: 100..<200)
         let response = ResponseInfo(statusCode: 200, contentType: "video/mp4", contentLength: 5000)
-        guard case .retry(.server) = job(rangeSupport: .supported, total: 5000).evaluate(response, stagedSize: 5000, tag: tag)
-        else { Issue.record("expected a server retry"); return }
+        #expect(job(rangeSupport: .supported, total: 5000).evaluate(response, stagedSize: 5000, tag: tag) == .wholeFile(size: 5000))
+        let resized = ResponseInfo(statusCode: 200, contentType: "video/mp4", contentLength: 6000)
+        guard case .giveUp = job(rangeSupport: .supported, total: 5000).evaluate(resized, stagedSize: 6000, tag: tag)
+        else { Issue.record("expected give up"); return }
+    }
+
+    /// Answered with the whole file for a range, the file takes that one transfer: its ranges go,
+    /// and the next request is the whole file, once nothing else runs.
+    @Test func aWholeFileForARangeTakesThePlaceOfTheRanges() {
+        var file = job(rangeSupport: .supported, total: 5000)
+        file.completed = ByteRanges([0..<1000])
+        file.rangeIgnored()
+        #expect(file.rangeSupport == .unsupported && file.completed.byteCount == 0 && file.totalBytes == 5000)
+        #expect(file.nextRequests(running: [], limit: 4) == [nil])
+        #expect(file.nextRequests(running: [TransferTag(jobId: file.id, range: 0..<100)], limit: 4).isEmpty)
     }
 
     @Test func switchesToWholeFileWithoutATotal() {
@@ -155,25 +184,31 @@ struct EvaluateTests {
 }
 
 struct SchedulingTests {
-    @Test func plansFromTheListedSizeOnceTheServerTakesRanges() {
-        var job = DownloadJob(item: Samples.movie, source: Samples.source)
-        job.chunkSize = 100_000_000
-        // 300 MB listed: three chunks right away, once another file has shown ranges work.
-        #expect(job.nextRequests(running: [], limit: 10, serverTakesRanges: true) == [0..<100_000_000, 100_000_000..<200_000_000, 200_000_000..<300_000_000])
-        #expect(!job.needsProbe(serverTakesRanges: true))
-        // Until then, one byte: chunks would each fetch the whole file from a server that ignores Range.
-        #expect(job.needsProbe(serverTakesRanges: false))
-        #expect(job.nextRequests(running: [], limit: 10, serverTakesRanges: false) == [DownloadJob.probeRange])
+    /// Whether ranges work is a property of each file's stream: a file is asked for one byte
+    /// first, whatever another file has shown, listed size or not.
+    @Test func probesEveryFileWhateverOthersShowed() {
+        var shown = DownloadJob(item: Samples.movie, source: Samples.source, now: .now)
+        shown.rangeSupport = .supported
+        shown.totalBytes = 300_000_000
+        shown.status = .paused
+        var listed = DownloadJob(item: Samples.episode, source: Samples.source, now: .now + 1)
+        listed.chunkSize = 16 << 20
+        #expect(listed.needsProbe)
+        #expect(listed.nextRequests(running: [], limit: 10) == [DownloadJob.probeRange])
+        let probe = TransferTag(jobId: listed.id, range: DownloadJob.probeRange)
+        #expect(DownloadJob.plan([shown, listed], running: [], budget: 100, queuingAhead: false) == [probe])
+        #expect(DownloadJob.plan([shown, listed], running: [], budget: 100, queuingAhead: true) == [probe])
+        #expect(DownloadJob.plan([shown, listed], running: [probe], budget: 100, queuingAhead: true).isEmpty)
     }
 
     @Test func probesWithOneRequestFirstWithoutAListedSize() {
         var source = Samples.source
         source.size = nil
         let job = DownloadJob(item: Samples.movie, source: source)
-        #expect(job.needsProbe(serverTakesRanges: true))
-        #expect(job.nextRequests(running: [], limit: 10, serverTakesRanges: true) == [DownloadJob.probeRange])
+        #expect(job.needsProbe)
+        #expect(job.nextRequests(running: [], limit: 10) == [DownloadJob.probeRange])
         #expect(TransferTag(jobId: job.id, range: DownloadJob.probeRange).rangeHeader == "bytes=0-0")
-        #expect(job.nextRequests(running: [TransferTag(jobId: job.id, range: 0..<10)], limit: 10, serverTakesRanges: true).isEmpty)
+        #expect(job.nextRequests(running: [TransferTag(jobId: job.id, range: 0..<10)], limit: 10).isEmpty)
     }
 
     @Test func plansChunksAroundDoneAndRunningRanges() {
@@ -183,14 +218,56 @@ struct SchedulingTests {
         job.chunkSize = 30
         job.completed = ByteRanges([0..<30])
         let running = [TransferTag(jobId: job.id, range: 30..<60)]
-        #expect(job.nextRequests(running: running, limit: 5, serverTakesRanges: true) == [60..<90, 90..<100])
-        #expect(job.nextRequests(running: running, limit: 1, serverTakesRanges: true) == [60..<90])
+        #expect(job.nextRequests(running: running, limit: 5) == [60..<90, 90..<100])
+        #expect(job.nextRequests(running: running, limit: 1) == [60..<90])
     }
 
     @Test func requestsTheWholeFileWithoutRangeSupport() {
         var job = DownloadJob(item: Samples.movie, source: Samples.source)
         job.rangeSupport = .unsupported
-        #expect(job.nextRequests(running: [], limit: 3, serverTakesRanges: false) == [nil])
+        #expect(job.nextRequests(running: [], limit: 3) == [nil])
+    }
+
+    /// Room on the device can cap the chunks, but never below the smallest.
+    @Test func keepsChunksWithinTheLimitRoomSets() {
+        var job = DownloadJob(item: Samples.movie, source: Samples.source)
+        job.rangeSupport = .supported
+        job.totalBytes = 64 << 20
+        job.chunkSize = 32 << 20
+        #expect(job.nextRequests(running: [], limit: 10, chunkLimit: 10 << 20).first == 0..<(10 << 20))
+        #expect(job.nextRequests(running: [], limit: 10, chunkLimit: 1).first == 0..<DownloadJob.minimumChunkSize)
+        #expect(job.nextRequests(running: [], limit: 10, chunkLimit: 1 << 30).count == 2)
+        let plan = DownloadJob.plan([job], running: [], chunkLimit: 10 << 20, budget: 100, queuingAhead: true)
+        #expect(plan.compactMap(\.range).allSatisfy { $0.count64 <= 10 << 20 } && plan.count == 7)
+    }
+
+    /// In front the file in hand keeps a few transfers in the session, topped up as they finish,
+    /// so each is planned in the chunk size of the moment; off screen it all goes in.
+    @Test func plansTheFileInHandAFewChunksAtATimeInFront() {
+        var job = DownloadJob(item: Samples.movie, source: Samples.source)
+        job.rangeSupport = .supported
+        job.totalBytes = 1 << 30
+        let inFront = DownloadJob.plan([job], running: [], budget: 512, queuingAhead: false)
+        #expect(inFront.count == DownloadJob.transfersInHand)
+        let topUp = DownloadJob.plan([job], running: Array(inFront.dropFirst()), budget: 512, queuingAhead: false)
+        #expect(topUp.count == 1)
+        // The chunks grew while those were under way: the next is planned at the new size.
+        job.chunkSize = DownloadJob.maximumChunkSize
+        #expect(DownloadJob.plan([job], running: Array(inFront.dropLast()), budget: 512, queuingAhead: false).first?.range?.count64
+            == DownloadJob.maximumChunkSize)
+        #expect(DownloadJob.plan([job], running: [], budget: 512, queuingAhead: true).count == 16)
+    }
+
+    /// A chunk being written into its file stays claimed, so planning meanwhile doesn't ask for
+    /// its range again, and its bytes count as the download's.
+    @Test func aChunkBeingWrittenStaysClaimed() {
+        var job = DownloadJob(item: Samples.movie, source: Samples.source)
+        job.rangeSupport = .supported
+        job.totalBytes = 300
+        job.chunkSize = DownloadJob.minimumChunkSize
+        let writing = TransferTag(jobId: job.id, range: 0..<100)
+        #expect(job.nextRequests(running: [writing], limit: 10) == [100..<300])
+        #expect(DownloadJob.bytesSoFar([job], held: [(job.id, 100)]) == [job.id: 100])
     }
 
     /// The list's order, whatever order the files were queued in: people rearrange it.
@@ -228,16 +305,18 @@ struct SchedulingTests {
         #expect(DownloadJob.bytesSoFar([paused, running, finished], held: held) == [paused.id: 3_501, running.id: 150])
     }
 
-    /// 300 MB files in 100 MB chunks, the first confirmed by the server.
+    /// 300 MB files in 100 MB chunks, both confirmed by the server.
     private func twoFiles() -> (first: DownloadJob, second: DownloadJob) {
         let start = Date.now
-        var first = DownloadJob(item: Samples.movie, source: Samples.source, now: start)
-        var second = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 1)
-        first.rangeSupport = .supported
-        first.totalBytes = 300_000_000
-        first.chunkSize = 100_000_000
-        second.chunkSize = 100_000_000
-        return (first, second)
+        return (confirmed(at: start), confirmed(at: start + 1))
+    }
+
+    private func confirmed(at date: Date) -> DownloadJob {
+        var file = DownloadJob(item: Samples.movie, source: Samples.source, now: date)
+        file.rangeSupport = .supported
+        file.totalBytes = 300_000_000
+        file.chunkSize = 100_000_000
+        return file
     }
 
     @Test func plansOneFileUnlessQueuingAhead() {
@@ -248,34 +327,20 @@ struct SchedulingTests {
         let tail = [TransferTag(jobId: first.id, range: 200_000_000..<300_000_000)]
         first.completed = ByteRanges([0..<200_000_000])
         #expect(DownloadJob.plan([first, second], running: tail, budget: 10, queuingAhead: false).isEmpty)
-        // Off screen, the second file's chunks from its listed size, the server having shown it takes ranges.
+        // Off screen, the second file's chunks too.
         let ahead = DownloadJob.plan([first, second], running: tail, budget: 10, queuingAhead: true)
         #expect(ahead.map(\.jobId) == [second.id, second.id, second.id])
         #expect(DownloadJob.plan([first, second], running: tail, budget: 2, queuingAhead: true).count == 2)
-    }
-
-    /// A server that ignores Range would send the whole file for every chunk planned from the
-    /// listed size, so until one file has shown ranges work, a file gets one request.
-    @Test func asksForOneByteUntilTheServerHasShownItTakesRanges() {
-        let start = Date.now
-        let first = DownloadJob(item: Samples.movie, source: Samples.source, now: start)
-        let second = DownloadJob(item: Samples.episode, source: Samples.source, now: start + 1)
-        let probe = TransferTag(jobId: first.id, range: DownloadJob.probeRange)
-        #expect(DownloadJob.plan([first, second], running: [], budget: 10, queuingAhead: true) == [probe])
-        #expect(DownloadJob.plan([first, second], running: [probe], budget: 10, queuingAhead: true).isEmpty)
     }
 
     /// In front, the next file that needs a probe gets it, so leaving the screen can queue all
     /// of its chunks at once; the one after waits.
     @Test func probesTheNextFileInFront() {
         let (first, _) = twoFiles()
-        var unknown = Samples.source
-        unknown.size = nil
         let start = first.createdAt
-        let listed = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 1)
-        let second = DownloadJob(item: Samples.movie, source: unknown, now: start + 2)
-        let third = DownloadJob(item: Samples.movie, source: unknown, now: start + 3)
-        let plan = DownloadJob.plan([first, listed, second, third], running: [], budget: 10, queuingAhead: false)
+        let second = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 1)
+        let third = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 2)
+        let plan = DownloadJob.plan([first, second, third], running: [], budget: 10, queuingAhead: false)
         #expect(plan.filter { $0.jobId == first.id }.count == 3)
         #expect(plan.filter { $0.jobId != first.id } == [TransferTag(jobId: second.id, range: DownloadJob.probeRange)])
     }
@@ -283,42 +348,73 @@ struct SchedulingTests {
     /// Off screen, a file waiting for its probe doesn't hold back files that can be planned.
     @Test func queuesAheadPastAFileWaitingForItsProbe() {
         let (first, _) = twoFiles()
-        var unknown = Samples.source
-        unknown.size = nil
         let start = first.createdAt
-        let waiting = DownloadJob(item: Samples.movie, source: unknown, now: start + 1)
-        let listed = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 2)
-        let last = DownloadJob(item: Samples.movie, source: unknown, now: start + 3)
+        let waiting = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 1)
+        let ready = confirmed(at: start + 2)
+        let last = DownloadJob(item: Samples.movie, source: Samples.source, now: start + 3)
         let probe = TransferTag(jobId: waiting.id, range: DownloadJob.probeRange)
-        let plan = DownloadJob.plan([first, waiting, listed, last], running: [probe], budget: 100, queuingAhead: true)
-        #expect(plan.contains { $0.jobId == listed.id })
+        let plan = DownloadJob.plan([first, waiting, ready, last], running: [probe], budget: 100, queuingAhead: true)
+        #expect(plan.contains { $0.jobId == ready.id })
         #expect(!plan.contains { $0.jobId == waiting.id || $0.jobId == last.id })
     }
 
-    /// A file the server keeps refusing lets the next one go ahead while it waits out its retry,
-    /// with one transfer timed for the retry.
-    @Test func letsTheNextFileGoAheadOfOneBackingOff() {
+    /// A probe that hangs fails at the request timeout; from then on it doesn't hold back the
+    /// next file's probe, which tells whether the trouble is the file's own.
+    @Test func aFailingFilesProbeDoesntHoldTheNextBack() {
+        let start = Date(timeIntervalSince1970: 1000)
+        var hung = DownloadJob(item: Samples.movie, source: Samples.source, now: start)
+        let next = DownloadJob(item: Samples.episode, source: Samples.source, now: start + 1)
+        let probe = TransferTag(jobId: hung.id, range: DownloadJob.probeRange)
+        #expect(DownloadJob.plan([hung, next], running: [probe], budget: 10, queuingAhead: false, now: start).isEmpty)
+        hung.recordFailure(.network("The request timed out."), receivedBytes: 0, attemptStart: start, now: start + 60)
+        #expect(DownloadJob.plan([hung, next], running: [probe], budget: 10, queuingAhead: false, now: start + 61)
+            == [TransferTag(jobId: next.id, range: DownloadJob.probeRange)])
+    }
+
+    /// A file that fails while another file's transfers come through yields: the files behind
+    /// it go first, while it gets one transfer timed for its retry, until one comes through.
+    @Test func letsTheNextFileGoAheadOfOneFailingAlone() {
         var (first, second) = twoFiles()
-        let now = Date.now
-        first.serverFailures = DownloadJob.serverFailuresBeforeYielding
-        first.retryAt = now + 60
-        second.rangeSupport = .supported
-        second.totalBytes = 300_000_000
+        let now = Date(timeIntervalSince1970: 1000)
+        first.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: now - 120, now: now - 120)
+        #expect(first.isFailing && !first.yields)
+        // While it fails, one transfer of the file behind it tests whether it fails alone.
+        let testing = DownloadJob.plan([first, second], running: [], budget: 10, queuingAhead: false, now: now - 119)
+        #expect(testing.filter { $0.jobId == first.id }.count == 3)
+        #expect(testing.filter { $0.jobId == second.id } == [TransferTag(jobId: second.id, range: 0..<100_000_000)])
+        // Not while the file in hand's own transfers are still on the wire.
+        #expect(DownloadJob.plan([first, second], running: [], finishing: [first.id], budget: 10, queuingAhead: false, now: now - 119)
+            .allSatisfy { $0.jobId == first.id })
+        // The test came through, then the file failed again: the trouble is its own.
+        second.recordSuccess(now: now - 60)
+        first.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: now - 30, otherArrival: second.cameThroughAt, now: now)
+        #expect(first.yields)
+        #expect(DownloadJob.fileInHand([first, second], held: []) == second.id)
         let plan = DownloadJob.plan([first, second], running: [], budget: 10, queuingAhead: false, now: now)
         #expect(plan.filter { $0.jobId == first.id } == [TransferTag(jobId: first.id, range: 0..<100_000_000)])
-        #expect(plan.filter { $0.jobId == second.id }.count == 3)
-        // One blip doesn't reshuffle the queue.
-        first.serverFailures = 1
-        #expect(DownloadJob.plan([first, second], running: [], budget: 10, queuingAhead: false, now: now).allSatisfy { $0.jobId == first.id })
-        // Once the retry is due, the file is back in hand.
-        first.serverFailures = DownloadJob.serverFailuresBeforeYielding
-        #expect(DownloadJob.plan([first, second], running: [], budget: 10, queuingAhead: false, now: now + 61).allSatisfy { $0.jobId == first.id })
+        #expect(plan.filter { $0.jobId == second.id }.compactMap(\.range) == second.nextRequests(running: [], limit: 8).compactMap(\.self))
+        // Its transfer coming through puts it back in hand.
+        first.recordSuccess(now: now + 300)
+        #expect(!first.yields && DownloadJob.fileInHand([first, second], held: []) == first.id)
+    }
+
+    /// Everything failing together (the server down, the network gone) is no file's own
+    /// trouble: nothing yields and nothing gives up, however long it lasts.
+    @Test func nothingYieldsOrGivesUpWhileEverythingFails() {
+        let start = Date(timeIntervalSince1970: 1000)
+        var job = DownloadJob(item: Samples.movie, source: Samples.source)
+        for attempt in 0..<(DownloadJob.maxServerFailures * 2) {
+            let now = start + Double(attempt) * 300
+            job.recordFailure(.server("HTTP 503"), receivedBytes: 0, attemptStart: now, otherArrival: start - 10, now: now)
+            job.recordFailure(.network("offline"), receivedBytes: 0, attemptStart: now, unreachable: true, now: now + 1)
+        }
+        #expect(job.status == .active && !job.yields && job.isFailing)
     }
 
     @Test func requestsNothingUnlessActive() {
         var job = DownloadJob(item: Samples.movie, source: Samples.source)
         job.status = .paused
-        #expect(job.nextRequests(running: [], limit: 3, serverTakesRanges: true).isEmpty)
+        #expect(job.nextRequests(running: [], limit: 3).isEmpty)
     }
 
     @Test func givesUpOnClientErrorsThatAskingAgainWontFix() {
@@ -388,14 +484,92 @@ struct SchedulingTests {
         #expect(job.chunkSize == DownloadJob.maximumChunkSize)
     }
 
-    @Test func givesUpAfterRepeatedServerErrors() {
+    /// A chunk the device had no room for, though it reported enough, halves the chunks from its
+    /// size, so near full they shrink until one fits.
+    @Test func halvesChunksFromOneThereWasNoRoomFor() {
         var job = DownloadJob(item: Samples.movie, source: Samples.source)
-        for _ in 0..<(DownloadJob.maxServerFailures - 1) { job.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: .now) }
+        job.chunkSize = DownloadJob.maximumChunkSize
+        job.ranOutOfSpace(writing: 27_842_259)
+        #expect(job.chunkSize == 27_842_259 / 2)
+        job.ranOutOfSpace(writing: 40_000_000)
+        #expect(job.chunkSize == 27_842_259 / 4)
+        for _ in 0..<10 { job.ranOutOfSpace(writing: job.chunkSize) }
+        #expect(job.chunkSize == DownloadJob.minimumChunkSize)
+    }
+
+    /// The server's error answers give up on a file only while it fails alone.
+    @Test func givesUpAfterRepeatedServerErrorsOnlyWhileFailingAlone() {
+        var job = DownloadJob(item: Samples.movie, source: Samples.source)
+        let start = Date(timeIntervalSince1970: 1000)
+        for attempt in 0..<DownloadJob.maxServerFailures {
+            job.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: start, now: start + Double(attempt))
+        }
         #expect(job.status == .active)
         #expect(job.retryAt != nil)
-        job.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: .now)
+        job.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: start, otherArrival: start + 5, now: start + 100)
         #expect(job.status == .failed)
         #expect(job.lastError == "HTTP 500")
+    }
+
+    /// A transfer that can't keep its bytes when paused finishes if it's at least halfway and
+    /// no more than a chunk is left; otherwise it's cut, or set aside with its bytes.
+    @Test func finishesATransferWhenPausingWouldLoseMoreThanItFetches() {
+        let chunk = DownloadJob.maximumChunkSize
+        #expect(DownloadJob.finishesWhenPaused(received: 60, expected: 100, canResume: false))
+        #expect(DownloadJob.finishesWhenPaused(received: 50, expected: 100, canResume: false))
+        #expect(!DownloadJob.finishesWhenPaused(received: 40, expected: 100, canResume: false))
+        #expect(!DownloadJob.finishesWhenPaused(received: 60, expected: 100, canResume: true))
+        #expect(!DownloadJob.finishesWhenPaused(received: 0, expected: 100, canResume: false))
+        #expect(!DownloadJob.finishesWhenPaused(received: 60, expected: nil, canResume: false))
+        // A whole file a server sends without validators: most of it in, but more than a chunk left.
+        #expect(!DownloadJob.finishesWhenPaused(received: 3 * chunk, expected: 4 * chunk + 1, canResume: false))
+        #expect(DownloadJob.finishesWhenPaused(received: 3 * chunk, expected: 4 * chunk, canResume: false))
+    }
+
+    /// What the task says decides: a transfer the daemon hasn't got to, or one that's moving,
+    /// whatever its progress reports lag, is never stalled.
+    @Test func callsATransferStalledOnlyWhenItsUnderWayAndStill() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let limit: TimeInterval = 45
+        // Waiting its turn behind the session's four connections: no response, no bytes.
+        var waiting = TransferActivity(bytes: 0, resumed: false, now: start)
+        waiting.observe(bytes: 0, hasResponse: false, now: start + 600)
+        #expect(!waiting.isStalled(state: .running, now: start + 600, limit: limit))
+        // Under way: answered, then no more bytes for longer than the limit.
+        var answered = TransferActivity(bytes: 0, resumed: false, now: start)
+        answered.observe(bytes: 0, hasResponse: true, now: start + 10)
+        #expect(!answered.isStalled(state: .running, now: start + 50, limit: limit))
+        #expect(answered.isStalled(state: .running, now: start + 56, limit: limit))
+        // Bytes the task counted, though no progress report came, keep it going.
+        answered.observe(bytes: 4096, hasResponse: true, now: start + 56)
+        #expect(!answered.isStalled(state: .running, now: start + 100, limit: limit))
+        // Timed for later or set aside, it isn't the daemon's to stall.
+        #expect(!answered.isStalled(state: .suspended, now: start + 500, limit: limit))
+        #expect(!answered.isStalled(state: .completed, now: start + 500, limit: limit))
+        // Started from resume data, the response it carries isn't the daemon at work; bytes are.
+        var resumed = TransferActivity(bytes: 1 << 20, resumed: true, now: start)
+        resumed.observe(bytes: 1 << 20, hasResponse: true, now: start + 600)
+        #expect(!resumed.isUnderWay && !resumed.isStalled(state: .running, now: start + 600, limit: limit))
+        resumed.observe(bytes: 2 << 20, hasResponse: true, now: start + 601)
+        #expect(resumed.isUnderWay)
+        // While the app couldn't look, the clock starts again when it can.
+        resumed.restartClock(now: start + 2000)
+        #expect(!resumed.isStalled(state: .running, now: start + 2040, limit: limit))
+    }
+
+    /// A stalled transfer's replacement carries on from its bytes, also one resumed after a
+    /// pause that got going and stalled later; only one resuming never got going starts over.
+    @Test func replacesAStalledTransferFromTheBytesItHas() {
+        let start = Date(timeIntervalSince1970: 1000)
+        var stalled = TransferActivity(bytes: 0, resumed: false, now: start)
+        stalled.observe(bytes: 15 << 20, hasResponse: true, now: start + 10)
+        #expect(stalled.carriesOnWhenReplaced)
+        var resumedThenStalled = TransferActivity(bytes: 3 << 20, resumed: true, now: start)
+        resumedThenStalled.observe(bytes: 18 << 20, hasResponse: true, now: start + 10)
+        #expect(resumedThenStalled.carriesOnWhenReplaced)
+        var resumedNeverGoing = TransferActivity(bytes: 3 << 20, resumed: true, now: start)
+        resumedNeverGoing.observe(bytes: 3 << 20, hasResponse: true, now: start + 600)
+        #expect(!resumedNeverGoing.carriesOnWhenReplaced)
     }
 
     @Test func backoffDoublesUpToTheCap() {

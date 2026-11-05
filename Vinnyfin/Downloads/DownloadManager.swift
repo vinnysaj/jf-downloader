@@ -20,41 +20,55 @@ import OSLog
 ///
 /// Files download one at a time, in the order of the list, which people can rearrange (Download
 /// Next moves one to the front), and none while something plays. Each file is asked for one
-/// byte first, for its size and whether ranges work, until one has shown that the server takes
-/// ranges; after that, chunks are planned from the size Jellyfin lists. While the app is in
-/// front of the user, the session holds the chunks of the file in hand only (`DownloadJob.plan`),
-/// the first in the queue that may download now, while the files after it are probed in turn,
-/// through an ordinary session so the probes don't wait behind those chunks for a connection.
-/// The session runs `connectionsPerHost` transfers at a time in no promised order (nor by task
-/// priority), so that's what keeps the server on one file. When the file in hand changes (the
-/// list rearranged, a file paused or held back, the app back in front), the other files'
-/// transfers that haven't started come out; those under way finish, and only then do the new
-/// file's chunks go in, so no bytes are lost and the server stays on one file. As the app
-/// resigns active, while it's still in the foreground to the system, every file's chunks go in,
-/// up to `maxQueuedTransfers`: the session then works through the queue by itself with the app
+/// byte first, for its size and whether its stream takes ranges: that's a property of each
+/// file, not of the server (`DownloadJob.needsProbe`). One that answers a range request with the
+/// whole file gets that one transfer: the moment the first such answer arrives, the file's other
+/// transfers come out. While the app is in front of the user, the session holds the chunks of
+/// the file in hand only (`DownloadJob.plan`), the first in the queue that may download now, a
+/// few at a time (`DownloadJob.transfersInHand`) so each is planned in the chunk size of the
+/// moment, while the files after it are probed in turn, through an ordinary session so the
+/// probes don't wait behind those chunks for a connection. The session runs
+/// `connectionsPerHost` transfers at a time in no promised order (nor by task priority), so
+/// that's what keeps the server on one file. When the file in hand changes (the list
+/// rearranged, a file paused or held back, the app back in front), the other files' transfers
+/// that haven't started come out; those under way finish, and only then do the new file's
+/// chunks go in, so no bytes are lost and the server stays on one file. As the app resigns
+/// active, while it's still in the foreground to the system, every file's chunks go in, up to
+/// `maxQueuedTransfers`: the session then works through the queue by itself with the app
 /// suspended or terminated, which it wouldn't promptly otherwise. Transfers created while the
 /// app is in the background start only when the system sees fit, after a delay that grows with
 /// every time the system wakes the app, in a connection pool of their own; it wakes the app only
 /// once every transfer is done. Launched in the background, the app queues ahead the same way.
-/// A file the server keeps refusing lets the files behind it go ahead while it waits out its
-/// retry.
+/// A file that keeps failing while other files come through lets the files behind it go ahead
+/// while it waits out its retries (`DownloadJob.yields`); to tell, while the file in hand fails,
+/// the file behind it gets one transfer. When everything fails, nothing yields.
 ///
 /// Settings say when and where downloads may run (`DownloadRules`), and why each file waits is
 /// in `waits`. Each transfer's request carries the networks it may use, so the system holds it
 /// until the device is on one, whether or not the app runs: not cellular or a Personal Hotspot
 /// unless Download Over Cellular is on, and not a network in Low Data Mode. In front, a file the
 /// network holds back isn't planned. Only While Charging holds files back in the app, which a
-/// suspended app can't react to: `BackgroundDownloads` books the catch-up launch for when the
-/// device is on power. Room holds files back too (`StorageBudget`): the queue has to fit under
-/// the storage limit and on the device; downloads watched since they were downloaded are
-/// deleted to make room, the one watched longest ago first, and what still doesn't fit waits.
-/// Download Now lifts the network rules and Only While Charging for one download. When the
-/// rules change, transfers that haven't started and no longer fit them come out to be planned
-/// again; those under way finish.
+/// suspended app can't react to, so with it on only the file in hand is queued ahead: unplugged
+/// while the app is suspended, the system finishes that one at most. `BackgroundDownloads` books
+/// the catch-up launch for when the device is on power. Room holds files back too
+/// (`StorageBudget`): the queue has to fit under the storage limit and on the device, counting
+/// every byte the downloads have on disk; downloads watched since they were queued are deleted
+/// to make room, the one watched longest ago first, and what still doesn't fit waits. Near full,
+/// chunks shrink to fit, and a download that runs out of room anyway halves its chunks and waits
+/// for room rather than failing, counting only room actually free from then on; what a chunk
+/// wrote before it ran out goes (`DownloadStorage.releaseUnrecorded`). Download Now lifts the
+/// network rules and Only While Charging for one download. When the rules change, transfers that
+/// haven't started and no longer fit them come out to be planned again; those under way finish,
+/// unless they can't use the network the device is on while the rules now let their file use it.
 ///
 /// Whenever the process runs, in front or kept running in the background (`BackgroundDownloads`,
 /// `KeepAwakeAudio`), finished chunks go into place as they arrive, files are published, and
-/// `trackProgress` replaces stalled transfers. `DownloadNotifications` tells the user when files
+/// `trackProgress` replaces stalled transfers, by what their tasks say they've received
+/// (`TransferActivity`). Whatever a transfer the app cancelled delivers anyway, having finished
+/// first, is kept, unless its job started over. Pausing cuts the transfers that can keep their
+/// bytes in resume data, and lets those that can't finish once they've more behind than ahead
+/// (`DownloadJob.finishesWhenPaused`); a playback holds them all, as it needs the connection
+/// now. `DownloadNotifications` tells the user when files
 /// are ready to watch offline and when one needs them. Swiping the app away in the app switcher
 /// makes the system cancel every transfer and leave the app closed until it's opened again; the
 /// reason comes with the cancellations then, and is kept in `systemCancellation` to tell the
@@ -101,15 +115,22 @@ final class DownloadManager {
     /// What each unfinished download has so far, on disk in its partial file and in the session's
     /// files for its transfers, running or set aside (`bytesSoFar`). Refreshed by `trackProgress()`.
     private(set) var receivedBytes: [UUID: Int64] = [:]
+    /// How fast each download's bytes arrive, smoothed, so it lingers a moment after they stop.
     private(set) var bytesPerSecond: [UUID: Double] = [:]
+    /// The downloads with transfers under way: bytes arriving, or a response in. Refreshed by
+    /// `trackProgress()`.
+    private(set) var transferringJobIds: Set<UUID> = []
     /// The network the device is on.
     private(set) var network = NetworkConditions.unknown
     var isNetworkReachable: Bool { network.isReachable }
     /// Whether the device is on external power; nil when it can't say.
     private(set) var isOnPower: Bool?
-    /// The job the session works on now: the first in the queue that nothing holds back. The
-    /// other active jobs are queued behind it or wait.
+    /// The job the session works on now: the first in the queue that nothing holds back and
+    /// that doesn't yield. The other active jobs are queued behind it or wait.
     private(set) var downloadingJobId: UUID?
+    /// In front, the files whose transfers under way the file in hand waits for before its own
+    /// go in: the one it was moved ahead of, say.
+    private(set) var fileInHandWaitsOn: Set<UUID> = []
     /// Why each active download that could otherwise go on waits: a rule, or room. Refreshed by `pump()`.
     private(set) var waits: [UUID: DownloadWait] = [:]
     /// Something is playing, or a player is open in front of the user, so transfers wait.
@@ -126,18 +147,13 @@ final class DownloadManager {
     private(set) var userStartCount = 0
     /// Why the system last cancelled transfers by itself, to tell the user until dismissed.
     var systemCancellation: URLError.BackgroundTaskCancelledReason?
-    /// The watched downloads last deleted to make room, to say so.
+    /// The watched downloads last deleted to make room, to say so. Kept on disk, so a deletion
+    /// in a background wake is still told after a kill.
     private(set) var lastFreed: FreedSpace?
     /// Moves when saved artwork changes, so views showing it look again.
     private(set) var artworkRevision = 0
     /// A local problem (storage, the saved queue) to show until dismissed.
     var problem: String?
-
-    struct FreedSpace: Equatable {
-        let titles: [String]
-        let bytes: Int64
-        let date: Date
-    }
 
     private struct RunningTransfer {
         let tag: TransferTag
@@ -153,13 +169,26 @@ final class DownloadManager {
         /// relaunch until its first event: what the task says it has received at adoption isn't
         /// on the same count, and can be more than that first event.
         var reported: Int64?
-        /// When bytes last arrived, or when the app started or adopted the transfer.
-        var lastProgress = Date.now
+        /// How it has moved, for telling a stalled transfer from one waiting its turn.
+        var activity: TransferActivity
         /// When the current attempt began: the app started or adopted the transfer, or the
         /// daemon started its range over.
         var attemptStart = Date.now
         /// Started from resume data: a stalled transfer's, or a range set aside.
         var resumed = false
+        /// Its response has been looked at, for a whole file sent for a range.
+        var isResponseChecked = false
+
+        init(tag: TransferTag, task: URLSessionDownloadTask, access: NetworkAccess, received: Int64, carried: Int64 = 0,
+             resumed: Bool = false) {
+            self.tag = tag
+            self.task = task
+            self.access = access
+            self.received = received
+            self.carried = carried
+            self.resumed = resumed
+            activity = TransferActivity(bytes: task.countOfBytesReceived, resumed: resumed, now: .now)
+        }
 
         /// The daemon has a response for it, or bytes: it's under way rather than waiting its turn.
         var isUnderWay: Bool { task.response != nil || task.countOfBytesReceived > 0 }
@@ -168,6 +197,13 @@ final class DownloadManager {
         /// The bytes of the file it holds in the session's files: as it last reported them, which
         /// count those it carried on from, and before its first report at least those.
         var bytes: Int64 { reported == nil ? max(received, carried) : received }
+        /// Its bytes can be kept in resume data: it carries on from some, or the server sent a
+        /// validator, ETag or Last-Modified, which resume data needs.
+        var canResume: Bool {
+            guard !resumed else { return true }
+            let response = task.response as? HTTPURLResponse
+            return response?.value(forHTTPHeaderField: "ETag") != nil || response?.value(forHTTPHeaderField: "Last-Modified") != nil
+        }
     }
 
     /// After a relaunch, how long transfers that were handed to the session but that it no
@@ -194,8 +230,22 @@ final class DownloadManager {
     /// Transfers handed to the session before a relaunch that it neither lists nor has reported
     /// on yet: their ranges stay claimed until they report, or `relaunchReportWait` passes.
     @ObservationIgnored private var awaitingReports: Set<TransferTag> = []
-    /// Tasks this app cancelled (pause, remove, restart); whatever they deliver is dropped.
+    /// Tasks this app cancelled (to set aside, take back, replace or drop): their cancellation
+    /// isn't a failure, and a body one delivers anyway, having finished first, is kept.
     @ObservationIgnored private var cancelledByUs: Set<Int> = []
+    /// Tasks of jobs started over or forgotten: whatever they deliver is dropped, being bytes of
+    /// the file as it was.
+    @ObservationIgnored private var discarded: Set<Int> = []
+    /// Chunks on their way from staging into their partial file, with their size: their ranges
+    /// stay claimed, and their bytes count as the download's, until they're in.
+    @ObservationIgnored private var writing: [TransferTag: Int64] = [:]
+    /// When a transfer last moved or reported, for telling that nothing at all moves.
+    @ObservationIgnored private var lastActivity = Date.now
+    /// Room the system could purge counts as room until the device has run out with it counted:
+    /// from then on, only room that's free.
+    @ObservationIgnored private var countsPurgeableSpace = true
+    /// The largest chunk room on the device allows, as last checked (`StorageBudget`).
+    @ObservationIgnored private var spaceChunkLimit: Int64?
     @ObservationIgnored private var backgroundCompletion: (() -> Void)?
     @ObservationIgnored private var backgroundEventsDelivered = false
     /// False until `run()` has adopted the session's existing transfers; scheduling before that
@@ -238,6 +288,9 @@ final class DownloadManager {
     @ObservationIgnored private var spaceCheckedAt = Date.distantPast
     /// The queue, a size or the limit changed since room was last checked.
     @ObservationIgnored private var isSpaceCheckDue = true
+    /// Downloads whose partial file still takes room for ranges not recorded in it
+    /// (`releaseUnrecorded`).
+    @ObservationIgnored private var unreleased: Set<UUID> = []
 
     init(accounts: AccountStore, settings: AppSettings, history: WatchHistory, notifications: DownloadNotifications,
          storage: DownloadStorage = .standard) {
@@ -252,8 +305,10 @@ final class DownloadManager {
         } catch {
             problem = "Couldn't prepare the downloads folder: \(error.localizedDescription)"
         }
+        var hasJobs = false
         do {
             jobs = try storage.loadJobs()
+            hasJobs = true
         } catch {
             problem = Self.setAsideUnreadableJobs(storage, error: error)
         }
@@ -263,6 +318,11 @@ final class DownloadManager {
             wholeFileResumeData = try storage.loadResumePoints()
         } catch {
             problem = "Couldn't read what the last run left with the system: \(error.localizedDescription). Some of it may download again."
+        }
+        do {
+            lastFreed = try storage.loadFreed()
+        } catch {
+            problem = "Couldn't read which downloads were deleted to make room: \(error.localizedDescription)"
         }
 
         delegate = TransferDelegate(stagingDirectory: storage.staging)
@@ -286,6 +346,10 @@ final class DownloadManager {
         probing.requestCachePolicy = .reloadIgnoringLocalCacheData
         probing.urlCache = nil
         probeSession = URLSession(configuration: probing)
+        // Artwork of items no download is left for, as earlier builds could leave behind.
+        if hasJobs { removeUnusedArtwork() }
+        // What a chunk wrote before the app was killed partway through writing it.
+        for job in jobs where job.status != .completed { releaseUnrecorded(of: job.id) }
     }
 
     private static func setAsideUnreadableJobs(_ storage: DownloadStorage, error: any Error) -> String {
@@ -351,11 +415,17 @@ final class DownloadManager {
             switch event {
             case .progress(let taskIdentifier, let received):
                 guard let transfer = running[taskIdentifier] else { continue }
+                lastActivity = .now
                 running[taskIdentifier]?.received = received
                 running[taskIdentifier]?.reported = received
-                running[taskIdentifier]?.lastProgress = .now
+                running[taskIdentifier]?.activity.noteProgress(now: .now)
+                if !transfer.isResponseChecked, let status = (transfer.task.response as? HTTPURLResponse)?.statusCode {
+                    running[taskIdentifier]?.isResponseChecked = true
+                    if status == 200, transfer.tag.range != nil { rangeIgnored(by: taskIdentifier) }
+                }
                 if let reported = transfer.reported, received < reported { restarted(taskIdentifier, after: reported) }
             case .finished(let finished):
+                lastActivity = .now
                 if let tag = finished.tag { awaitingReports.remove(tag) }
                 await handle(finished)
                 pump()
@@ -453,12 +523,20 @@ final class DownloadManager {
     }
 
     /// Sets the jobs' transfers aside with the bytes they have, to carry on from when the jobs
-    /// are resumed. Reports still to come from before a relaunch keep their ranges claimed.
+    /// are resumed, but for those under way that can't keep their bytes and are far enough
+    /// along to finish (`DownloadJob.finishesWhenPaused`). Reports still to come from before a
+    /// relaunch keep their ranges claimed.
     private func pause(_ ids: [UUID]) {
         let ids = Set(ids).filter { id in jobs.contains { $0.id == id && $0.status == .active } }
         guard !ids.isEmpty else { return }
         for index in jobs.indices where ids.contains(jobs[index].id) { jobs[index].status = .paused }
-        setAside(running.filter { ids.contains($0.value.tag.jobId) })
+        let transfers = running.filter { ids.contains($0.value.tag.jobId) }
+        let finishing = transfers.filter { _, transfer in
+            let expected = transfer.tag.range?.count64 ?? jobs.first { $0.id == transfer.tag.jobId }?.totalBytes
+            return DownloadJob.finishesWhenPaused(received: transfer.bytes, expected: expected, canResume: transfer.canResume)
+        }
+        if !finishing.isEmpty { Self.log.info("Pausing: \(finishing.count) transfers that can't keep their bytes finish first") }
+        setAside(transfers.filter { finishing[$0.key] == nil })
         for id in ids { probes.removeValue(forKey: id)?.task.cancel() }
         save()
         pump()
@@ -723,7 +801,7 @@ final class DownloadManager {
     /// Starts over from the first byte, for a source that changed on the server.
     func restart(_ id: UUID) {
         guard let index = index(of: id), jobs[index].status != .completed else { return }
-        cancelTransfers(of: id)
+        cancelTransfers(of: id, discarding: true)
         removePartial(of: id)
         jobs[index].resetProgress()
         noteStartedByUser([id])
@@ -735,8 +813,8 @@ final class DownloadManager {
     /// Stops and forgets a job, with its extras, and the item's artwork once no other job of it
     /// is left. `deletingFile` deletes the finished file and the subtitles beside it too.
     func remove(_ id: UUID, deletingFile: Bool = false) {
-        guard let itemId = jobs.first(where: { $0.id == id })?.itemId, forget(id, deletingFile: deletingFile) else { return }
-        removeArtwork(ofItems: [itemId])
+        guard forget(id, deletingFile: deletingFile) else { return }
+        removeUnusedArtwork()
         save()
         pump()
     }
@@ -763,7 +841,8 @@ final class DownloadManager {
         return true
     }
 
-    /// Stops and forgets every unfinished job, for signing out. Finished files stay.
+    /// Stops and forgets every unfinished job, with the artwork of items no finished one is
+    /// left for, for signing out. Finished files stay.
     func removeUnfinished() {
         for job in jobs where job.status != .completed {
             cancelTransfers(of: job.id)
@@ -771,6 +850,7 @@ final class DownloadManager {
             removeExtras(of: job, besideFile: false)
         }
         jobs.removeAll { $0.status != .completed }
+        removeUnusedArtwork()
         isSpaceCheckDue = true
         save()
     }
@@ -809,14 +889,14 @@ final class DownloadManager {
     func deleteDownloads(ofItem itemId: String) {
         let ids = jobs.filter { $0.itemId == itemId }.map(\.id)
         for id in ids { forget(id, deletingFile: true) }
-        removeArtwork(ofItems: [itemId])
+        removeUnusedArtwork()
         save()
         pump()
     }
 
-    /// Deletes the downloaded episodes watched since they were downloaded, here or, as far as
-    /// the server last said, anywhere: what Delete Watched Episodes asks. Never while a player
-    /// is open, since the episode in it could be one of them.
+    /// Deletes the downloaded episodes watched since they were queued, here or, as far as the
+    /// server last said, anywhere: what Delete Watched Episodes asks. Never while a player is
+    /// open, since the episode in it could be one of them.
     func deleteWatchedEpisodes() {
         guard players.isEmpty else { return }
         let watched = watchedDownloads().filter(\.isEpisode)
@@ -825,17 +905,33 @@ final class DownloadManager {
             Self.log.info("Deleting watched episode \(job.shortName, privacy: .public)")
             forget(job.id, deletingFile: true)
         }
-        removeArtwork(ofItems: watched.map(\.itemId))
+        removeUnusedArtwork()
         save()
         pump()
     }
 
-    /// Keeps what the server says about how finished downloads were watched, so what counts as
-    /// watched holds offline and in the background too.
+    /// Drops the unfinished downloads of these shows' episodes watched since they were queued,
+    /// here or anywhere, for smart downloads, which keep shows downloaded ahead of where they're
+    /// watched. Never while a player is open.
+    func dropWatchedEpisodes(ofShows seriesIds: Set<String>) {
+        guard players.isEmpty else { return }
+        let watched = DownloadJob.watchedWhileQueued(jobs, ofShows: seriesIds) { history.entry(for: $0) }
+        guard !watched.isEmpty else { return }
+        for job in watched {
+            Self.log.info("Dropping \(job.shortName, privacy: .public), watched while it was queued")
+            forget(job.id, deletingFile: false)
+        }
+        removeUnusedArtwork()
+        save()
+        pump()
+    }
+
+    /// Keeps what the server says about how downloads were watched, finished or not, so what
+    /// counts as watched holds offline and in the background too.
     func recordWatchState(from items: [JellyfinItem]) {
         let server = Dictionary(items.map { ($0.id, $0.userData) }) { first, _ in first }
         var changed = false
-        for index in jobs.indices where jobs[index].status == .completed && jobs[index].item != nil {
+        for index in jobs.indices where jobs[index].item != nil {
             guard let data = server[jobs[index].itemId], jobs[index].item?.userData != data else { continue }
             jobs[index].item?.userData = data
             changed = true
@@ -845,25 +941,30 @@ final class DownloadManager {
         save()
     }
 
-    /// The finished downloads watched since they were downloaded, the one watched longest ago
+    /// The finished downloads watched since they were queued, the one watched longest ago
     /// first: what goes to make room, and for Delete Watched Episodes.
     private func watchedDownloads() -> [DownloadJob] {
         jobs.compactMap { job -> (job: DownloadJob, watchedAt: Date)? in
-            guard case .watched(let date) = job.watchState(local: history.entry(for: job.itemId)) else { return nil }
+            guard job.status == .completed,
+                  case .watched(let date) = job.watchState(local: history.entry(for: job.itemId))
+            else { return nil }
             return (job, date)
         }
         .sorted { $0.watchedAt < $1.watchedAt }
         .map(\.job)
     }
 
-    /// Deletes the saved artwork of items no download is left for.
-    private func removeArtwork(ofItems itemIds: [String]) {
-        for itemId in Set(itemIds) where !jobs.contains(where: { $0.itemId == itemId }) {
-            do {
-                try storage.removeArtwork(for: itemId)
-            } catch {
-                problem = "Couldn't delete saved artwork: \(error.localizedDescription)"
-            }
+    /// The items and shows whose artwork the downloads keep (`DownloadExtras.artwork`).
+    private static func artworkIds(of jobs: [DownloadJob]) -> Set<String> {
+        Set(jobs.flatMap { [$0.itemId] + ($0.seriesId.map { [$0] } ?? []) })
+    }
+
+    /// Deletes the saved artwork of items and shows no download is left for.
+    private func removeUnusedArtwork() {
+        do {
+            try storage.removeArtwork(keeping: Self.artworkIds(of: jobs))
+        } catch {
+            problem = "Couldn't delete saved artwork: \(error.localizedDescription)"
         }
     }
 
@@ -895,14 +996,14 @@ final class DownloadManager {
         jobs.reduce(0) { $0 + ($1.status == .completed ? $1.storedBytes : (bytesSoFar[$1.id] ?? 0) + ($1.extrasBytes ?? 0)) }
     }
 
-    func availableCapacity() -> Int64? { storage.availableCapacity() }
+    func availableCapacity() -> Int64? { storage.availableCapacity(countingPurgeable: countsPurgeableSpace) }
 
     /// The room the downloads already queued don't need, for new ones: on the device, and under
     /// the storage limit when there is one, whichever is less. Nil when neither can be told.
     func spaceForNewDownloads() -> Int64? {
         let bytesSoFar = bytesSoFar()
         let queuedNeed = DownloadJob.queued(jobs).reduce(0) { $0 + max(0, ($1.displayTotalBytes ?? 0) - (bytesSoFar[$1.id] ?? 0)) }
-        let rooms = [storage.availableCapacity(), rules.storageLimit.map { $0 - storageUsed(bytesSoFar: bytesSoFar) }].compactMap(\.self)
+        let rooms = [availableCapacity(), rules.storageLimit.map { $0 - storageUsed(bytesSoFar: bytesSoFar) }].compactMap(\.self)
         return rooms.min().map { $0 - queuedNeed }
     }
 
@@ -936,17 +1037,27 @@ final class DownloadManager {
         guard !isPausedForPlayback else { return }
         let held = Set(waits.filter { !$0.value.isNetwork }.keys)
         let waitingForNetwork = Set(waits.filter(\.value.isNetwork).keys)
+        let rules = rules
+        // Only While Charging can't hold back what the session has once the app is suspended.
+        let onlyInHand = Set(DownloadJob.queued(jobs).filter(rules.waitsForPower).map(\.id))
         let inSession = DownloadJob.sessionFiles(jobs, held: isQueuingAhead ? held : held.union(waitingForNetwork),
-                                                 queuingAhead: isQueuingAhead, now: now)
+                                                 queuingAhead: isQueuingAhead, onlyInHand: onlyInHand, now: now)
         takeBack(keeping: inSession)
-        guard let client = accounts.client else { return }
         // Transfers of other files on the wire hold the file in hand back in front, as for its
-        // new chunks; one waiting for a network it may use isn't on the wire.
+        // new chunks; one waiting for a network it may use isn't on the wire, and the single
+        // transfer of a file that yields goes alongside.
+        let yielding = Set(jobs.filter(\.yields).map(\.id))
         let finishing = Set(running.values.filter { $0.carriesBytes && $0.access.allows(network) }.map(\.tag.jobId))
+            .subtracting(yielding)
+        let waitsOn = isQueuingAhead ? [] : downloadingJobId.map { finishing.subtracting([$0]) } ?? []
+        if fileInHandWaitsOn != waitsOn { fileInHandWaitsOn = waitsOn }
+        guard let client = accounts.client else { return }
         carryOnSetAside(in: inSession, finishing: finishing, client: client)
         let probing = probes.keys.map { TransferTag(jobId: $0, range: DownloadJob.probeRange) }
         let claimed = running.values.map(\.tag) + awaitingReports + probing + heldResumeData.keys + awaitingResumeData.keys
+            + writing.keys
         let plan = DownloadJob.plan(jobs, running: claimed, finishing: finishing, held: held, waitingForNetwork: waitingForNetwork,
+                                    onlyInHand: onlyInHand, chunkLimit: spaceChunkLimit,
                                     budget: Self.maxQueuedTransfers - running.count, queuingAhead: isQueuingAhead, now: now)
         for tag in plan {
             guard let job = jobs.first(where: { $0.id == tag.jobId }) else { continue }
@@ -975,7 +1086,7 @@ final class DownloadManager {
             Self.log.info("Waiting: \(waits.map { "\($0.key.uuidString.prefix(8)) \($0.value)" }.sorted().joined(separator: ", "), privacy: .public)")
             self.waits = waits
         }
-        let fileInHand = queued.first { waits[$0.id] == nil }?.id
+        let fileInHand = DownloadJob.fileInHand(jobs, held: Set(waits.keys))
         if downloadingJobId != fileInHand { downloadingJobId = fileInHand }
     }
 
@@ -986,7 +1097,8 @@ final class DownloadManager {
         guard isSpaceCheckDue || now.timeIntervalSince(spaceCheckedAt) > Self.spaceCheckInterval else { return }
         isSpaceCheckDue = false
         spaceCheckedAt = now
-        let available = storage.availableCapacity()
+        for jobId in unreleased { releaseUnrecorded(of: jobId) }
+        let available = availableCapacity()
         let bytesSoFar = bytesSoFar()
         let used = storageUsed(bytesSoFar: bytesSoFar)
         var outcome = StorageBudget.plan(queue: queued, bytesSoFar: bytesSoFar, used: used, available: available,
@@ -1002,7 +1114,11 @@ final class DownloadManager {
         if outcome.shortfalls != spaceShortfalls {
             Self.log.notice("Short of room: \(outcome.shortfalls.map { "\($0.key.uuidString.prefix(8)) \($0.value)" }.joined(separator: ", "), privacy: .public)")
         }
+        if outcome.chunkLimit != spaceChunkLimit {
+            Self.log.notice("Chunks limited by room on the device: \(outcome.chunkLimit.map(String.init) ?? "no longer", privacy: .public)")
+        }
         spaceShortfalls = outcome.shortfalls
+        spaceChunkLimit = outcome.chunkLimit
     }
 
     private func makeRoom(deleting ids: [UUID]) {
@@ -1012,25 +1128,47 @@ final class DownloadManager {
             Self.log.notice("Deleting \(job.shortName, privacy: .public), watched, to make room")
             forget(job.id, deletingFile: true)
         }
-        removeArtwork(ofItems: deleted.map(\.itemId))
+        removeUnusedArtwork()
         save()
-        lastFreed = FreedSpace(titles: deleted.map(\.shortName), bytes: deleted.reduce(0) { $0 + ($1.totalBytes ?? 0) }, date: .now)
+        let freed = FreedSpace(titles: deleted.map(\.shortName), bytes: deleted.reduce(0) { $0 + ($1.totalBytes ?? 0) }, date: .now)
+        lastFreed = freed
+        do {
+            try storage.saveFreed(freed)
+        } catch {
+            problem = "Couldn't note which downloads were deleted to make room: \(error.localizedDescription)"
+        }
     }
 
     /// Takes back transfers that haven't started and shouldn't wait in the session now: those
     /// of files not in `inSession`, or made for networks the rules no longer give their file.
-    /// Ones with bytes, under way or carrying on from resume data, finish.
+    /// Ones with bytes, under way or carrying on from resume data, finish, unless they can't use
+    /// the network the device is on while the rules now let their file use it: their bytes go,
+    /// as resume data keeps the networks a transfer was made for, and their range is planned
+    /// again for this one.
     private func takeBack(keeping inSession: Set<UUID>) {
         let rules = rules
         let byId = Dictionary(jobs.map { ($0.id, $0) }) { first, _ in first }
         var count = 0
-        for (identifier, transfer) in running where !transfer.carriesBytes {
-            if let job = byId[transfer.tag.jobId], inSession.contains(job.id), transfer.access == rules.access(for: job) { continue }
-            cancel(identifier, transfer)
+        var stranded = 0
+        for (identifier, transfer) in running {
+            let job = byId[transfer.tag.jobId]
+            if transfer.carriesBytes {
+                guard let job, job.status == .active, transfer.access.isStranded(on: network, fileAccess: rules.access(for: job))
+                else { continue }
+                // Without its resume data, which would carry the old networks over.
+                cancelledByUs.insert(identifier)
+                running[identifier] = nil
+                transfer.task.cancel()
+                stranded += 1
+            } else if let job, inSession.contains(job.id), transfer.access == rules.access(for: job) {
+                continue
+            } else {
+                cancel(identifier, transfer)
+            }
             count += 1
         }
         guard count > 0 else { return }
-        Self.log.info("Took back \(count) transfers that hadn't started")
+        Self.log.info("Took back \(count) transfers, \(stranded) of them stranded on networks this one isn't")
     }
 
     /// Starts the ranges set aside whose file is in the session again, from their bytes, in
@@ -1106,7 +1244,8 @@ final class DownloadManager {
         probes[job.id] = (identifier, task)
     }
 
-    /// The probe's answer as a transfer's report: the byte in staging for a 206, the headers
+    /// The probe's answer as a transfer's report: the bytes asked for in staging for a 206,
+    /// however much more the server goes on to send, which its Content-Range says; the headers
     /// alone otherwise.
     @concurrent
     private nonisolated static func fetchProbe(
@@ -1121,10 +1260,9 @@ final class DownloadManager {
                                                  stagedSize: 0, error: nil, resumeData: nil)
             }
             var body = Data()
-            // One byte more than asked for is enough to tell the server sent too much.
             for try await byte in bytes {
                 body.append(byte)
-                if body.count > tag.range?.count ?? 1 { break }
+                if body.count >= tag.range?.count ?? 1 { break }
             }
             bytes.task.cancel()
             let file = staging.appending(path: UUID().uuidString)
@@ -1168,11 +1306,13 @@ final class DownloadManager {
     }
 
     /// Cancels the job's transfers, or only those whose range `matching` accepts, and forgets
-    /// any set aside or awaiting a report.
-    private func cancelTransfers(of jobId: UUID, matching: (Range<Int64>) -> Bool = { _ in true }) {
+    /// any set aside or awaiting a report. `discarding` drops whatever they deliver anyway, for a
+    /// job that starts over.
+    private func cancelTransfers(of jobId: UUID, discarding: Bool = false, matching: (Range<Int64>) -> Bool = { _ in true }) {
         // A whole-file transfer has no range and only goes with the whole job.
         func isMatch(_ tag: TransferTag) -> Bool { tag.jobId == jobId && (tag.range.map(matching) ?? true) }
         for (identifier, transfer) in Self.cancellationOrder(running) where isMatch(transfer.tag) {
+            if discarding { discarded.insert(identifier) }
             cancel(identifier, transfer)
         }
         awaitingReports = awaitingReports.filter { !isMatch($0) }
@@ -1184,7 +1324,7 @@ final class DownloadManager {
     private func cancel(_ identifier: Int, _ transfer: RunningTransfer) {
         cancelledByUs.insert(identifier)
         running[identifier] = nil
-        if transfer.tag.range == nil {
+        if transfer.tag.range == nil, !discarded.contains(identifier) {
             // All a whole-file transfer has is its resume data: stopped, it carries on from there
             // when retried.
             let bytes = transfer.bytes
@@ -1196,6 +1336,27 @@ final class DownloadManager {
         } else {
             transfer.task.cancel()
         }
+    }
+
+    /// A range request is being answered with the whole file: the file's stream ignores Range,
+    /// so this transfer fetches the file, and its other transfers come out at once rather than
+    /// each fetching it again. The ranges the file had go, as the whole file takes their place.
+    private func rangeIgnored(by taskIdentifier: Int) {
+        guard let transfer = running[taskIdentifier], let index = index(of: transfer.tag.jobId),
+              jobs[index].rangeSupport != .unsupported
+        else { return }
+        let jobId = transfer.tag.jobId
+        let others = running.filter { $0.key != taskIdentifier && $0.value.tag.jobId == jobId }
+        Self.log.notice("Task \(taskIdentifier) [\(transfer.tag.encoded)] brings the whole file for a range: cancelling the file's \(others.count) other transfers")
+        for (identifier, other) in Self.cancellationOrder(others) { cancel(identifier, other) }
+        awaitingReports = awaitingReports.filter { $0.jobId != jobId }
+        awaitingResumeData = awaitingResumeData.filter { $0.key.jobId != jobId }
+        forgetHeld(Set(heldResumeData.keys.filter { $0.jobId == jobId }))
+        probes.removeValue(forKey: jobId)?.task.cancel()
+        jobs[index].rangeIgnored()
+        removePartial(of: jobId)
+        save()
+        saveHandedOut()
     }
 
     /// The daemon retries a dropped transfer by itself, without telling the app. Where the server
@@ -1219,40 +1380,54 @@ final class DownloadManager {
         pump()
     }
 
-    /// Replaces the transfers that moved no bytes for `stallLimit`. The session starts transfers
-    /// in an order of its own, so the running ones are those the server has answered, and one
-    /// waiting its turn isn't stalled; nor is one waiting for a network it may use. When nothing
-    /// has moved at all while the app is in front, the oldest `connectionsPerHost` count too: a
-    /// transfer can stall before any answer. Off screen, transfers wait at the system's
-    /// discretion, so nothing moving says nothing. A replaced transfer that received nothing
-    /// loses nothing.
+    /// Replaces the transfers that have moved nothing for `stallLimit` since they got under way,
+    /// by what their tasks say they've received (`TransferActivity`): one waiting its turn, timed
+    /// for later, or finished with its report still to handle isn't stalled; nor is one waiting
+    /// for a network it may use. When nothing at all has moved or reported for that long while
+    /// the app is in front, the oldest `connectionsPerHost` waiting count too: a transfer can
+    /// stall before any answer. Off screen, transfers wait at the system's discretion, so nothing
+    /// moving says nothing. A replaced transfer carries on from the bytes it has, by its resume
+    /// data, but for one resumed that never got going: the daemon can carry its wait over into the
+    /// resume data, so its range is planned again. A paused download's transfer left to finish is
+    /// set aside instead.
     private func replaceStalledTransfers(now: Date) {
+        for (identifier, transfer) in running {
+            let before = transfer.activity.lastProgress
+            running[identifier]?.activity.observe(bytes: transfer.task.countOfBytesReceived, hasResponse: transfer.task.response != nil,
+                                                  now: now)
+            if running[identifier]?.activity.lastProgress != before { lastActivity = now }
+        }
         guard isNetworkReachable, !isPausedForPlayback else { return }
-        let movable = running.filter { $0.value.access.allows(network) }
-        let isStalled = { (transfer: RunningTransfer) in now.timeIntervalSince(transfer.lastProgress) > Self.stallLimit }
-        var due = movable.filter { $0.value.task.response != nil }
-        if isInFront, movable.values.allSatisfy(isStalled) {
-            for (identifier, transfer) in movable.sorted(by: { $0.key < $1.key }).prefix(Self.connectionsPerHost) {
+        let movable = running.filter { $0.value.access.allows(network) && ($0.value.task.earliestBeginDate ?? .distantPast) <= now }
+        var due = movable.filter { $0.value.activity.isStalled(state: $0.value.task.state, now: now, limit: Self.stallLimit) }
+        if isInFront, now.timeIntervalSince(lastActivity) > Self.stallLimit {
+            let waiting = movable.filter { _, transfer in
+                !transfer.activity.isUnderWay && transfer.task.state == .running
+                    && now.timeIntervalSince(transfer.activity.lastProgress) > Self.stallLimit
+            }
+            for (identifier, transfer) in waiting.sorted(by: { $0.key < $1.key }).prefix(Self.connectionsPerHost) {
                 due[identifier] = transfer
             }
         }
-        for (identifier, transfer) in due where (transfer.task.earliestBeginDate ?? .distantPast) <= now && isStalled(transfer) {
-            Self.log.notice("Task \(identifier) [\(transfer.tag.encoded)]: no bytes for \(Int(now.timeIntervalSince(transfer.lastProgress)))s, replacing it")
-            // Stuck partway: the link can't carry a chunk this big between drops.
-            if let index = index(of: transfer.tag.jobId) {
-                jobs[index].recordCut(receivedBytes: transfer.received, attemptStart: transfer.attemptStart, now: now)
+        for (identifier, transfer) in due {
+            Self.log.notice("Task \(identifier) [\(transfer.tag.encoded)]: no bytes for \(Int(now.timeIntervalSince(transfer.activity.lastProgress)))s, replacing it")
+            guard let index = index(of: transfer.tag.jobId), jobs[index].status == .active else {
+                setAside([identifier: transfer])
+                continue
             }
+            // Stuck partway: the link can't carry a chunk this big between drops.
+            jobs[index].recordCut(receivedBytes: transfer.received, attemptStart: transfer.attemptStart, now: now)
             cancelledByUs.insert(identifier)
-            if transfer.resumed {
-                // Resuming didn't get it going either (the daemon can carry its wait over into the
-                // resume data): the range goes back to be planned again in today's chunk size.
+            if !transfer.activity.carriesOnWhenReplaced {
+                // Resuming didn't get it going: the range goes back to be planned again in
+                // today's chunk size.
                 transfer.task.cancel()
                 running[identifier] = nil
                 pump()
                 continue
             }
             // The transfer keeps its range until the replacement starts, so nothing else claims it.
-            running[identifier]?.lastProgress = now
+            running[identifier]?.activity.restartClock(now: now)
             transfer.task.cancel(byProducingResumeData: { [weak self] resumeData in
                 Task { @MainActor in self?.replace(identifier, resumeData: resumeData) }
             })
@@ -1292,7 +1467,10 @@ final class DownloadManager {
     private func handle(_ finished: TransferDelegate.Finished) async {
         let transfer = running.removeValue(forKey: finished.taskIdentifier)
         let cancelled = cancelledByUs.remove(finished.taskIdentifier) != nil
-        guard !cancelled, let tag = transfer?.tag ?? finished.tag,
+        let isDiscarded = discarded.remove(finished.taskIdentifier) != nil
+        // A transfer cancelled after it had finished delivers its body all the same: kept, but
+        // for a job started over since.
+        guard !isDiscarded, !(cancelled && finished.error != nil), let tag = transfer?.tag ?? finished.tag,
               let index = index(of: tag.jobId), jobs[index].status != .completed
         else {
             discard(finished.stagedFile)
@@ -1300,9 +1478,9 @@ final class DownloadManager {
         }
         let received = transfer?.received ?? 0
         Self.log.info("""
-            Task \(finished.taskIdentifier) [\(tag.encoded)] finished: HTTP \(finished.response?.statusCode ?? 0), \
-            Content-Range \(finished.response?.contentRange ?? "none"), \(finished.stagedSize ?? -1) bytes, \
-            error \(finished.error.map { String(describing: $0) } ?? "none")
+            Task \(finished.taskIdentifier) [\(tag.encoded)] finished\(cancelled ? " though cancelled" : ""): \
+            HTTP \(finished.response?.statusCode ?? 0), Content-Range \(finished.response?.contentRange ?? "none"), \
+            \(finished.stagedSize ?? -1) bytes, error \(finished.error.map { String(describing: $0) } ?? "none")
             """)
 
         if let error = finished.error {
@@ -1316,11 +1494,15 @@ final class DownloadManager {
                 Self.log.notice("The system cancelled transfers: \(String(describing: reason), privacy: .public)")
                 systemCancellation = reason
             }
-            // Stopped by the system, e.g. when the app was force quit, says nothing about the
-            // connection: no backoff, and the range is asked for again right away.
-            if (error as? URLError)?.code != .cancelled {
+            if StorageBudget.isOutOfSpace(error) {
+                ranOutOfSpace(error, writing: tag.range, of: tag.jobId)
+                save()
+            } else if (error as? URLError)?.code != .cancelled {
+                // Stopped by the system, e.g. when the app was force quit, says nothing about the
+                // connection: no backoff, and the range is asked for again right away.
                 jobs[index].recordFailure(.network(Self.describe(error)), receivedBytes: received,
-                                          attemptStart: transfer?.attemptStart ?? .now, unreachable: Self.isUnreachable(error))
+                                          attemptStart: transfer?.attemptStart ?? .now, unreachable: Self.isUnreachable(error),
+                                          otherArrival: otherArrival(than: tag.jobId))
                 save()
             }
             // A range that can resume carries on from its bytes, as one set aside, instead of
@@ -1365,7 +1547,7 @@ final class DownloadManager {
             discard(finished.stagedFile)
             guard jobs[index].status == .active else { return }
             jobs[index].recordFailure(failure, receivedBytes: max(received, finished.stagedSize ?? 0),
-                                      attemptStart: transfer?.attemptStart ?? .now)
+                                      attemptStart: transfer?.attemptStart ?? .now, otherArrival: otherArrival(than: tag.jobId))
             if jobs[index].status == .failed { cancelTransfers(of: tag.jobId) }
             save()
 
@@ -1376,7 +1558,8 @@ final class DownloadManager {
     }
 
     private func acceptChunk(_ file: URL, range: Range<Int64>, total: Int64, jobId: UUID, response: ResponseInfo?) async {
-        guard let index = index(of: jobId) else { return discard(file) }
+        // A file that came whole for a range takes the place of its ranges.
+        guard let index = index(of: jobId), jobs[index].rangeSupport != .unsupported else { return discard(file) }
         if jobs[index].rangeSupport == .unknown {
             jobs[index].rangeSupport = .supported
             jobs[index].totalBytes = total
@@ -1387,11 +1570,20 @@ final class DownloadManager {
             isSpaceCheckDue = true
         }
 
+        // Claimed and counted while it's written, which other work can interleave with.
+        let tag = TransferTag(jobId: jobId, range: range)
+        writing[tag] = range.count64
         do {
             try await storage.writeChunk(file, into: jobId, at: range.lowerBound)
+            writing[tag] = nil
         } catch {
+            // No longer claimed, so what it wrote goes.
+            writing[tag] = nil
             discard(file)
-            if let index = self.index(of: jobId) {
+            releaseUnrecorded(of: jobId)
+            if StorageBudget.isOutOfSpace(error) {
+                ranOutOfSpace(error, writing: range, of: jobId)
+            } else if let index = self.index(of: jobId) {
                 stop(index, because: "Couldn't write the download to storage: \(error.localizedDescription)")
             }
             return
@@ -1429,6 +1621,43 @@ final class DownloadManager {
             jobs[index].status = .failed
             jobs[index].lastError = "Couldn't move the finished file into place: \(error.localizedDescription)"
         }
+    }
+
+    /// The device ran out of room for a transfer, or for a chunk being written into place, though
+    /// the budget found some: from now on only room that's free counts, and the next check holds
+    /// the queue to that, so downloads wait for room and carry on once there is, rather than fail.
+    /// The job's chunks halve from the `range` that didn't fit.
+    private func ranOutOfSpace(_ error: any Error, writing range: Range<Int64>?, of jobId: UUID) {
+        Self.log.notice("Out of room on the device: \(String(describing: error), privacy: .public)")
+        countsPurgeableSpace = false
+        isSpaceCheckDue = true
+        if let range, let index = index(of: jobId) { jobs[index].ranOutOfSpace(writing: range.count64) }
+    }
+
+    /// Gives back the room the job's partial file takes outside the ranges recorded as done or
+    /// being written, as a chunk whose writing failed, or was cut off by a kill, leaves behind.
+    /// On a full device that can fail for want of room itself; the next room check tries again.
+    private func releaseUnrecorded(of jobId: UUID) {
+        guard let job = jobs.first(where: { $0.id == jobId }), job.rangeSupport == .supported else {
+            unreleased.remove(jobId)
+            return
+        }
+        var kept = job.completed
+        for tag in writing.keys where tag.jobId == jobId {
+            if let range = tag.range { kept.insert(range) }
+        }
+        do {
+            try storage.releaseUnrecorded(in: jobId, keeping: kept)
+            unreleased.remove(jobId)
+        } catch {
+            unreleased.insert(jobId)
+            Self.log.error("Couldn't give back the room of \(job.shortName, privacy: .public)'s unwritten ranges: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// When a transfer of a file other than this one last came through.
+    private func otherArrival(than jobId: UUID) -> Date? {
+        jobs.filter { $0.id != jobId }.compactMap(\.cameThroughAt).max()
     }
 
     private func stop(_ index: Int, because message: String) {
@@ -1696,10 +1925,12 @@ final class DownloadManager {
 
     // MARK: Progress
 
-    /// The bytes each unfinished download has so far: in its partial file, and in the session's
-    /// files for its transfers, running, awaiting their resume data or set aside with it.
+    /// The bytes each unfinished download has on disk so far: in its partial file, in staging on
+    /// their way there, and in the session's files for its transfers, running, awaiting their
+    /// resume data or set aside with it.
     private func bytesSoFar() -> [UUID: Int64] {
         var held: [(jobId: UUID, bytes: Int64)] = running.values.map { ($0.tag.jobId, $0.bytes) }
+        held += writing.map { ($0.key.jobId, $0.value) }
         held += awaitingResumeData.map { ($0.key.jobId, $0.value) }
         held += heldResumeData.map { ($0.key.jobId, $0.value.bytes) }
         held += wholeFileResumeData.map { ($0.key, $0.value.bytes) }
@@ -1712,7 +1943,8 @@ final class DownloadManager {
         if let lastSample, now.timeIntervalSince(lastSample.date) > 5 {
             // The app was suspended: transfers carried on without reporting, so that time
             // says nothing about stalls.
-            for identifier in running.keys { running[identifier]?.lastProgress = now }
+            for identifier in running.keys { running[identifier]?.activity.restartClock(now: now) }
+            lastActivity = now
         }
         var speeds: [UUID: Double] = [:]
         if let lastSample, now > lastSample.date {
@@ -1722,9 +1954,16 @@ final class DownloadManager {
                 speeds[id] = (bytesPerSecond[id] ?? instant) * 0.7 + instant * 0.3
             }
         }
+        // A retry coming due can change which files the session holds (`DownloadJob.sessionFiles`).
+        let retryCameDue = lastSample.map { last in
+            jobs.contains { $0.status == .active && ($0.retryAt.map { $0 > last.date && $0 <= now } ?? false) }
+        } ?? false
         lastSample = (now, bytes)
+        if retryCameDue { pump() }
         if receivedBytes != bytes { receivedBytes = bytes }
         if bytesPerSecond != speeds { bytesPerSecond = speeds }
+        let transferring = Set(running.values.filter(\.isUnderWay).map(\.tag.jobId))
+        if transferringJobIds != transferring { transferringJobIds = transferring }
         if now.timeIntervalSince(lastStallCheck) > 10 {
             lastStallCheck = now
             replaceStalledTransfers(now: now)

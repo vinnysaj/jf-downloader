@@ -527,8 +527,7 @@ nonisolated enum KeepAwakeSound: Equatable, Sendable {
             excluded.isExcludedFromBackup = true
             var folder = directory
             try folder.setResourceValues(excluded)
-            if manager.fileExists(atPath: kept.path) { try manager.removeItem(at: kept) }
-            try manager.moveItem(at: downloaded, to: kept)
+            _ = try manager.replaceItemAt(kept, withItemAt: downloaded)
         } catch {
             throw .notKept(error.localizedDescription)
         }

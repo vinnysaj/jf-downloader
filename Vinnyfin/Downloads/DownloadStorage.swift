@@ -56,6 +56,38 @@ nonisolated struct DownloadStorage: Sendable {
         partials.appending(path: "\(jobId.uuidString).part")
     }
 
+    /// Gives back the room a job's partial file takes outside the ranges recorded in it as done
+    /// (`kept`): what a chunk wrote before writing it failed partway, as when the device ran out
+    /// of room or the app was killed. Those ranges are planned again, and the room downloads take
+    /// is counted by the ranges recorded (`DownloadJob.bytesSoFar`), so that counts it right. Each
+    /// stretch shrinks to whole blocks, as only those can be given back, so the bytes of the
+    /// ranges either side stay.
+    func releaseUnrecorded(in jobId: UUID, keeping kept: ByteRanges) throws {
+        let partial = partialFile(for: jobId)
+        guard FileManager.default.fileExists(atPath: partial.path) else { return }
+        let handle = try FileHandle(forWritingTo: partial)
+        let released = Result { try Self.punchHoles(in: handle.fileDescriptor, keeping: kept) }
+        try handle.close()
+        try released.get()
+    }
+
+    private static func punchHoles(in descriptor: Int32, keeping kept: ByteRanges) throws {
+        func failure() -> POSIXError { POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else { throw failure() }
+        let block = Int64(status.st_blksize)
+        let end = Int64(status.st_size)
+        var start: Int64 = 0
+        for range in kept.ranges + [end..<end] {
+            let low = (start + block - 1) / block * block
+            let high = min(range.lowerBound, end) / block * block
+            start = max(start, range.upperBound)
+            guard high > low else { continue }
+            var hole = fpunchhole_t(fp_flags: 0, reserved: 0, fp_offset: off_t(low), fp_length: off_t(high - low))
+            guard fcntl(descriptor, F_PUNCHHOLE, &hole) == 0 else { throw failure() }
+        }
+    }
+
     func resumeDataFile(for jobId: UUID) -> URL {
         partials.appending(path: "\(jobId.uuidString).resume")
     }
@@ -66,10 +98,13 @@ nonisolated struct DownloadStorage: Sendable {
         artwork.appending(path: "\(itemId)-\(kind.rawValue).jpg")
     }
 
-    func removeArtwork(for itemId: String) throws {
-        for kind in [JellyfinClient.ImageKind.primary, .backdrop, .logo] {
-            let file = artworkFile(itemId: itemId, kind: kind)
-            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+    /// Deletes the saved artwork of every item and show but those `kept`: an item's own pictures
+    /// and a show's poster are saved under their ids (`artworkFile`).
+    func removeArtwork(keeping kept: Set<String>) throws {
+        for file in try FileManager.default.contentsOfDirectory(at: artwork, includingPropertiesForKeys: nil) {
+            let name = file.deletingPathExtension().lastPathComponent
+            guard let separator = name.lastIndex(of: "-"), !kept.contains(String(name[..<separator])) else { continue }
+            try FileManager.default.removeItem(at: file)
         }
     }
 
@@ -79,12 +114,12 @@ nonisolated struct DownloadStorage: Sendable {
         extras.appending(path: jobId.uuidString, directoryHint: .isDirectory)
     }
 
-    /// Puts a fetched extra in place, over an older copy.
+    /// Puts a fetched extra in place, over an older copy in one step, so that a copy is always
+    /// there whole.
     func saveExtra(_ downloaded: URL, to file: URL) throws {
         let manager = FileManager.default
         try manager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if manager.fileExists(atPath: file.path) { try manager.removeItem(at: file) }
-        try manager.moveItem(at: downloaded, to: file)
+        _ = try manager.replaceItemAt(file, withItemAt: downloaded)
         #if !os(macOS)
         // Subtitles beside a finished file are in Documents, which backups would otherwise take.
         if file.path.hasPrefix(finished.path) {
@@ -266,11 +301,40 @@ nonisolated struct DownloadStorage: Sendable {
         }
     }
 
-    /// Nil when the volume can't say; the caller then doesn't hold the download back.
-    func availableCapacity() -> Int64? {
-        let values = try? finished.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return values?.volumeAvailableCapacityForImportantUsage
+    /// The room on the volume for downloads: with `countingPurgeable`, what the system says it can
+    /// make for something important by purging, which it does in its own time rather than as a
+    /// write needs it; without, what's free now. Nil when the volume can't say; the caller then
+    /// doesn't hold the download back.
+    func availableCapacity(countingPurgeable: Bool = true) -> Int64? {
+        if countingPurgeable {
+            let values = try? finished.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            return values?.volumeAvailableCapacityForImportantUsage
+        }
+        let values = try? finished.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+        return values?.volumeAvailableCapacity.map(Int64.init)
     }
+
+    // MARK: Room made
+
+    /// The watched downloads last deleted to make room, to say so.
+    var freedFile: URL { root.appending(path: "freed.json") }
+
+    func loadFreed() throws -> FreedSpace? {
+        guard FileManager.default.fileExists(atPath: freedFile.path) else { return nil }
+        return try JSONDecoder().decode(FreedSpace.self, from: Data(contentsOf: freedFile))
+    }
+
+    func saveFreed(_ freed: FreedSpace) throws {
+        try JSONEncoder().encode(freed).write(to: freedFile, options: .atomic)
+    }
+}
+
+/// Watched downloads deleted to make room (`StorageBudget`), to tell the user, whenever it
+/// happened: in front, or in a background wake the app was killed after.
+nonisolated struct FreedSpace: Codable, Equatable, Sendable {
+    let titles: [String]
+    let bytes: Int64
+    let date: Date
 }
 
 /// A cancelled transfer's resume data, with how many bytes of its file it carries. Those bytes

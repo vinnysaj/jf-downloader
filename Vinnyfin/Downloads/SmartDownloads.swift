@@ -8,8 +8,9 @@ import OSLog
 /// watched here or on any other device and as new ones reach the server. Each refresh also
 /// brings what the server says about how finished downloads were watched into the downloads
 /// (`DownloadManager.recordWatchState`), which decide from it, and from this device's history,
-/// what's watched: with "Delete Watched Episodes" on, watched episodes go, and watched
-/// downloads of any kind go to make room.
+/// what's watched since it was queued: an episode of one of these shows watched before its
+/// download finished is dropped, with "Delete Watched Episodes" on, watched episodes go, and
+/// watched downloads of any kind go to make room.
 ///
 /// Refreshes when the app opens, every `openInterval` while it's open, when a player closes, and
 /// on the background refresh wake (`BackgroundDownloads`). Never while a player is open: the
@@ -148,7 +149,10 @@ final class SmartDownloads {
             }
         }
         // A player opened while the server was answering could be playing one of them.
-        if settings.deleteWatchedEpisodes, openPlayers.isEmpty { downloads.deleteWatchedEpisodes() }
+        guard openPlayers.isEmpty else { return }
+        // An episode watched since it was queued isn't ahead of where the show is watched any more.
+        downloads.dropWatchedEpisodes(ofShows: Set(rules.map(\.seriesId)))
+        if settings.deleteWatchedEpisodes { downloads.deleteWatchedEpisodes() }
     }
 
     private func refresh(seriesId: String) async throws {
@@ -197,10 +201,10 @@ final class SmartDownloads {
         return (episodes, states, nextUp)
     }
 
-    /// Asks the server how every finished download was watched, a page of them at a time.
+    /// Asks the server how every download was watched, finished or not, a page of them at a time.
     private func refreshWatchState() async throws {
         guard let client = accounts.client, let account = accounts.account else { return }
-        let ids = Set(downloads.jobs.filter { $0.status == .completed }.map(\.itemId)).sorted()
+        let ids = Set(downloads.jobs.map(\.itemId)).sorted()
         for start in stride(from: 0, to: ids.count, by: Self.watchStatePage) {
             let page = Array(ids[start..<min(ids.count, start + Self.watchStatePage)])
             var query = JellyfinClient.ItemQuery(types: ["Movie", "Episode"], ids: page)

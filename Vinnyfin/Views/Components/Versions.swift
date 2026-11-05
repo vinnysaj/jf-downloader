@@ -84,49 +84,123 @@ extension MediaSource {
 }
 
 #if !os(tvOS)
-/// How a job is doing, in words, with the controls that apply to it.
+/// What a download's status line says. While bytes arrive, that comes first, with what the
+/// download waits for once its transfers under way finish, if it waits.
+enum JobStatus: Equatable {
+    case arriving(bytesPerSecond: Int64, next: String?)
+    case pausing(bytesPerSecond: Int64)
+    case heldForPlayback
+    case waiting(DownloadWait)
+    case offline
+    /// Waiting out a retry, or trying again; `othersGoFirst` while it yields.
+    case retrying(at: Date?, error: String?, othersGoFirst: Bool)
+    case queued
+    /// In hand, it waits for another file's transfers under way to finish first.
+    case startingAfter(String)
+    case waitingForServer
+    case paused
+    case failed(String)
+    case downloaded
+
+    /// `bytesPerSecond` is how fast the job's bytes arrive, smoothed, which counts only while
+    /// `isTransferring` (it has transfers under way); `fileInHand` the job the session works on,
+    /// and `waitsOn` the files whose transfers under way it waits for.
+    static func of(_ job: DownloadJob, bytesPerSecond: Double?, isTransferring: Bool, waits: [UUID: DownloadWait],
+                   isPausedForPlayback: Bool, isNetworkReachable: Bool, fileInHand: UUID?, waitsOn: [DownloadJob],
+                   now: Date) -> JobStatus {
+        let speed = isTransferring && (bytesPerSecond ?? 0) >= 1024 ? Int64(bytesPerSecond ?? 0) : nil
+        switch job.status {
+        case .active:
+            if let speed {
+                let next = waits[job.id]?.next ?? (fileInHand != job.id && !job.yields ? "then queued" : nil)
+                return .arriving(bytesPerSecond: speed, next: next)
+            }
+            if isPausedForPlayback { return .heldForPlayback }
+            if let wait = waits[job.id] { return .waiting(wait) }
+            if !isNetworkReachable { return .offline }
+            let retryAt = job.retryAt.flatMap { $0 > now ? $0 : nil }
+            if job.yields || retryAt != nil { return .retrying(at: retryAt, error: job.lastError, othersGoFirst: job.yields) }
+            if fileInHand != job.id { return .queued }
+            if let overtaken = waitsOn.first { return .startingAfter(overtaken.shortName) }
+            return .waitingForServer
+        case .paused:
+            return speed.map { .pausing(bytesPerSecond: $0) } ?? .paused
+        case .failed:
+            return .failed(job.lastError ?? "Failed")
+        case .completed:
+            return .downloaded
+        }
+    }
+}
+
+/// How a job is doing, in words, with the controls that apply to it. Looked at again as its
+/// retry comes due, and a second later, as the countdown to it ends then: an update can come a
+/// moment early, and a schedule's first update gives its first date, not the time.
 struct JobStatusLine: View {
     @Environment(DownloadManager.self) private var downloads
     let job: DownloadJob
 
     var body: some View {
-        switch job.status {
-        case .active:
-            if downloads.isPausedForPlayback {
-                Label("Paused while you watch", systemImage: "play.rectangle")
-                    .foregroundStyle(.secondary)
-            } else if let wait = downloads.waits[job.id] {
-                Label(wait.status, systemImage: wait.systemImage)
-                    .foregroundStyle(.orange)
-            } else if !downloads.isNetworkReachable {
-                Label("Waiting for a network connection", systemImage: "wifi.slash")
-                    .foregroundStyle(.orange)
-            } else if let retryAt = job.retryAt, retryAt > .now {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Retrying \(Text(retryAt, style: .relative))")
-                    if let lastError = job.lastError { Text(lastError).foregroundStyle(.secondary) }
-                }
+        TimelineView(.explicit(job.retryAt.map { [$0, $0.addingTimeInterval(1)] } ?? [])) { _ in
+            line(JobStatus.of(job, bytesPerSecond: downloads.bytesPerSecond[job.id],
+                              isTransferring: downloads.transferringJobIds.contains(job.id), waits: downloads.waits,
+                              isPausedForPlayback: downloads.isPausedForPlayback, isNetworkReachable: downloads.isNetworkReachable,
+                              fileInHand: downloads.downloadingJobId,
+                              waitsOn: downloads.jobs.filter { downloads.fileInHandWaitsOn.contains($0.id) }, now: .now))
+        }
+    }
+
+    @ViewBuilder private func line(_ status: JobStatus) -> some View {
+        switch status {
+        case .arriving(let speed, let next):
+            Text([Self.speed(speed), next].compactMap(\.self).joined(separator: " · "))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        case .pausing(let speed):
+            Label("Pausing once the parts under way finish · \(Self.speed(speed))", systemImage: "pause.circle")
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        case .heldForPlayback:
+            Label("Paused while you watch", systemImage: "play.rectangle")
+                .foregroundStyle(.secondary)
+        case .waiting(let wait):
+            Label(wait.status, systemImage: wait.systemImage)
                 .foregroundStyle(.orange)
-            } else if let speed = downloads.bytesPerSecond[job.id], speed >= 1024 {
-                // The next file can start as the one before it finishes its last chunks.
-                Text("\(Int64(speed).formatted(.byteCount(style: .file)))/s")
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            } else if downloads.downloadingJobId != job.id {
-                Label("Queued", systemImage: "clock")
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Waiting for the server…").foregroundStyle(.secondary)
+        case .offline:
+            Label("Waiting for a network connection", systemImage: "wifi.slash")
+                .foregroundStyle(.orange)
+        case .retrying(let retryAt, let error, let othersGoFirst):
+            VStack(alignment: .leading, spacing: 2) {
+                if let retryAt {
+                    Text("Retrying \(Text(retryAt, style: .relative))")
+                } else {
+                    Text("Trying again")
+                }
+                if let error { Text(error).foregroundStyle(.secondary) }
+                if othersGoFirst { Text("The downloads after it go first meanwhile.").foregroundStyle(.secondary) }
             }
+            .foregroundStyle(.orange)
+        case .queued:
+            Label("Queued", systemImage: "clock")
+                .foregroundStyle(.secondary)
+        case .startingAfter(let title):
+            Label("Starting once \(title) finishes the parts under way", systemImage: "clock")
+                .foregroundStyle(.secondary)
+        case .waitingForServer:
+            Text("Waiting for the server…").foregroundStyle(.secondary)
         case .paused:
             Label("Paused", systemImage: "pause.circle").foregroundStyle(.secondary)
-        case .failed:
-            Label(job.lastError ?? "Failed", systemImage: "exclamationmark.triangle")
+        case .failed(let error):
+            Label(error, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)
-        case .completed:
+        case .downloaded:
             Label("Downloaded", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         }
+    }
+
+    private static func speed(_ bytesPerSecond: Int64) -> String {
+        "\(bytesPerSecond.formatted(.byteCount(style: .file)))/s"
     }
 }
 

@@ -110,7 +110,8 @@ nonisolated extension ResponseInfo {
 nonisolated enum TransferFailure: Equatable, Sendable {
     /// The connection failed or was cut. Retried forever.
     case network(String)
-    /// The server answered with an error. Retried up to `DownloadJob.maxServerFailures` times in a row.
+    /// The server answered with an error. Retried up to `DownloadJob.maxServerFailures` times in a
+    /// row while other files come through, and for as long as everything fails.
     case server(String)
 }
 
@@ -152,9 +153,16 @@ nonisolated extension DownloadJob {
             let sent = contentRange.range
             let requestedEnd = min(requested.upperBound, total)
             // The body is exactly the range the response names, which starts within the request;
-            // a server can send more than was asked, up to the whole file for a one-byte probe.
+            // a server can send more than was asked.
             if sent.lowerBound >= requested.lowerBound, sent.lowerBound < requestedEnd, stagedSize == sent.count64 {
                 return .chunk(sent, total: total)
+            }
+            // A probe reads the body only as far as it asked, whatever the response goes on to
+            // send, up to the whole file: the bytes it read are the ones it asked for.
+            if sent.lowerBound == requested.lowerBound, sent.upperBound >= requestedEnd,
+               stagedSize == requestedEnd - requested.lowerBound
+            {
+                return .chunk(requested.lowerBound..<requestedEnd, total: total)
             }
             // The system's download daemon lost the connection partway, asked for the rest itself
             // (the server sent Last-Modified, so it can), and joined the pieces: the body is the
@@ -172,12 +180,14 @@ nonisolated extension DownloadJob {
             ))
 
         case 200:
-            if rangeSupport == .supported, tag.range != nil {
-                return .retry(.server("The server stopped honoring byte ranges."))
-            }
+            // The whole file, whether or not ranges were asked for: the file's stream ignores
+            // Range, or has stopped honoring it.
             guard let stagedSize, stagedSize > 0 else { return .retry(.server("The server sent an empty file.")) }
             if let length = response.contentLength, length != stagedSize {
                 return .retry(.network("The transfer was cut short."))
+            }
+            if let totalBytes, totalBytes != stagedSize {
+                return .giveUp("The file on the server changed size (\(totalBytes) to \(stagedSize) bytes). Restart the download.")
             }
             return .wholeFile(size: stagedSize)
 
@@ -192,8 +202,8 @@ nonisolated extension DownloadJob {
         }
     }
 
-    /// A single byte: enough for the server to say how big the file is and that ranges work,
-    /// without downloading any of it alongside the file in hand.
+    /// A single byte: enough for the server to say how big the file is and that its stream takes
+    /// ranges, without downloading any of it alongside the file in hand.
     static let probeRange: Range<Int64> = 0..<1
 
     /// The active jobs in the order they download: the list's, which people can rearrange.
@@ -206,7 +216,9 @@ nonisolated extension DownloadJob {
     }
 
     /// The bytes each unfinished job has so far: those in its partial file, and those `held`
-    /// says its transfers hold in the session's files, running or set aside with resume data.
+    /// says its transfers hold in the session's files, running or set aside with resume data, or
+    /// in staging on their way into the partial file. A partial file holds only the ranges
+    /// recorded as done (`DownloadStorage.releaseUnrecorded`), so these are what the device holds.
     static func bytesSoFar(_ jobs: [DownloadJob], held: [(jobId: UUID, bytes: Int64)]) -> [UUID: Int64] {
         var bytes: [UUID: Int64] = [:]
         for job in jobs where job.status != .completed { bytes[job.id] = job.completed.byteCount }
@@ -214,84 +226,116 @@ nonisolated extension DownloadJob {
         return bytes
     }
 
-    /// Whether a one-byte probe has to come first: the server hasn't answered for this file, and
-    /// either the listing gave no size or the server hasn't shown yet that it takes ranges.
-    /// Chunks planned from the listed size would each fetch the whole file from a server that
-    /// ignores Range.
-    func needsProbe(serverTakesRanges: Bool) -> Bool {
-        rangeSupport == .unknown && (sizeHint == nil || !serverTakesRanges)
+    /// Whether a one-byte probe has to come first: the server hasn't answered for this file.
+    /// Whether ranges work is a property of each file's stream, not of the server: Jellyfin
+    /// passes remote sources and .strm files through as they come, and a proxy or CDN can treat
+    /// paths differently. Chunks planned from the listed size would each fetch the whole file
+    /// from a stream that ignores Range.
+    var needsProbe: Bool { rangeSupport == .unknown }
+
+    /// Its transfers have failed one after another, none coming through since.
+    var isFailing: Bool { failingSince != nil }
+
+    /// It keeps failing while other files' transfers come through, so the files behind it go
+    /// first while it waits out its retries, each a single transfer, until one comes through. A
+    /// file failing along with everything else (the server down, the network gone) keeps its
+    /// place: then nothing yields.
+    var yields: Bool { failedAloneAt != nil }
+
+    /// The file the session works on: the first in the queue that isn't held and doesn't yield.
+    static func fileInHand(_ jobs: [DownloadJob], held: Set<UUID>) -> UUID? {
+        queued(jobs).first { !held.contains($0.id) && !$0.yields }?.id
     }
 
-    /// Whether a file in the queue has shown that the server takes ranges. Unfinished files are
-    /// all from the server signed in to: signing out removes them.
-    static func serverTakesRanges(_ jobs: [DownloadJob]) -> Bool {
-        jobs.contains { $0.status != .completed && $0.rangeSupport == .supported }
-    }
-
-    /// After this many error answers in a row, a file waiting out its retry lets the files
-    /// behind it go ahead: a blip passes in the few seconds that takes, and a file the server
-    /// can't serve doesn't hold the rest back for the hour its retries can take.
-    static let serverFailuresBeforeYielding = 3
-
-    func isBackingOff(at now: Date) -> Bool {
-        serverFailures >= Self.serverFailuresBeforeYielding && (retryAt ?? .distantPast) > now
-    }
-
-    /// The files whose transfers belong in the session. In front, the file in hand: the first
-    /// that isn't held or backing off, with any ahead of it that are backing off, whose one
-    /// transfer is timed for its retry. Off screen, every file that isn't held.
-    static func sessionFiles(_ jobs: [DownloadJob], held: Set<UUID>, queuingAhead: Bool, now: Date = .now) -> Set<UUID> {
-        let byId = Dictionary(jobs.map { ($0.id, $0) }) { first, _ in first }
+    /// The files whose transfers belong in the session. In front, the file in hand, with any ahead
+    /// of it that yield; and while the file in hand is failing, the first file behind it that
+    /// isn't waiting out a retry of its own, for one transfer: if that comes through, the trouble
+    /// is the file in hand's own (`yields`), and if it fails too, nothing yields. Off screen, every
+    /// file that isn't held, but of those `onlyInHand`, only one in hand.
+    static func sessionFiles(_ jobs: [DownloadJob], held: Set<UUID>, queuingAhead: Bool, onlyInHand: Set<UUID> = [],
+                             now: Date = .now) -> Set<UUID> {
         var files: Set<UUID> = []
-        for id in queue(jobs) where !held.contains(id) {
-            files.insert(id)
-            guard queuingAhead || byId[id]?.isBackingOff(at: now) == true else { break }
+        var hand: DownloadJob?
+        for job in queued(jobs) where !held.contains(job.id) {
+            guard let inHand = hand else {
+                files.insert(job.id)
+                if !job.yields { hand = job }
+                continue
+            }
+            if queuingAhead {
+                if !onlyInHand.contains(job.id) { files.insert(job.id) }
+                continue
+            }
+            guard inHand.isFailing else { break }
+            if job.yields || (job.retryAt ?? .distantPast) > now { continue }
+            files.insert(job.id)
+            break
         }
         return files
     }
 
     /// The transfers to start, up to `budget` of them, in queue order.
     ///
-    /// The session holds the transfers of `sessionFiles`, never of a file `held` (by the
-    /// schedule, or for room). In front (`queuingAhead` false) that's one file, which is planned
-    /// once the transfers other files have on the wire (`finishing`) are done: a file moved
-    /// ahead takes over from the one it overtook without either losing bytes or sharing the
-    /// connection. Off screen the session holds every file's transfers, so the system can carry
-    /// on without the app. A file `waitingForNetwork` (the device is on a network its transfers
-    /// may not use) is held in front; off screen its chunks go in for the system to start on a
-    /// network they may use, but not a probe, which isn't the session's. A file backing off
-    /// gets one transfer, timed for its retry. A file that needs a probe gets only that, one
-    /// probe at a time, so the server isn't asked about every file at once. In front, the files
-    /// after the one in hand that need a probe get it in turn, so that all their chunks can go
-    /// in the moment the app leaves the screen.
+    /// The session holds the transfers of `sessionFiles`, never of a file `held` (by the rules, or
+    /// for room). In front (`queuingAhead` false) that's the file in hand, which keeps
+    /// `transfersInHand` there and is planned once the transfers other files have on the wire
+    /// (`finishing`) are done: a file moved ahead takes over from the one it overtook without
+    /// either losing bytes or sharing the connection. Off screen the session holds every file's
+    /// transfers, so the system can carry on without the app. A file `waitingForNetwork` (the
+    /// device is on a network its transfers may not use) is held in front; off screen its chunks
+    /// go in for the system to start on a network they may use, but not a probe, which isn't the
+    /// session's. A file that yields gets one transfer, timed for its retry, as does the file
+    /// behind a failing file in hand once nothing of that is on the wire. A file that needs a
+    /// probe gets only that, one probe at a time, so the server isn't asked about every file at
+    /// once; a failing file's probe doesn't hold the others' back. In front, the files after the
+    /// one in hand that need a probe get it in turn, so that all their chunks can go in the
+    /// moment the app leaves the screen. Chunks are no bigger than `chunkLimit`, which room on
+    /// the device can set (`StorageBudget`).
     static func plan(_ jobs: [DownloadJob], running: [TransferTag], finishing: Set<UUID> = [], held: Set<UUID> = [],
-                     waitingForNetwork: Set<UUID> = [], budget: Int, queuingAhead: Bool, now: Date = .now) -> [TransferTag] {
-        let serverTakesRanges = serverTakesRanges(jobs)
+                     waitingForNetwork: Set<UUID> = [], onlyInHand: Set<UUID> = [], chunkLimit: Int64? = nil,
+                     budget: Int, queuingAhead: Bool, now: Date = .now) -> [TransferTag] {
         let notPlanned = queuingAhead ? held : held.union(waitingForNetwork)
-        let inSession = sessionFiles(jobs, held: notPlanned, queuingAhead: queuingAhead, now: now)
+        let inSession = sessionFiles(jobs, held: notPlanned, queuingAhead: queuingAhead, onlyInHand: onlyInHand, now: now)
+        let hand = fileInHand(jobs, held: notPlanned)
         let byId = Dictionary(jobs.map { ($0.id, $0) }) { first, _ in first }
         var tags: [TransferTag] = []
         var isProbing = running.contains { tag in
-            tag.range == probeRange && byId[tag.jobId].map { !$0.isBackingOff(at: now) } == true
+            tag.range == probeRange && byId[tag.jobId].map { !$0.isFailing } == true
         }
-        for id in queue(jobs) where !notPlanned.contains(id) {
-            guard tags.count < budget, let job = byId[id] else { break }
+        for job in queued(jobs) where !notPlanned.contains(job.id) {
+            guard tags.count < budget else { break }
+            let id = job.id
             let claimed = running.filter { $0.jobId == id }
-            let needsProbe = job.needsProbe(serverTakesRanges: serverTakesRanges)
             let mayProbe = !waitingForNetwork.contains(id)
-            if job.isBackingOff(at: now) {
-                if claimed.isEmpty, inSession.contains(id), mayProbe || !needsProbe {
-                    tags += job.nextRequests(running: [], limit: 1, serverTakesRanges: serverTakesRanges).map { TransferTag(jobId: id, range: $0) }
-                }
+            /// A single transfer, while it has none.
+            func single() -> [TransferTag] {
+                guard claimed.isEmpty, mayProbe || !job.needsProbe else { return [] }
+                return job.nextRequests(running: [], limit: 1, chunkLimit: chunkLimit).map { TransferTag(jobId: id, range: $0) }
+            }
+            if job.yields {
+                if inSession.contains(id) { tags += single() }
                 continue
             }
             guard inSession.contains(id) else {
-                // In front, after the file in hand.
-                guard needsProbe else { continue }
-                if claimed.isEmpty, !isProbing { tags.append(TransferTag(jobId: id, range: probeRange)) }
+                // After the file in hand: the next that needs a probe gets it, in turn. One waiting
+                // out a retry lets the next go meanwhile.
+                guard job.needsProbe, mayProbe else { continue }
+                if job.isFailing, !claimed.isEmpty || (job.retryAt ?? .distantPast) > now { continue }
+                if claimed.isEmpty, !isProbing {
+                    tags.append(TransferTag(jobId: id, range: probeRange))
+                    isProbing = true
+                }
                 break
             }
-            if needsProbe {
+            if id != hand, !queuingAhead {
+                // Behind the failing file in hand, to tell whether it fails alone.
+                guard let hand, !finishing.contains(hand) else { continue }
+                let test = single()
+                tags += test
+                if test.contains(where: { $0.range == probeRange }) { isProbing = true }
+                continue
+            }
+            if job.needsProbe {
                 if claimed.isEmpty, !isProbing, mayProbe {
                     tags.append(TransferTag(jobId: id, range: probeRange))
                     isProbing = true
@@ -299,50 +343,58 @@ nonisolated extension DownloadJob {
                 continue
             }
             if !queuingAhead, !finishing.subtracting([id]).isEmpty { continue }
-            tags += job.nextRequests(running: claimed, limit: budget - tags.count, serverTakesRanges: serverTakesRanges)
-                .map { TransferTag(jobId: id, range: $0) }
+            let limit = queuingAhead ? budget - tags.count : min(budget - tags.count, transfersInHand - claimed.count)
+            tags += job.nextRequests(running: claimed, limit: limit, chunkLimit: chunkLimit).map { TransferTag(jobId: id, range: $0) }
         }
         return tags
     }
 
-    /// The transfers to start, given the ones already running for this job.
-    /// Each element is a byte range, or nil for one whole-file request.
-    func nextRequests(running: [TransferTag], limit: Int, serverTakesRanges: Bool) -> [Range<Int64>?] {
+    /// The transfers to start, given the ones already running for this job: a probe until the
+    /// server has answered for the file, then byte ranges of `chunkSize`, or of `chunkLimit` when
+    /// that's smaller, or nil for one whole-file request.
+    func nextRequests(running: [TransferTag], limit: Int, chunkLimit: Int64? = nil) -> [Range<Int64>?] {
         guard status == .active, limit > 0 else { return [] }
         let size: Int64
         switch rangeSupport {
         case .unknown:
-            // Chunks from the listed size, which the first answer confirms.
-            guard !needsProbe(serverTakesRanges: serverTakesRanges), let sizeHint else {
-                return running.isEmpty ? [Self.probeRange] : []
-            }
-            size = sizeHint
+            return running.isEmpty ? [Self.probeRange] : []
         case .unsupported:
             return running.isEmpty ? [nil] : []
         case .supported:
             guard let totalBytes else { return [] }
             size = totalBytes
         }
+        let chunk = chunkLimit.map { min(chunkSize, max(Self.minimumChunkSize, $0)) } ?? chunkSize
         var claimed = running.compactMap(\.range)
         var requests: [Range<Int64>?] = []
         while requests.count < limit, let gap = completed.firstGap(in: 0..<size, excluding: claimed) {
-            let range = gap.lowerBound..<min(gap.upperBound, gap.lowerBound + chunkSize)
+            let range = gap.lowerBound..<min(gap.upperBound, gap.lowerBound + chunk)
             requests.append(range)
             claimed.append(range)
         }
         return requests
     }
 
+    /// The file's stream answered a range request with the whole file, so that one transfer
+    /// fetches it: the ranges it had are let go, as the whole file takes their place.
+    mutating func rangeIgnored() {
+        rangeSupport = .unsupported
+        completed = ByteRanges()
+    }
+
     /// A transfer came through. Chunks grow by a quarter of each whole chunk that does, so after
     /// cuts they grow back at the pace bytes come through, whatever size the chunks still queued
     /// were planned at. A probe or a file's last few bytes, `wholeChunkBytes` 0, say nothing
     /// about the link.
-    mutating func recordSuccess(wholeChunkBytes: Int64 = 0) {
+    mutating func recordSuccess(wholeChunkBytes: Int64 = 0, now: Date = .now) {
         networkFailures = 0
         serverFailures = 0
         lastError = nil
         retryAt = nil
         serverUnreachableSince = nil
+        failingSince = nil
+        failedAloneAt = nil
+        cameThroughAt = now
         chunkSize = min(Self.maximumChunkSize, chunkSize + wholeChunkBytes / 4)
     }
 
@@ -358,10 +410,24 @@ nonisolated extension DownloadJob {
         lastCutAt = now
     }
 
+    /// The device ran out of room for a chunk of `size` bytes, written by the daemon or into the
+    /// partial file, though the room it reported was enough (`StorageBudget`): what a write takes
+    /// beyond its bytes, and other apps writing, can't be told beforehand. Chunks halve from that
+    /// size, so near full they shrink until one fits rather than fail the same way again.
+    mutating func ranOutOfSpace(writing size: Int64) {
+        chunkSize = max(Self.minimumChunkSize, min(chunkSize, size) / 2)
+    }
+
     /// Counts a failed transfer and schedules the retry. `attemptStart` is as for `recordCut`.
     /// `unreachable` says the server couldn't be reached at all, which a failure the server
-    /// answered says it could.
-    mutating func recordFailure(_ failure: TransferFailure, receivedBytes: Int64, attemptStart: Date, unreachable: Bool = false, now: Date = .now) {
+    /// answered says it could. `otherArrival` is when another file's transfer last came through:
+    /// after this file began failing, the trouble is its own (`yields`). Only then do the
+    /// server's error answers give up on it, so that while everything fails, nothing gives up.
+    mutating func recordFailure(_ failure: TransferFailure, receivedBytes: Int64, attemptStart: Date, unreachable: Bool = false,
+                                otherArrival: Date? = nil, now: Date = .now) {
+        let since = failingSince ?? now
+        failingSince = since
+        if let otherArrival, otherArrival > since, failedAloneAt == nil { failedAloneAt = now }
         switch failure {
         case .network(let message):
             networkFailures += 1
@@ -373,7 +439,7 @@ nonisolated extension DownloadJob {
             serverFailures += 1
             serverUnreachableSince = nil
             lastError = message
-            if serverFailures >= Self.maxServerFailures {
+            if serverFailures >= Self.maxServerFailures, yields {
                 status = .failed
                 retryAt = nil
             } else {
@@ -394,6 +460,8 @@ nonisolated extension DownloadJob {
         serverFailures = 0
         retryAt = nil
         serverUnreachableSince = nil
+        failingSince = nil
+        failedAloneAt = nil
     }
 
     /// Back to the start, for a file that changed on the server.
@@ -405,6 +473,70 @@ nonisolated extension DownloadJob {
         chunkSize = Self.initialChunkSize
         lastError = nil
         lastCutAt = nil
+    }
+
+    /// Whether a transfer under way finishes when its download is paused, instead of being cut:
+    /// one that can't keep its bytes (the server sent neither ETag nor Last-Modified, which
+    /// resume data needs), with `received` of its `expected` bytes, when it has fetched at least
+    /// as much as it has left, and that's no more than the largest chunk. Cut, it would lose more
+    /// than finishing fetches; one less far along loses less than it would still fetch.
+    static func finishesWhenPaused(received: Int64, expected: Int64?, canResume: Bool) -> Bool {
+        guard !canResume, let expected, received > 0 else { return false }
+        let left = expected - received
+        return left <= received && left <= maximumChunkSize
+    }
+}
+
+/// How a transfer in the session has moved, as the app looks at its task: whether the daemon
+/// has it under way, and when its bytes last grew. Progress reports lag while the app is busy,
+/// so the task's own count decides. A transfer waiting its turn, or timed for later, isn't
+/// stalled, nor is one the daemon has finished whose report the app hasn't handled yet.
+nonisolated struct TransferActivity: Equatable, Sendable {
+    /// Started from resume data, whose response the task can carry before the daemon gets to it.
+    let resumed: Bool
+    /// What the task said it had received when last looked at.
+    private(set) var bytes: Int64
+    /// When the daemon was first seen working on it: a response, or bytes beyond those it had.
+    private(set) var underWaySince: Date?
+    /// When its bytes last grew, or it got under way.
+    private(set) var lastProgress: Date
+
+    init(bytes: Int64, resumed: Bool, now: Date) {
+        self.bytes = bytes
+        self.resumed = resumed
+        lastProgress = now
+    }
+
+    var isUnderWay: Bool { underWaySince != nil }
+
+    /// What its task says now: the bytes received, and whether it has a response.
+    mutating func observe(bytes: Int64, hasResponse: Bool, now: Date) {
+        if bytes != self.bytes {
+            self.bytes = bytes
+            noteProgress(now: now)
+        } else if underWaySince == nil, hasResponse, !resumed {
+            noteProgress(now: now)
+        }
+    }
+
+    /// Bytes arrived, as a progress report says.
+    mutating func noteProgress(now: Date) {
+        lastProgress = now
+        if underWaySince == nil { underWaySince = now }
+    }
+
+    /// Counts from now: the app has just acted on it, or couldn't look at it while suspended.
+    mutating func restartClock(now: Date) {
+        lastProgress = now
+    }
+
+    /// Whether a replacement carries on from its bytes, by its resume data: not when it was
+    /// resumed and never got going, as the daemon can carry its wait over into the resume data.
+    var carriesOnWhenReplaced: Bool { !resumed || isUnderWay }
+
+    /// Whether the daemon runs it, has it under way and it has moved nothing for `limit`.
+    func isStalled(state: URLSessionTask.State, now: Date, limit: TimeInterval) -> Bool {
+        state == .running && isUnderWay && now.timeIntervalSince(lastProgress) > limit
     }
 }
 #endif

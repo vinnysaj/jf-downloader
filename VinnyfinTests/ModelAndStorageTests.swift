@@ -244,6 +244,68 @@ struct StorageTests {
         try bare.write(to: storage.resumeDataFile(for: jobId))
         #expect(try storage.loadResumePoints() == [jobId: ResumePoint(data: bare, bytes: 0)])
     }
+
+    /// The pictures of items and shows no download is left for go; the rest stay.
+    @Test func sweepsTheArtworkNoDownloadKeeps() throws {
+        let storage = try makeStorage()
+        let kept = [storage.artworkFile(itemId: "a1b2", kind: .primary), storage.artworkFile(itemId: "a1b2", kind: .backdrop),
+                    storage.artworkFile(itemId: "show9", kind: .primary)]
+        let gone = [storage.artworkFile(itemId: "c3d4", kind: .primary), storage.artworkFile(itemId: "c3d4", kind: .logo)]
+        for file in kept + gone { try Data([1]).write(to: file) }
+        try storage.removeArtwork(keeping: ["a1b2", "show9"])
+        #expect(kept.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        #expect(!gone.contains { FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    /// An extra fetched again goes over the copy there, which is never missing meanwhile.
+    @Test func putsAnExtraInPlaceOverAnOlderCopy() throws {
+        let storage = try makeStorage()
+        let file = storage.extrasFolder(for: UUID()).appending(path: "Trickplay/320/0.jpg")
+        let first = storage.staging.appending(path: UUID().uuidString)
+        try Data([1]).write(to: first)
+        try storage.saveExtra(first, to: file)
+        let second = storage.staging.appending(path: UUID().uuidString)
+        try Data([2, 3]).write(to: second)
+        try storage.saveExtra(second, to: file)
+        #expect(try Data(contentsOf: file) == Data([2, 3]))
+        #expect(!FileManager.default.fileExists(atPath: second.path))
+    }
+
+    /// What a chunk wrote before its writing failed goes, so the partial file takes the room of
+    /// the ranges recorded as done; their bytes stay.
+    @Test func givesBackTheRoomOfUnrecordedRanges() async throws {
+        let storage = try makeStorage()
+        let jobId = UUID()
+        try storage.releaseUnrecorded(in: jobId, keeping: ByteRanges())
+        let megabyte = 1 << 20
+        let first = (0..<megabyte).map { UInt8($0 % 251) }
+        try await storage.writeChunk(chunk(first, in: storage), into: jobId, at: 0)
+        // A chunk whose writing failed after 3 MB, and a last one written whole.
+        try await storage.writeChunk(chunk(Array(repeating: 9, count: 3 * megabyte), in: storage), into: jobId, at: Int64(megabyte))
+        try await storage.writeChunk(chunk(Array(repeating: 5, count: megabyte), in: storage), into: jobId, at: Int64(8 * megabyte))
+        let partial = storage.partialFile(for: jobId)
+        // A fresh URL each time: a URL keeps the resource values it was asked for.
+        func allocated() throws -> Int {
+            try URL(filePath: partial.path).resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize ?? -1
+        }
+        #expect(try allocated() >= 5 * megabyte)
+        try storage.releaseUnrecorded(in: jobId, keeping: ByteRanges([0..<Int64(megabyte), Int64(8 * megabyte)..<Int64(9 * megabyte)]))
+        #expect(try allocated() <= 2 * megabyte + 16_384)
+        let data = try Data(contentsOf: partial)
+        #expect(data.count == 9 * megabyte)
+        #expect(Array(data.prefix(megabyte)) == first)
+        #expect(data.suffix(megabyte).allSatisfy { $0 == 5 })
+        #expect(data[megabyte..<(4 * megabyte)].allSatisfy { $0 == 0 })
+    }
+
+    /// What was deleted to make room is told after a relaunch too.
+    @Test func keepsWhatWasDeletedToMakeRoom() throws {
+        let storage = try makeStorage()
+        #expect(try storage.loadFreed() == nil)
+        let freed = FreedSpace(titles: ["Pilot", "Big Test Movie"], bytes: 3_000_000_000, date: Date(timeIntervalSince1970: 1_000_000))
+        try storage.saveFreed(freed)
+        #expect(try storage.loadFreed() == freed)
+    }
 }
 #endif
 

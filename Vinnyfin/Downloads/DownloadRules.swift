@@ -67,6 +67,13 @@ nonisolated struct NetworkAccess: Equatable, Sendable {
             && !(network.isConstrained && !allowsConstrained)
     }
 
+    /// Whether a transfer with these can't use `network` though its file now may (`fileAccess`,
+    /// as the rules or Download Now give it): it would wait there for good, as resume data
+    /// carries the networks a transfer was made with over to the transfer carrying on from it.
+    func isStranded(on network: NetworkConditions, fileAccess: NetworkAccess) -> Bool {
+        network.isReachable && !allows(network) && fileAccess.allows(network)
+    }
+
     var summary: String {
         self == .any ? "any network" : allowsExpensive ? "any network outside Low Data Mode" : "Wi-Fi only"
     }
@@ -105,6 +112,16 @@ extension DownloadWait {
         }
     }
 
+    /// What the download waits for once its transfers under way finish, after how fast they go.
+    var next: String {
+        switch self {
+        case .wifi: "then waits for Wi-Fi"
+        case .lowDataMode: "then waits while Low Data Mode is on"
+        case .power: "then waits until your \(Device.name) is charging"
+        case .space(let needed): "then waits for space: \(needed.formatted(.byteCount(style: .file))) more needed"
+        }
+    }
+
     var systemImage: String {
         switch self {
         case .wifi: "wifi"
@@ -140,12 +157,19 @@ nonisolated struct DownloadRules: Equatable, Sendable {
     /// device can't report on doesn't hold anything back.
     func wait(for job: DownloadJob, network: NetworkConditions, isOnPower: Bool?) -> DownloadWait? {
         guard !job.ignoresRules else { return nil }
-        if onlyWhileCharging, isOnPower == false { return .power }
+        if waitsForPower(job), isOnPower == false { return .power }
         guard network.isReachable else { return nil }
         let access = access(for: job)
         if (network.usesCellular && !access.allowsCellular) || (network.isExpensive && !access.allowsExpensive) { return .wifi }
         if network.isConstrained && !access.allowsConstrained { return .lowDataMode }
         return nil
+    }
+
+    /// Whether Only While Charging holds the job back while the device is unplugged. The system
+    /// has no such condition for transfers: ones in the session run whether or not the device is
+    /// on power, until the app runs to take them back.
+    func waitsForPower(_ job: DownloadJob) -> Bool {
+        onlyWhileCharging && !job.ignoresRules
     }
 
     /// Whether the system should wait for power before launching the app to catch up on
@@ -165,9 +189,9 @@ extension DownloadRules {
 
 // MARK: Storage
 
-/// How a finished download has been watched since it was downloaded.
+/// How a download has been watched since it was queued.
 nonisolated enum WatchState: Equatable, Sendable {
-    /// Not since it was downloaded: kept, if it was watched before, to watch again.
+    /// Not since it was queued: kept, if it was watched before, to watch again.
     case unwatched
     case inProgress
     case watched(at: Date)
@@ -178,21 +202,33 @@ nonisolated enum WatchState: Equatable, Sendable {
 }
 
 nonisolated extension DownloadJob {
-    /// The latest record of watching since the download finished decides, this device's or
-    /// the server's (as `item` last heard it): a rewatch the server has partway is in progress,
-    /// though it stays marked watched there.
+    /// The latest record of watching since the download was queued decides, this device's or
+    /// the server's (as `item` last heard it), whether or not it has finished: a rewatch the
+    /// server has partway is in progress, though it stays marked watched there. Watching before
+    /// it was queued doesn't count, so a download of something already watched, chosen to watch
+    /// again, stays; watching while it downloads does.
     func watchState(local: WatchHistory.Entry?) -> WatchState {
-        guard status == .completed, let downloadedAt = completedAt else { return .unwatched }
         var latest: (date: Date, played: Bool, partway: Bool)?
-        if let local, local.updatedAt > downloadedAt {
+        if let local, local.updatedAt > createdAt {
             latest = (local.updatedAt, local.played, !local.played && local.position > 0)
         }
-        if let data = item?.userData, let played = item?.lastPlayedDate, played > downloadedAt, played > latest?.date ?? .distantPast {
+        if let data = item?.userData, let played = item?.lastPlayedDate, played > createdAt, played > latest?.date ?? .distantPast {
             latest = (played, data.played == true, (data.playbackPositionTicks ?? 0) > 0)
         }
         guard let latest else { return .unwatched }
         if latest.partway { return .inProgress }
         return latest.played ? .watched(at: latest.date) : .unwatched
+    }
+
+    /// The unfinished downloads of episodes of these shows watched since they were queued, as
+    /// this device's history (`local`, by item) or the server says: smart downloads keep shows
+    /// downloaded ahead of where they're watched, so these are no longer wanted.
+    static func watchedWhileQueued(_ jobs: [DownloadJob], ofShows seriesIds: Set<String>,
+                                   local: (String) -> WatchHistory.Entry?) -> [DownloadJob] {
+        jobs.filter { job in
+            job.status != .completed && job.isEpisode && job.seriesId.map(seriesIds.contains) == true
+                && job.watchState(local: local(job.itemId)).isWatched
+        }
     }
 }
 
@@ -218,15 +254,23 @@ nonisolated enum StorageBudget {
         var deletions: [UUID] = []
         /// Queued downloads that don't fit even so, with how many bytes more each needs.
         var shortfalls: [UUID: Int64] = [:]
+        /// The largest chunk to plan, when room on the device is short; nil when it isn't.
+        var chunkLimit: Int64?
     }
 
     /// Walks the queue in order, each download that fits keeping its room. One that doesn't
     /// takes room from `deletable` (oldest watched first) if that's enough, and otherwise
     /// waits, deleting nothing and keeping no room, so a smaller one behind it can still go.
-    /// `bytesSoFar` is what each queued download already has (`DownloadJob.bytesSoFar`), its
-    /// partial file's bytes when it's missing; `used` is what downloads take up now, finished
-    /// files and partial ones; `available` is the device's free space, nil when it can't say.
-    /// A download whose size neither the listing nor the server has given yet isn't held back.
+    /// `bytesSoFar` is what each queued download already has on disk (`DownloadJob.bytesSoFar`),
+    /// its partial file's bytes when it's missing; `used` is what downloads take up now, finished
+    /// files and partial ones; `available` is the device's free space, which those bytes already
+    /// take from, nil when it can't say. A download whose size neither the listing nor the server
+    /// has given yet isn't held back.
+    ///
+    /// Writing a chunk into its partial file holds the chunk's bytes twice until the chunk's own
+    /// file goes, so a download fetched in chunks fits on the device only with room for the
+    /// smallest chunk besides, and chunks are planned no bigger than the room the queue leaves
+    /// (`chunkLimit`): near full, they shrink rather than overrun it.
     static func plan(queue: [DownloadJob], bytesSoFar: [UUID: Int64], used: Int64, available: Int64?, limit: Int64?,
                      deletable: [Deletable]) -> Outcome {
         // Room that's unlimited stays so: deleting a file makes as much room under the limit as
@@ -237,28 +281,46 @@ nonisolated enum StorageBudget {
         var candidates = deletable[...]
         var deletableBytes = deletable.reduce(0) { $0 + $1.bytes }
         var outcome = Outcome()
-        func shortfall(_ need: Int64) -> Int64 {
-            max(reserved + need - limitRoom, reserved + need - deviceRoom, 0)
+        func shortfall(_ need: Int64, writing: Int64) -> Int64 {
+            max(reserved + need - limitRoom, reserved + need + writing - deviceRoom, 0)
         }
         for job in queue {
             guard let total = job.displayTotalBytes else { continue }
             let need = max(0, total - (bytesSoFar[job.id] ?? job.completed.byteCount))
-            if shortfall(need) <= deletableBytes {
-                while shortfall(need) > 0, let next = candidates.popFirst() {
+            let writing = job.rangeSupport == .unsupported ? 0 : DownloadJob.minimumChunkSize
+            if shortfall(need, writing: writing) <= deletableBytes {
+                while shortfall(need, writing: writing) > 0, let next = candidates.popFirst() {
                     outcome.deletions.append(next.id)
                     deletableBytes -= next.bytes
                     if limitRoom != .max { limitRoom += next.bytes }
                     if deviceRoom != .max { deviceRoom += next.bytes }
                 }
             }
-            let missing = shortfall(need)
+            let missing = shortfall(need, writing: writing)
             if missing > 0 {
                 outcome.shortfalls[job.id] = missing
             } else {
                 reserved += need
             }
         }
+        if deviceRoom != .max, deviceRoom - reserved < DownloadJob.maximumChunkSize {
+            outcome.chunkLimit = max(DownloadJob.minimumChunkSize, deviceRoom - reserved)
+        }
         return outcome
+    }
+
+    /// Whether an error says the device ran out of room, the daemon writing a transfer's file or
+    /// the app writing a chunk into place: the download waits for room then, as one the budget
+    /// holds back does, rather than counting a failure.
+    static func isOutOfSpace(_ error: any Error) -> Bool {
+        let error = error as NSError
+        switch (error.domain, error.code) {
+        case (NSPOSIXErrorDomain, Int(ENOSPC)), (NSPOSIXErrorDomain, Int(EDQUOT)), (NSCocoaErrorDomain, NSFileWriteOutOfSpaceError):
+            return true
+        default:
+            guard let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
+            return isOutOfSpace(underlying)
+        }
     }
 }
 #endif

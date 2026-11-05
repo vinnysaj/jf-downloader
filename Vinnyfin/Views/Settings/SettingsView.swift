@@ -164,7 +164,7 @@ struct SettingsView: View {
         } header: {
             Text("When to Download")
         } footer: {
-            Text("Downloads also wait while Low Data Mode is on. vinnyfin starts waiting downloads when the system next lets it, so they can begin a while after you plug in. Download Now on a waiting download starts it anyway.")
+            Text("Downloads also wait while Low Data Mode is on. vinnyfin starts waiting downloads when the system next lets it, so they can begin a while after you plug in. If you unplug while vinnyfin is in the background, the download it's on can carry on until it's done; the rest wait. Download Now on a waiting download starts it anyway.")
         }
     }
 
@@ -210,7 +210,7 @@ struct SettingsView: View {
         } header: {
             Text("Storage")
         } footer: {
-            Text("When a download needs room, under the limit or on this \(Device.name), the downloads you watched longest ago are deleted to make it. Unwatched and partly watched downloads are never deleted; if there's still no room, the download waits.")
+            Text("When a download needs room, under the limit or on this \(Device.name), the downloads you watched longest ago, since you downloaded them, are deleted to make it. Unwatched and partly watched downloads are never deleted, nor ones you'd already watched when you downloaded them; if there's still no room, the download waits.")
         }
     }
 

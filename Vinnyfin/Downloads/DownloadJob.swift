@@ -65,6 +65,14 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     var retryAt: Date?
     /// Since when transfers have failed to reach the server, without one coming through since.
     var serverUnreachableSince: Date?
+    /// Since when its transfers have failed one after another, without one coming through.
+    var failingSince: Date?
+    /// When it failed again after another file's transfer had come through, while failing: the
+    /// trouble is its own, not the server's or the network's (`failsAlone`). Nil once one of its
+    /// transfers comes through.
+    var failedAloneAt: Date?
+    /// When one of its transfers last came through.
+    var cameThroughAt: Date?
     /// When someone chose Download Now for it: the network and schedule rules don't hold it back.
     var downloadNowAt: Date?
     /// Where the finished file is, relative to Documents.
@@ -148,5 +156,9 @@ nonisolated extension DownloadJob {
     static let minimumChunkSize: Int64 = 1 << 20
     static let maximumChunkSize: Int64 = 64 << 20
     static let maxServerFailures = 20
+    /// In front, the transfers the file in hand keeps in the session: one for each of the
+    /// session's four connections, and as many waiting to take over the moment one finishes. The
+    /// rest are planned as those finish, in the chunk size of the moment.
+    static let transfersInHand = 8
 }
 #endif
