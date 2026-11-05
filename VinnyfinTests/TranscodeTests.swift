@@ -770,6 +770,9 @@ private enum MP4 {
         var editMediaTime: UInt32?
         /// The transfer characteristics the picture's colr box names.
         var colourTransfer: UInt16?
+        /// The bit rate its sample entry gives, in a btrt box and an mp4a entry's decoder
+        /// configuration; without, no btrt box and 192 kb/s in the decoder configuration.
+        var bitRate: UInt32?
     }
 
     struct Sample {
@@ -815,21 +818,26 @@ private enum MP4 {
             let mdhd = fullBox("mdhd", uint32(0) + uint32(0) + uint32(track.timescale) + uint32(0) + uint32(0))
             let handler = if case .avc = track.entry { "vide" } else { "soun" }
             let hdlr = fullBox("hdlr", uint32(0) + Data(handler.utf8) + Data(count: 12) + Data("Track\0".utf8))
+            let bitRates = track.bitRate.map { box("btrt", uint32(0) + uint32($0) + uint32($0)) } ?? Data()
             let sampleEntry = switch track.entry {
             case .avc:
                 // Six reserved bytes and the data reference, 70 bytes of picture fields, then avcC:
                 // four-byte NAL lengths, no parameter sets; and the colour, if said.
                 box("avc1", Data(count: 6) + uint16(1) + Data(count: 70) + box("avcC", Data([1, 0x64, 0, 0x28, 0xFF, 0xE0, 0]))
-                    + (track.colourTransfer.map { box("colr", Data("nclx".utf8) + uint16(9) + uint16($0) + uint16(9) + Data([0])) } ?? Data()))
+                    + (track.colourTransfer.map { box("colr", Data("nclx".utf8) + uint16(9) + uint16($0) + uint16(9) + Data([0])) } ?? Data())
+                    + bitRates)
             case .ac3:
-                box("ac-3", Data(count: 6) + uint16(1) + Data(count: 20))
+                box("ac-3", Data(count: 6) + uint16(1) + Data(count: 20) + bitRates)
             case .mp4a(let objectType):
-                // An ES descriptor (tag 3) holding a decoder configuration (tag 4) and its specific info (tag 5).
+                // An ES descriptor (tag 3) holding a decoder configuration (tag 4): the object and
+                // stream types, the buffer size, the highest and average bit rates; and its
+                // specific info (tag 5).
                 box("mp4a", Data(count: 6) + uint16(1) + Data(count: 20) + fullBox("esds", Data([
                     0x03, 0x80, 0x80, 0x80, 0x19, 0x00, 0x02, 0x00,
-                    0x04, 0x80, 0x80, 0x80, 0x11, objectType, 0x15, 0, 0, 0, 0, 0x02, 0xEE, 0x00, 0, 0x02, 0xEE, 0x00,
+                    0x04, 0x80, 0x80, 0x80, 0x11, objectType, 0x15, 0, 0, 0,
+                ]) + uint32(track.bitRate ?? 192_000) + uint32(track.bitRate ?? 192_000) + Data([
                     0x05, 0x80, 0x80, 0x80, 0x02, 0x11, 0x90,
-                ])))
+                ])) + bitRates)
             }
             let stbl = box("stbl", fullBox("stsd", uint32(1) + sampleEntry))
             traks += box("trak", tkhd + edts + box("mdia", mdhd + hdlr + box("minf", stbl)))
@@ -968,6 +976,22 @@ struct FragmentedMP4Tests {
         #expect(try roll(.mp4a(objectType: 0x6B)) == nil)
         #expect(try roll(.ac3) == nil)
         #expect(try FragmentedMP4.header(MP4.header).tracks[1]?.rollDistance == nil)
+    }
+
+    /// A restarted transcode works out the bit rates its init segment gives afresh; its pieces
+    /// join the file all the same, unless what the samples are decoded with differs.
+    @Test func joinsARunWhoseInitGivesOtherBitRates() throws {
+        func header(bitRate: UInt32, objectType: UInt8 = 0x40, rate: UInt32 = 48000) -> Data {
+            MP4.makeHeader(tracks: [MP4.Track(bitRate: bitRate * 10),
+                                    MP4.Track(id: 2, entry: .mp4a(objectType: objectType), timescale: rate, bitRate: bitRate)])
+        }
+        let first = header(bitRate: 194_897)
+        #expect(try FragmentedMP4.header(first).tracks[2]?.rollDistance == -1)
+        #expect(try FragmentedMP4.decodeAlike(first, header(bitRate: 196_200)))
+        #expect(try !FragmentedMP4.decodeAlike(first, header(bitRate: 194_897, rate: 44100)))
+        #expect(try !FragmentedMP4.decodeAlike(first, header(bitRate: 194_897, objectType: 0x6B)))
+        #expect(try !FragmentedMP4.decodeAlike(first, MP4.makeHeader(tracks: [MP4.Track(bitRate: 1_948_970)])))
+        #expect(throws: FragmentedMP4.Problem.self) { try FragmentedMP4.decodeAlike(first, first.prefix(first.count - 3)) }
     }
 
     @Test func readsWhereAPiecesPictureLiesAndEverySample() throws {

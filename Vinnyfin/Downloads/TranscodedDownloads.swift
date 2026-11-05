@@ -1224,16 +1224,17 @@ final class TranscodedDownloads {
     }
 
     /// The server's transcode may have started again: its init segment, now made again, has to
-    /// match the one the file starts with for the pieces after to join it. Asked for once a
-    /// piece has come since, so the server has it rather than starting a transcode to make it;
-    /// a server not transcoding then has the pieces left (`TranscodeState.heldSince`).
+    /// describe the tracks the file starts with, decoded the same way, for the pieces after to
+    /// join it (`FragmentedMP4.decodeAlike`). Asked for once a piece has come since, so the
+    /// server has it rather than starting a transcode to make it; a server not transcoding then
+    /// has the pieces left (`TranscodeState.heldSince`).
     private func checkInit(_ id: UUID) async {
         guard let url = initURL(for: id), let saved = header(for: id) else { return }
         live[id, default: Live()].activity = .checkingInit
         defer { live[id]?.activity = nil }
         do {
             let data = try await self.data(at: url)
-            guard data == saved.data else {
+            guard try FragmentedMP4.decodeAlike(data, saved.data) else {
                 Self.log.error("[\(id.uuidString.prefix(8))] The restarted transcode's init segment differs (\(data.count) bytes, was \(saved.data.count))")
                 restartFromNothing(id, because: "The server's transcode came back different from before.")
                 return

@@ -313,39 +313,100 @@ nonisolated enum FragmentedMP4 {
     /// decoder configuration names MPEG-4 audio or MPEG-2 AAC), nil otherwise.
     private static func rollDistance(_ data: Data, _ payload: Range<Int>) throws -> Int16? {
         guard payload.count >= 8, let entry = try boxes(in: data, range: (payload.lowerBound + 8)..<payload.upperBound).first,
-              entry.type == "mp4a", entry.payload.count >= 28
+              entry.type == "mp4a", let children = boxesInside(data, soundEntry: entry),
+              let esds = try boxes(in: data, range: children).first(where: { $0.type == "esds" }),
+              let configuration = decoderConfiguration(data, esds: esds.payload)
         else { return nil }
-        // An audio sample entry's boxes follow 28 bytes of fields, QuickTime's versions 1 and 2 more.
+        return [0x40, 0x66, 0x67, 0x68].contains(data.byte(at: configuration)) ? -1 : nil
+    }
+
+    /// Where a sound sample entry's boxes are: after 28 bytes of fields, QuickTime's versions 1
+    /// and 2 more.
+    private static func boxesInside(_ data: Data, soundEntry entry: Box) -> Range<Int>? {
+        guard entry.payload.count >= 28 else { return nil }
         let fields = switch data.uint16(at: entry.payload.lowerBound + 8) {
         case 1: 44
         case 2: 64
         default: 28
         }
-        guard entry.payload.lowerBound + fields <= entry.payload.upperBound,
-              let esds = try boxes(in: data, range: (entry.payload.lowerBound + fields)..<entry.payload.upperBound).first(where: { $0.type == "esds" })
-        else { return nil }
-        // After the full box's version and flags: an ES descriptor (tag 3) holding a decoder
-        // configuration descriptor (tag 4), each tag followed by a length of up to four bytes.
-        var at = esds.payload.lowerBound + 4
+        guard entry.payload.lowerBound + fields <= entry.payload.upperBound else { return nil }
+        return (entry.payload.lowerBound + fields)..<entry.payload.upperBound
+    }
+
+    /// Where an esds box's decoder configuration descriptor (tag 4) has its fields, from its
+    /// objectTypeIndication: after the full box's version and flags, inside an ES descriptor
+    /// (tag 3), each tag followed by a length of up to four bytes.
+    private static func decoderConfiguration(_ data: Data, esds payload: Range<Int>) -> Int? {
+        var at = payload.lowerBound + 4
         func descriptor(_ tag: UInt8) -> Bool {
-            guard at < esds.payload.upperBound, data.byte(at: at) == tag else { return false }
+            guard at < payload.upperBound, data.byte(at: at) == tag else { return false }
             at += 1
             for _ in 0..<4 {
-                guard at < esds.payload.upperBound else { return false }
+                guard at < payload.upperBound else { return false }
                 let byte = data.byte(at: at)
                 at += 1
                 if byte & 0x80 == 0 { break }
             }
             return true
         }
-        guard descriptor(3), at + 3 <= esds.payload.upperBound else { return nil }
+        guard descriptor(3), at + 3 <= payload.upperBound else { return nil }
         let flags = data.byte(at: at + 2)
         at += 3
         if flags & 0x80 != 0 { at += 2 }
-        if flags & 0x40 != 0, at < esds.payload.upperBound { at += 1 + Int(data.byte(at: at)) }
+        if flags & 0x40 != 0, at < payload.upperBound { at += 1 + Int(data.byte(at: at)) }
         if flags & 0x20 != 0 { at += 2 }
-        guard descriptor(4), at < esds.payload.upperBound else { return nil }
-        return [0x40, 0x66, 0x67, 0x68].contains(data.byte(at: at)) ? -1 : nil
+        guard descriptor(4), at < payload.upperBound else { return nil }
+        return at
+    }
+
+    /// Whether two init segments describe the same tracks, decoded the same way: alike but for
+    /// the bit rates their sample entries give (BitRateBoxes, and an esds box's decoder
+    /// configuration), which only hint at what the samples take. A transcode the server starts
+    /// again works those out afresh, from the samples it starts with, so they differ between
+    /// runs whose pieces join.
+    static func decodeAlike(_ one: Data, _ other: Data) throws -> Bool {
+        try withoutBitRates(one) == withoutBitRates(other)
+    }
+
+    private static func withoutBitRates(_ data: Data) throws -> Data {
+        var masked = data
+        for (entry, isVideo) in try sampleEntries(data) {
+            // A visual sample entry's boxes follow 78 bytes of fields.
+            let inside = isVideo
+                ? (entry.payload.count > 78 ? (entry.payload.lowerBound + 78)..<entry.payload.upperBound : nil)
+                : boxesInside(data, soundEntry: entry)
+            for child in try inside.map({ try boxes(in: data, range: $0) }) ?? [] {
+                var bitRates: Range<Int>?
+                if child.type == "btrt", child.payload.count >= 12 {
+                    bitRates = child.payload.lowerBound..<(child.payload.lowerBound + 12)
+                }
+                // After the object and stream types: the buffer size, the highest bit rate and the average.
+                if child.type == "esds", let configuration = decoderConfiguration(data, esds: child.payload),
+                   configuration + 13 <= child.payload.upperBound {
+                    bitRates = (configuration + 2)..<(configuration + 13)
+                }
+                if let bitRates { masked.replaceSubrange(bitRates, with: Data(count: bitRates.count)) }
+            }
+        }
+        return masked
+    }
+
+    /// Every sample entry in the header, and whether its track is a picture's.
+    private static func sampleEntries(_ data: Data) throws -> [(entry: Box, isVideo: Bool)] {
+        func children(_ box: Box, _ type: String) throws -> [Box] {
+            try boxes(in: data, range: box.payload).filter { $0.type == type }
+        }
+        var entries: [(entry: Box, isVideo: Bool)] = []
+        for moov in try boxes(in: data, range: 0..<data.count) where moov.type == "moov" {
+            for mdia in try children(moov, "trak").flatMap({ try children($0, "mdia") }) {
+                let isVideo = try children(mdia, "hdlr").contains { $0.payload.count >= 12 && data.fourCC(at: $0.payload.lowerBound + 8) == "vide" }
+                let descriptions = try children(mdia, "minf").flatMap { try children($0, "stbl") }.flatMap { try children($0, "stsd") }
+                for stsd in descriptions where stsd.payload.count >= 8 {
+                    entries += try boxes(in: data, range: (stsd.payload.lowerBound + 8)..<stsd.payload.upperBound).map { ($0, isVideo) }
+                }
+            }
+        }
+        return entries
     }
 
     /// The transfer characteristics a visual sample entry's colr box names (nclx or nclc).
