@@ -109,9 +109,10 @@ final class ContinuityUITests: XCTestCase {
         tap(app.buttons.matching(NSPredicate(format: "label == 'Sign Out' AND identifier != 'settings.signOut'")).firstMatch)
 
         tap(app.buttons["welcome.connect"])
-        let known = app.buttons["login.knownServer"].firstMatch
-        XCTAssertTrue(known.waitForExistence(timeout: timeout), "The sign-in screen doesn't offer the server")
-        XCTAssertTrue(known.label.hasSuffix("as viewer"), "Offered \(known.label)")
+        // Among any other servers signed in to on this simulator.
+        let known = app.buttons.matching(NSPredicate(format: "identifier == 'login.knownServer' AND label ENDSWITH 'as viewer'")).firstMatch
+        XCTAssertTrue(known.waitForExistence(timeout: timeout),
+                      "The sign-in screen doesn't offer the server; it offers \(app.buttons.matching(identifier: "login.knownServer").allElementsBoundByIndex.map(\.label))")
         keep("Sign-in offering the server")
 
         // Clear the form, so the tap is what fills it in.

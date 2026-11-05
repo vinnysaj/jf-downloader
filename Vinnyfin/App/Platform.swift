@@ -138,6 +138,12 @@ extension PrimitiveButtonStyle where Self == ArtworkButtonStyle {
 }
 
 extension View {
+    #if os(tvOS)
+    /// A search field that's always on screen.
+    func alwaysSearchable(text: Binding<String>, prompt: LocalizedStringKey) -> some View {
+        searchable(text: text, prompt: prompt)
+    }
+    #else
     /// A search field that's always on screen. On iPhone, a search tab's field placed
     /// automatically never appears: neither in the navigation bar nor in the tab bar. `isActive`
     /// is whether it has the cursor, and setting it puts the cursor there.
@@ -148,6 +154,7 @@ extension View {
         searchable(text: text, isPresented: isActive, prompt: prompt)
         #endif
     }
+    #endif
 }
 
 /// A vertical scroll view whose artwork and rows run the whole width: past Apple TV's overscan

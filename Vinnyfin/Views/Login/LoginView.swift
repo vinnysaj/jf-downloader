@@ -18,6 +18,9 @@ struct LoginView: View {
     @State private var quickConnect: QuickConnectState?
     @State private var quickConnectTask: Task<Void, Never>?
     @FocusState private var focus: Field?
+    /// The field the cursor moves to next, which comes into view first: a form draws only the
+    /// rows on screen, and a field it hasn't drawn can't take the cursor.
+    @State private var nextFocus: Field?
 
     /// Return moves through the fields in this order; on the password it signs in.
     enum Field: CaseIterable {
@@ -33,78 +36,88 @@ struct LoginView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                knownServersSection
-                serverSection
-                Section {
-                    TextField("Username", text: $username)
-                        .textContentType(.username)
-                        #if !os(macOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .autocorrectionDisabled()
-                        .focused($focus, equals: .username)
-                        .submitLabel(.next)
-                        .onSubmit { focus = .password }
-                        .accessibilityIdentifier("login.username")
-                    SecureField("Password", text: $password)
-                        .textContentType(.password)
-                        .focused($focus, equals: .password)
-                        .submitLabel(.go)
-                        .onSubmit { Task { await signIn() } }
-                        .accessibilityIdentifier("login.password")
-                } header: {
-                    Text("Account")
-                } footer: {
-                    if let error {
-                        Text(error).foregroundStyle(.red)
-                    }
-                }
-                Section {
-                    Button {
-                        Task { await signIn() }
-                    } label: {
-                        HStack {
-                            Text("Sign In")
-                            if isSigningIn {
-                                Spacer()
-                                ProgressView()
-                            }
+            ScrollViewReader { form in
+                Form {
+                    knownServersSection
+                    serverSection
+                    Section {
+                        TextField("Username", text: $username)
+                            .textContentType(.username)
+                            #if !os(macOS)
+                            .textInputAutocapitalization(.never)
+                            #endif
+                            .autocorrectionDisabled()
+                            .focused($focus, equals: .username)
+                            .submitLabel(.next)
+                            .onSubmit { nextFocus = .password }
+                            .accessibilityIdentifier("login.username")
+                            .id(Field.username)
+                        SecureField("Password", text: $password)
+                            .textContentType(.password)
+                            .focused($focus, equals: .password)
+                            .submitLabel(.go)
+                            .onSubmit { Task { await signIn() } }
+                            .accessibilityIdentifier("login.password")
+                            .id(Field.password)
+                    } header: {
+                        Text("Account")
+                    } footer: {
+                        if let error {
+                            Text(error).foregroundStyle(.red)
                         }
                     }
-                    .disabled(!canSignIn)
-                    .accessibilityIdentifier("login.submit")
-                }
-                Section {
-                    Button("Sign In with Quick Connect", systemImage: "number.square") {
-                        Task { await startQuickConnect() }
+                    Section {
+                        Button {
+                            Task { await signIn() }
+                        } label: {
+                            HStack {
+                                Text("Sign In")
+                                if isSigningIn {
+                                    Spacer()
+                                    ProgressView()
+                                }
+                            }
+                        }
+                        .disabled(!canSignIn)
+                        .accessibilityIdentifier("login.submit")
                     }
-                    .disabled(!hasValidAddress || isSigningIn)
-                    .accessibilityIdentifier("login.quickConnect")
-                } footer: {
-                    Text("Shows a code to approve in Jellyfin on a device that's already signed in, so there's no password to type.")
+                    Section {
+                        Button("Sign In with Quick Connect", systemImage: "number.square") {
+                            Task { await startQuickConnect() }
+                        }
+                        .disabled(!hasValidAddress || isSigningIn)
+                        .accessibilityIdentifier("login.quickConnect")
+                    } footer: {
+                        Text("Shows a code to approve in Jellyfin on a device that's already signed in, so there's no password to type.")
+                    }
+                }
+                .formStyle(.grouped)
+                .navigationTitle("Connect to Jellyfin")
+                #if !os(tvOS)
+                // On Apple TV the form is the first screen; elsewhere it's a sheet.
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
+                #endif
+                .sheet(item: $quickConnect, onDismiss: cancelQuickConnect) { state in
+                    QuickConnectSheet(code: state.code) { cancelQuickConnect() }
+                }
+                .onAppear(perform: prefill)
+                .onChange(of: focus) { previous, _ in
+                    // A full address in the host field fills in the other fields once the host is
+                    // done, so "nas:8096" isn't cut apart at "nas:" while it's being typed.
+                    if previous == .host { address.splitHost() }
+                }
+                .task(id: address) { await checkServer() }
+                .onChange(of: nextFocus) { _, field in
+                    guard let field else { return }
+                    nextFocus = nil
+                    form.scrollTo(field)
+                    focus = field
                 }
             }
-            .formStyle(.grouped)
-            .navigationTitle("Connect to Jellyfin")
-            #if !os(tvOS)
-            // On Apple TV the form is the first screen; elsewhere it's a sheet.
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-            #endif
-            .sheet(item: $quickConnect, onDismiss: cancelQuickConnect) { state in
-                QuickConnectSheet(code: state.code) { cancelQuickConnect() }
-            }
-            .onAppear(perform: prefill)
-            .onChange(of: focus) { previous, _ in
-                // A full address in the host field fills in the other fields once the host is
-                // done, so "nas:8096" isn't cut apart at "nas:" while it's being typed.
-                if previous == .host { address.splitHost() }
-            }
-            .task(id: address) { await checkServer() }
         }
     }
 
@@ -156,9 +169,10 @@ struct LoginView: View {
                     .autocorrectionDisabled()
                     .focused($focus, equals: .host)
                     .submitLabel(.next)
-                    .onSubmit { focus = .port }
+                    .onSubmit { nextFocus = .port }
                     .accessibilityIdentifier("login.host")
             }
+            .id(Field.host)
             LabeledContent("Port") {
                 TextField("Port", text: $address.port, prompt: Text(String(address.scheme.defaultPort)))
                     #if !os(macOS)
@@ -167,9 +181,10 @@ struct LoginView: View {
                     #endif
                     .focused($focus, equals: .port)
                     .submitLabel(.next)
-                    .onSubmit { focus = .path }
+                    .onSubmit { nextFocus = .path }
                     .accessibilityIdentifier("login.port")
             }
+            .id(Field.port)
             LabeledContent("Base Path") {
                 TextField("Base Path", text: $address.path, prompt: Text("Optional, e.g. /jellyfin"))
                     #if !os(macOS)
@@ -179,9 +194,10 @@ struct LoginView: View {
                     .autocorrectionDisabled()
                     .focused($focus, equals: .path)
                     .submitLabel(.next)
-                    .onSubmit { focus = .username }
+                    .onSubmit { nextFocus = .username }
                     .accessibilityIdentifier("login.path")
             }
+            .id(Field.path)
         } header: {
             Text("Server")
         } footer: {
@@ -266,7 +282,7 @@ struct LoginView: View {
         username = signIn.userName
         password = ""
         error = nil
-        focus = .password
+        nextFocus = .password
     }
 
     private func checkServer() async {

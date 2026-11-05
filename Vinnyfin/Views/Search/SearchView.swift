@@ -6,13 +6,13 @@ struct SearchView: View {
     #if !os(tvOS)
     /// Counts the Go menu's Search commands, each of which puts the cursor in the search field.
     var fieldRequests = 0
+    /// The search field has the cursor.
+    @State private var fieldIsActive = false
     #endif
 
     @Environment(\.session) private var session
     @Environment(PlayerCoordinator.self) private var player
     @State private var text = ""
-    /// The search field has the cursor.
-    @State private var fieldIsActive = false
     /// What the results on screen were found for.
     @State private var searched = ""
     @State private var movies: [JellyfinItem] = []
@@ -51,8 +51,10 @@ struct SearchView: View {
                 }
             }
             .screenTitle("Search")
+            #if os(tvOS)
+            .alwaysSearchable(text: $text, prompt: "Movies, shows and episodes")
+            #else
             .alwaysSearchable(text: $text, isActive: $fieldIsActive, prompt: "Movies, shows and episodes")
-            #if !os(tvOS)
             .onChange(of: fieldRequests, initial: true) {
                 if fieldRequests > 0 { fieldIsActive = true }
             }
