@@ -14,6 +14,7 @@ struct DownloadsView: View {
     @Environment(AppSettings.self) private var settings
     #if os(iOS) || os(visionOS)
     @Environment(BackgroundDownloads.self) private var backgroundDownloads
+    @Environment(KeepAwakeAudio.self) private var keepAwake
     #endif
     #if os(iOS) || os(macOS)
     @Environment(WidgetDownloads.self) private var widgetDownloads
@@ -44,6 +45,7 @@ struct DownloadsView: View {
             List {
                 problems
                 #if os(iOS) || os(visionOS)
+                KeepAwakeLine()
                 BackgroundNotices(hasActiveDownloads: unfinished.contains { $0.status == .active })
                 #endif
                 spaceNotice
@@ -120,6 +122,7 @@ struct DownloadsView: View {
         ]
         #if os(iOS) || os(visionOS)
         messages.append(backgroundDownloads.problem.map { ($0, { backgroundDownloads.problem = nil }) })
+        messages.append(keepAwake.problem.map { ($0, { keepAwake.problem = nil }) })
         #endif
         #if os(iOS) || os(macOS)
         messages.append(widgetDownloads.problem.map { ($0, { widgetDownloads.problem = nil }) })
@@ -215,7 +218,7 @@ private struct JobRow: View {
     let isFirst: Bool
     @Environment(DownloadManager.self) private var downloads
 
-    /// The network or the schedule holds it back, which Download Now lifts.
+    /// The network or Only While Charging holds it back, which Download Now lifts.
     private var mayDownloadNow: Bool {
         job.status == .active && downloads.waits[job.id]?.isRule == true
     }
@@ -378,6 +381,51 @@ private struct SmartRuleRow: View {
 }
 
 #if os(iOS) || os(visionOS)
+/// Keep Downloads Running while it's on its way, with a way to stop it.
+private struct KeepAwakeLine: View {
+    @Environment(KeepAwakeAudio.self) private var keepAwake
+    @Environment(DownloadManager.self) private var downloads
+    @Environment(AppSettings.self) private var settings
+
+    private var title: String {
+        if !keepAwake.plan.isPlaying { return "Keeps vinnyfin running again once you're done watching" }
+        if DownloadJob.queue(downloads.jobs).isEmpty { return "Downloads are done, and vinnyfin keeps running until you stop it" }
+        return settings.keepPlayingAfterDownloads ? "Keeping vinnyfin running until you stop it" : "Keeping vinnyfin running until downloads finish"
+    }
+
+    var body: some View {
+        if keepAwake.plan.isStarted {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(title, systemImage: "waveform")
+                        .font(.subheadline.weight(.semibold))
+                        .accessibilityIdentifier("keepAwake.status")
+                    if case .failed(let failure) = keepAwake.sound {
+                        Text("Couldn't use your sound, so it plays silence instead. \(failure.message)")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("keepAwake.soundProblem")
+                    } else if keepAwake.isMuted, keepAwake.sound.file != nil {
+                        Text("Your sound is silent while the headphones it played on are disconnected.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 20) {
+                        Button("Stop") { keepAwake.stop() }
+                            .accessibilityIdentifier("keepAwake.stop")
+                        if keepAwake.isMuted, keepAwake.sound.file != nil {
+                            Button("Play Sound Here") { keepAwake.unmute() }
+                        }
+                    }
+                    .font(.footnote.weight(.medium))
+                    .buttonStyle(.borderless)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+}
+
 /// What holds downloads back outside the app, with what to do about it.
 private struct BackgroundNotices: View {
     let hasActiveDownloads: Bool

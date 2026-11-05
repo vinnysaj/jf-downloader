@@ -110,18 +110,18 @@ struct ContinuedProgressTests {
 
     @Test func saysWhatsDownloadingAndHowMuchIsLeft() {
         let movie = job()
-        let one = ContinuedProgress.text(jobs: [movie], receivedBytes: [movie.id: 100_000_000], isNetworkReachable: true, waits: [:])
+        let one = ContinuedProgress.text(jobs: [movie], receivedBytes: [movie.id: 100_000_000], isNetworkReachable: true, waits: [:], isKeptRunning: false)
         #expect(one.title == "Downloading Big Test Movie (2024)")
         #expect(one.subtitle == "\(Int64(200_000_000).formatted(.byteCount(style: .file))) left")
         let episode = job(Samples.episode, at: -1)
-        let two = ContinuedProgress.text(jobs: [episode, movie], receivedBytes: [:], isNetworkReachable: true, waits: [:])
+        let two = ContinuedProgress.text(jobs: [episode, movie], receivedBytes: [:], isNetworkReachable: true, waits: [:], isKeptRunning: false)
         #expect(two.title == "Downloading Test Show S01E02 and 1 more")
         #expect(two.subtitle == "\(Int64(600_000_000).formatted(.byteCount(style: .file))) left")
-        #expect(ContinuedProgress.text(jobs: [movie], receivedBytes: [:], isNetworkReachable: false, waits: [:]).subtitle == "Waiting for a network connection")
+        #expect(ContinuedProgress.text(jobs: [movie], receivedBytes: [:], isNetworkReachable: false, waits: [:], isKeptRunning: false).subtitle == "Waiting for a network connection")
         var unsized = Samples.source
         unsized.size = nil
         let probing = DownloadJob(item: Samples.movie, source: unsized)
-        #expect(ContinuedProgress.text(jobs: [probing], receivedBytes: [:], isNetworkReachable: true, waits: [:]).subtitle == "Starting")
+        #expect(ContinuedProgress.text(jobs: [probing], receivedBytes: [:], isNetworkReachable: true, waits: [:], isKeptRunning: false).subtitle == "Starting")
     }
 
     /// Someone's tap doesn't start one for downloads the rules hold back, unless they chose
@@ -141,9 +141,8 @@ struct ContinuedProgressTests {
         let second = job(at: 1)
         var progress = ContinuedProgress()
         progress.update(jobs: [first, second], receivedBytes: [:])
-        let opens = Date(timeIntervalSince1970: 2_000_000)
-        let waits: [UUID: DownloadWait] = [first.id: .overnight(opens: opens), second.id: .power]
-        #expect(progress.ending(jobs: [first, second], isPausedForPlayback: false, waits: waits) == .waiting(.overnight(opens: opens)))
+        let waits: [UUID: DownloadWait] = [first.id: .wifi, second.id: .power]
+        #expect(progress.ending(jobs: [first, second], isPausedForPlayback: false, waits: waits) == .waiting(.wifi))
         #expect(progress.ending(jobs: [first, second], isPausedForPlayback: false, waits: [first.id: .power]) == nil)
         #expect(ContinuedProgress.Ending.waiting(.power).carriesOnLater)
         #expect(ContinuedProgress.Ending.heldForPlayback.carriesOnLater)
@@ -153,9 +152,21 @@ struct ContinuedProgressTests {
 
     @Test func saysWhatTheNextDownloadWaitsFor() {
         let movie = job()
-        let text = ContinuedProgress.text(jobs: [movie], receivedBytes: [:], isNetworkReachable: true, waits: [movie.id: .wifi])
+        let text = ContinuedProgress.text(jobs: [movie], receivedBytes: [:], isNetworkReachable: true, waits: [movie.id: .wifi], isKeptRunning: false)
         #expect(text.subtitle == "Waiting for Wi-Fi")
         #expect(ContinuedProgress.Ending.waiting(.wifi).text.subtitle == "They carry on over Wi-Fi")
+    }
+
+    /// While Keep Downloads Running plays, the Live Activity says the app is kept running.
+    @Test func saysWhenKeepDownloadsRunningKeepsTheAppRunning() {
+        let movie = job()
+        let kept = ContinuedProgress.text(jobs: [movie], receivedBytes: [movie.id: 100_000_000], isNetworkReachable: true, waits: [:],
+                                          isKeptRunning: true)
+        #expect(kept.title == "Downloading Big Test Movie (2024)")
+        #expect(kept.subtitle == "\(Int64(200_000_000).formatted(.byteCount(style: .file))) left · Kept running")
+        let waiting = ContinuedProgress.text(jobs: [movie], receivedBytes: [:], isNetworkReachable: true, waits: [movie.id: .power],
+                                             isKeptRunning: true)
+        #expect(waiting.subtitle == "\(DownloadWait.power.status) · Kept running")
     }
 }
 #endif

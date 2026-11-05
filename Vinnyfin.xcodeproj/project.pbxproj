@@ -88,6 +88,7 @@
 				Jellyfin/JellyfinModels.swift,
 				Jellyfin/Keychain.swift,
 				Jellyfin/ServerSession.swift,
+				Jellyfin/SessionModels.swift,
 			);
 			target = C406F95571791F6DE04B8B0B /* TopShelf */;
 		};
@@ -120,6 +121,7 @@
 				Jellyfin/JellyfinModels.swift,
 				Jellyfin/Keychain.swift,
 				Jellyfin/ServerSession.swift,
+				Jellyfin/SessionModels.swift,
 			);
 			target = D0A1D0A1D0A1D0A1D0A10001 /* DownloadsWidget */;
 		};
@@ -829,6 +831,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "AppIcon TV";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
+				CODE_SIGN_ENTITLEMENTS = Vinnyfin/Vinnyfin.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvsimulator*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
@@ -863,6 +866,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "AppIcon TV";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
+				CODE_SIGN_ENTITLEMENTS = Vinnyfin/Vinnyfin.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvsimulator*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";

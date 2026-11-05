@@ -5,6 +5,9 @@ import AppKit
 #else
 import UIKit
 #endif
+#if os(visionOS)
+import GroupActivities
+#endif
 
 @main
 struct VinnyfinApp: App {
@@ -77,6 +80,8 @@ extension View {
             .environment(app.messages)
             .environment(app.links)
             .environment(app.player)
+            .environment(app.socket)
+            .environment(app.sharePlay)
         #else
         environment(app.accounts)
             .environment(app.settings)
@@ -84,6 +89,8 @@ extension View {
             .environment(app.messages)
             .environment(app.links)
             .environment(app.player)
+            .environment(app.socket)
+            .environment(app.sharePlay)
             .environment(app.downloads)
             .environment(app.downloadNotifications)
             .environment(app.smartDownloads)
@@ -91,10 +98,12 @@ extension View {
             .environment(app.spotlight)
             #if os(iOS) || os(visionOS)
             .environment(app.backgroundDownloads)
+            .environment(app.keepAwake)
             .environment(app.diagnostics)
             #endif
             #if os(iOS) || os(macOS)
             .environment(app.widgetDownloads)
+            .environment(app.remote)
             #endif
         #endif
     }
@@ -125,10 +134,16 @@ final class AppDelegate: NSObject {
     private(set) lazy var spotlight = SpotlightTitles(accounts: accounts, downloads: downloads)
     #endif
     #if os(iOS) || os(visionOS)
-    private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads)
+    private(set) lazy var keepAwake = KeepAwakeAudio(downloads: downloads, settings: settings, accounts: accounts)
+    private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads,
+                                                                    keepAwake: keepAwake)
     let diagnostics = AppDiagnostics()
     #endif
+    /// Jellyfin's remote control: other devices play to this one, and this one to them.
+    let socket = SessionSocket()
+    private(set) lazy var sharePlay = SharePlay(accounts: accounts, player: player)
     #if os(iOS) || os(macOS)
+    private(set) lazy var remote = RemoteControl(accounts: accounts, socket: socket, player: player)
     private(set) lazy var widgetDownloads = WidgetDownloads(downloads: downloads, history: history)
     #endif
 
@@ -143,6 +158,12 @@ final class AppDelegate: NSObject {
         let links = links
         AppDependencyManager.shared.add(dependency: accounts)
         AppDependencyManager.shared.add(dependency: links)
+        let player = player
+        player.sharePlay = sharePlay
+        socket.onCommand = { command in player.perform(command) }
+        // From launch, so a session started on FaceTime before the app opened is joined.
+        let sharePlay = sharePlay
+        Task { await sharePlay.run() }
         #if !os(tvOS)
         downloadNotifications.start()
         let settings = settings
@@ -168,6 +189,8 @@ final class AppDelegate: NSObject {
         backgroundDownloads.registerLaunchHandlers()
         let backgroundDownloads = backgroundDownloads
         Task { await backgroundDownloads.run() }
+        let keepAwake = keepAwake
+        Task { await keepAwake.run() }
         let diagnostics = diagnostics
         Task { await diagnostics.run() }
         #endif
@@ -256,6 +279,8 @@ struct PlayerWindow: View {
         // Shaped like the picture, which then fills it edge to edge, at any size it's pulled to.
         .aspectRatio(pictureAspectRatio, contentMode: .fit)
         .frame(minWidth: 640, idealWidth: 1280, maxWidth: 3200)
+        // Watching together, the Spatial Personas gather around this window.
+        .groupActivityAssociation(.primary(PlayerWindow.id))
         #endif
         .navigationTitle(model?.title ?? request?.title ?? "vinnyfin")
         .onAppear {

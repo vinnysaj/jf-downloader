@@ -39,6 +39,12 @@ nonisolated extension Error {
 nonisolated struct JellyfinClient: Sendable {
     static let clientName = "vinnyfin"
 
+    /// The app's name to the server, with the platform's, as Jellyfin's own apps give theirs:
+    /// "vinnyfin tvOS". Other devices tell vinnyfin on Apple TV apart by it.
+    static func clientName(for platform: Device.Platform) -> String {
+        "\(clientName) \(platform.rawValue)"
+    }
+
     let serverURL: URL
     let deviceId: String
     /// What the server's device list calls this device.
@@ -325,6 +331,15 @@ nonisolated struct JellyfinClient: Sendable {
         return page.items.dropFirst().first { $0.parentIndexNumber != 0 }
     }
 
+    /// The episode before `episodeId` in the show's order, if there is one.
+    func episode(before episodeId: String, seriesId: String, userId: String) async throws -> JellyfinItem? {
+        let page: ItemsPage = try await get("Shows/\(seriesId)/Episodes", query: [
+            "userId": userId, "adjacentTo": episodeId, "enableUserData": "true", "fields": Self.listFields,
+        ])
+        guard let index = page.items.firstIndex(where: { $0.id == episodeId }), index > 0 else { return nil }
+        return page.items[index - 1]
+    }
+
     /// Every kind of segment; `MediaSegment.skipTitle` picks the ones worth skipping. Jellyfin's
     /// type filter wants the parameter repeated, and answers a comma-separated list with a 400.
     func mediaSegments(itemId: String) async throws -> [MediaSegment] {
@@ -383,6 +398,52 @@ nonisolated struct JellyfinClient: Sendable {
         try await send("Videos/ActiveEncodings", method: "DELETE", query: ["deviceId": deviceId, "playSessionId": playSessionId])
     }
 
+    // MARK: Remote control
+
+    /// Says what this session plays and obeys. With the socket open, other devices can then
+    /// play here and control what plays.
+    func reportCapabilities(_ capabilities: ClientCapabilities) async throws {
+        try await send("Sessions/Capabilities/Full", method: "POST", body: capabilities)
+    }
+
+    /// The sessions the user can play to and control: those whose apps hold a socket open.
+    func controllableSessions(userId: String) async throws -> [RemoteSession] {
+        try await get("Sessions", query: ["controllableByUserId": userId])
+    }
+
+    /// Asks a session to play an item now, from `start` seconds, in a version and with streams
+    /// when given; -1 for the subtitles turns them off.
+    func play(itemId: String, onSession sessionId: String, start: Double, mediaSourceId: String?,
+              audioStreamIndex: Int?, subtitleStreamIndex: Int?) async throws {
+        var query = ["playCommand": "PlayNow", "itemIds": itemId, "startPositionTicks": String(Int64(max(0, start) * 10_000_000))]
+        if let mediaSourceId { query["mediaSourceId"] = mediaSourceId }
+        if let audioStreamIndex { query["audioStreamIndex"] = String(audioStreamIndex) }
+        if let subtitleStreamIndex { query["subtitleStreamIndex"] = String(subtitleStreamIndex) }
+        try await send("Sessions/\(sessionId)/Playing", method: "POST", query: query)
+    }
+
+    func send(_ command: PlaystateCommand, toSession sessionId: String, seekTo seconds: Double? = nil) async throws {
+        var query: [String: String] = [:]
+        if let seconds { query["seekPositionTicks"] = String(Int64(max(0, seconds) * 10_000_000)) }
+        try await send("Sessions/\(sessionId)/Playing/\(command.rawValue)", method: "POST", query: query)
+    }
+
+    func send(_ command: GeneralCommand, toSession sessionId: String) async throws {
+        try await send("Sessions/\(sessionId)/Command", method: "POST", body: command)
+    }
+
+    /// The server's socket, signed in as this client, over which it sends commands and updates.
+    var socketRequest: URLRequest {
+        var url = serverURL.appending(path: "socket")
+        if var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.scheme = serverURL.scheme?.lowercased() == "https" ? "wss" : "ws"
+            url = components.url ?? url
+        }
+        var request = URLRequest(url: url)
+        request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
+        return request
+    }
+
     // MARK: URLs
 
     enum ImageKind: String, Sendable {
@@ -434,7 +495,7 @@ nonisolated struct JellyfinClient: Sendable {
 
     var authorizationHeader: String {
         var fields = [
-            "Client": Self.clientName,
+            "Client": Self.clientName(for: .current),
             "Device": deviceName,
             "DeviceId": deviceId,
             "Version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",

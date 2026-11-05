@@ -23,6 +23,10 @@ final class PlayerCoordinator {
     #endif
     /// Why the engine couldn't be built, to show instead of playing.
     var problem: String?
+    /// A playback another device asked to stop, which its player closes.
+    var stopRequest: PlayerModel.ID?
+    /// Offers to watch what starts with the people on a FaceTime call.
+    @ObservationIgnored weak var sharePlay: SharePlay?
     /// What the last player to close played, once the server has heard it stop: pages showing a
     /// title's watch state load it again, and lists put it on their cards.
     private(set) var endedPlayback = EndedPlayback()
@@ -56,12 +60,51 @@ final class PlayerCoordinator {
     }
     #endif
 
+    /// Plays what the viewer picked. On a FaceTime call it first asks whether to watch it with
+    /// everyone on the call.
     func play(_ request: PlaybackRequest) {
+        guard let sharePlay else { return open(request) }
+        Task {
+            switch await sharePlay.offer(request) {
+            case .playHere: open(request)
+            // The group's session opens it, here as everywhere.
+            case .playTogether, .cancelled: break
+            }
+        }
+    }
+
+    /// Plays without asking: for what another device or the group asks for.
+    func open(_ request: PlaybackRequest) {
         #if os(macOS) || os(visionOS)
         pendingWindowRequest = request
         #else
         Task { await present(request) }
         #endif
+    }
+
+    /// Does what another device asked, through Jellyfin's remote control, as if the viewer here did.
+    func perform(_ command: RemoteCommand) {
+        if case .play(let itemId, let start, let mediaSourceId, let audioStreamIndex, let subtitleStreamIndex) = command {
+            open(PlaybackRequest(source: .item(id: itemId, mediaSourceId: mediaSourceId), title: "",
+                                 startingPoint: .init(position: start, audioStreamIndex: audioStreamIndex,
+                                                      subtitleStreamIndex: subtitleStreamIndex)))
+            return
+        }
+        // The rest are for what's playing; the server sends them only to a session that plays.
+        guard let model = presented else { return }
+        switch command {
+        case .play: break
+        case .pause: model.pause()
+        case .unpause: model.play()
+        case .togglePause: model.togglePlayPause()
+        case .stop: stopRequest = model.id
+        case .seek(let seconds): model.seek(to: seconds)
+        case .skip(let seconds): model.skip(by: seconds)
+        case .nextEpisode: Task { await model.playNextEpisode() }
+        case .previousEpisode: Task { await model.playPreviousEpisode() }
+        case .audioStream(let index): model.chooseAudio(streamIndex: index)
+        case .subtitleStream(let index): model.chooseSubtitle(streamIndex: index)
+        }
     }
 
     /// Plays a file the user picked, remembering it among the recent files. The caller holds
@@ -125,10 +168,10 @@ final class PlayerCoordinator {
         return model
     }
 
-    /// Asks the server for the watch state of what was played. A title it can't be asked about
-    /// keeps the state its cards show until they load again. The Up Next widgets ask the server
-    /// for theirs again.
-    private func endPlayback(of titleIds: Set<String>) async {
+    /// Asks the server for the watch state of what was played, here or on a device this one was
+    /// the remote for. A title it can't be asked about keeps the state its cards show until they
+    /// load again. The Up Next widgets ask the server for theirs again.
+    func endPlayback(of titleIds: Set<String>) async {
         #if os(iOS) || os(macOS)
         if !titleIds.isEmpty { UpNextWidgets.reload() }
         #endif

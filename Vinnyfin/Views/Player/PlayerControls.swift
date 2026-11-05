@@ -21,7 +21,10 @@ struct PlayerControls: View {
     let onInteraction: () -> Void
     /// Nil when Picture in Picture isn't possible right now.
     let pictureInPicture: (() -> Void)?
+    /// Opens Play On and SharePlay; nil when the playback is only this device's, or on Apple TV.
+    let playElsewhere: (() -> Void)?
     var isBelowFold = false
+    @Environment(SharePlay.self) private var sharePlay
     #if os(tvOS)
     /// The controls the remote moves between. Moving counts as using them, so they stay up.
     private enum Control: Hashable {
@@ -140,6 +143,19 @@ struct PlayerControls: View {
             .padding(.top, 6)
             Spacer()
             FormatBadge(model: model).padding(.top, 6)
+            if let playElsewhere {
+                Button {
+                    playElsewhere()
+                    onInteraction()
+                } label: {
+                    Image(systemName: PlayElsewhereSheet.symbol(sharePlay)).font(.headline).frame(width: 22, height: 22)
+                }
+                .buttonStyle(.platformGlass)
+                .buttonBorderShape(.circle)
+                .controlSize(.large)
+                .accessibilityLabel(PlayElsewhereSheet.title)
+                .accessibilityIdentifier("player.playElsewhere")
+            }
             #if os(iOS) || os(macOS)
             RoutePicker()
             if let pictureInPicture {
@@ -366,48 +382,24 @@ struct Scrubber: View {
         let duration = max(model.duration, 1)
         let time = position ?? model.clock.time
         VStack(spacing: 6) {
-            GeometryReader { geometry in
-                let width = geometry.size.width
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.25))
-                    Capsule().fill(.white.opacity(0.4))
-                        .frame(width: width * min(1, max(0, model.clock.buffered / duration)))
-                    Capsule().fill(.white)
-                        .frame(width: width * min(1, max(0, time / duration)))
-                    ForEach(model.chapters.filter { $0.start > 0 && $0.start < duration }) { chapter in
-                        Rectangle().fill(.black.opacity(0.55))
-                            .frame(width: 2)
-                            .offset(x: width * chapter.start / duration - 1)
-                    }
-                }
-                .frame(height: barHeight)
-                .frame(maxHeight: .infinity)
-                .overlay(alignment: .bottomLeading) {
+            TimelineBar(time: model.clock.time, buffered: model.clock.buffered, duration: duration, color: .white,
+                        height: barHeight, marks: model.chapters.map(\.start), position: $position,
+                        onDrag: onInteraction) { model.seek(to: $0) }
+                .overlay {
                     if let position {
-                        let center = width * min(1, max(0, position / duration))
-                        ScrubPreview(model: model, time: position)
-                            // Centered over the handle, kept within the timeline, clear of the bar.
-                            .offset(x: min(max(0, center - ScrubPreview.width / 2), max(0, width - ScrubPreview.width)),
-                                    y: -(geometry.size.height + barHeight) / 2 - 8)
-                            .allowsHitTesting(false)
-                            .transition(.opacity)
+                        GeometryReader { geometry in
+                            let width = geometry.size.width
+                            let center = width * min(1, max(0, position / duration))
+                            ScrubPreview(model: model, time: position)
+                                // Centered over the handle, kept within the timeline, clear of the bar.
+                                .offset(x: min(max(0, center - ScrubPreview.width / 2), max(0, width - ScrubPreview.width)),
+                                        y: -(geometry.size.height + barHeight) / 2 - 8)
+                                .frame(width: width, height: geometry.size.height, alignment: .bottomLeading)
+                        }
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                     }
                 }
-                #if !os(tvOS)
-                .contentShape(.rect)
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            position = min(duration, max(0, value.location.x / width * duration))
-                            onInteraction()
-                        }
-                        .onEnded { _ in
-                            if let position { model.seek(to: position) }
-                            self.position = nil
-                        }
-                )
-                #endif
-            }
             #if os(visionOS)
             // Tall enough to look at and pinch, and lit under the eyes as a slider is.
             .frame(height: 44)
@@ -568,6 +560,55 @@ private struct TrickplayThumbnail: View {
                 Self.log.notice("Couldn't load scrub previews: \(error.localizedDescription, privacy: .public)")
                 failedSheet = index
             }
+        }
+    }
+}
+
+/// A timeline's bar: how far along and how much is buffered, with `marks` (as chapters' starts)
+/// and, but on Apple TV, a handle to drag. `position` follows the drag, and `onSeek` gets where
+/// it let go.
+struct TimelineBar: View {
+    let time: Double
+    var buffered: Double = 0
+    let duration: Double
+    let color: Color
+    let height: CGFloat
+    var marks: [Double] = []
+    @Binding var position: Double?
+    var onDrag: () -> Void = {}
+    let onSeek: (Double) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(color.opacity(0.25))
+                Capsule().fill(color.opacity(0.4))
+                    .frame(width: width * min(1, max(0, buffered / duration)))
+                Capsule().fill(color)
+                    .frame(width: width * min(1, max(0, (position ?? time) / duration)))
+                ForEach(marks.filter { $0 > 0 && $0 < duration }, id: \.self) { mark in
+                    Rectangle().fill(.black.opacity(0.55))
+                        .frame(width: 2)
+                        .offset(x: width * mark / duration - 1)
+                }
+            }
+            .frame(height: height)
+            .frame(maxHeight: .infinity)
+            #if !os(tvOS)
+            .contentShape(.rect)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        position = min(duration, max(0, value.location.x / width * duration))
+                        onDrag()
+                    }
+                    .onEnded { _ in
+                        if let position { onSeek(position) }
+                        self.position = nil
+                    }
+            )
+            #endif
         }
     }
 }

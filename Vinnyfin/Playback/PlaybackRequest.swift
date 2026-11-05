@@ -11,11 +11,21 @@ nonisolated struct PlaybackRequest: Codable, Hashable, Identifiable, Sendable {
         case file(bookmark: Data, name: String)
     }
 
+    /// Where, and with which of the server's streams, another device asked this one to start, in
+    /// place of the resume position and the language settings.
+    struct StartingPoint: Codable, Hashable, Sendable {
+        var position: Double
+        var audioStreamIndex: Int?
+        /// -1 turns the subtitles off; nil leaves them to the subtitle setting.
+        var subtitleStreamIndex: Int?
+    }
+
     var id = UUID()
     let source: Source
     /// Shown while the player gets ready.
     var title: String
     var startFromBeginning = false
+    var startingPoint: StartingPoint?
 
     static func item(_ item: JellyfinItem, mediaSourceId: String? = nil, fromBeginning: Bool = false) -> PlaybackRequest {
         PlaybackRequest(source: .item(id: item.id, mediaSourceId: mediaSourceId), title: item.name, startFromBeginning: fromBeginning)
@@ -214,7 +224,7 @@ struct PlaybackResolver {
             subtitle: item.flatMap(Self.subtitle),
             item: item,
             mediaSource: source,
-            startPosition: request.startFromBeginning ? nil : Self.resumable(start, length: length),
+            startPosition: request.startingPoint?.position ?? (request.startFromBeginning ? nil : Self.resumable(start, length: length)),
             duration: length,
             externalSubtitles: saved + others,
             historyKey: itemId,
@@ -246,13 +256,15 @@ struct PlaybackResolver {
             start = local.position > 0 ? local.position : start
         }
 
-        let resume = Self.resumable(start, length: plan.source.runtimeSeconds ?? item.runtimeSeconds)
+        let asked = request.startingPoint
+        let resume = asked?.position ?? Self.resumable(start, length: plan.source.runtimeSeconds ?? item.runtimeSeconds)
         switch plan {
         case .direct(let source):
             return try direct(item: item, source: source, start: resume)
         case .transcode(let source, let quality):
-            let audioIndex = Self.preferredAudioIndex(in: source, language: settings.audioLanguage)
-            let subtitleIndex = Self.preferredSubtitleIndex(in: source, audioIndex: audioIndex, settings: settings)
+            let audioIndex = asked?.audioStreamIndex ?? Self.preferredAudioIndex(in: source, language: settings.audioLanguage)
+            let subtitleIndex = asked?.subtitleStreamIndex.map { $0 < 0 ? nil : $0 }
+                ?? Self.preferredSubtitleIndex(in: source, audioIndex: audioIndex, settings: settings)
             return try await transcode(item: item, source: source, quality: quality, audioIndex: audioIndex,
                                        subtitleIndex: subtitleIndex, start: resume)
         }

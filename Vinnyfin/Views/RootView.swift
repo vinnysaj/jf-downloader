@@ -8,7 +8,12 @@ struct RootView: View {
     @Environment(WatchHistory.self) private var history
     @Environment(AppSettings.self) private var settings
     @Environment(IncomingLinks.self) private var links
+    @Environment(SessionSocket.self) private var socket
+    @Environment(SharePlay.self) private var sharePlay
     @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS) || os(macOS)
+    @Environment(RemoteControl.self) private var remote
+    #endif
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -21,6 +26,10 @@ struct RootView: View {
     #endif
     /// A title a link asked to open, for Home to show.
     @State private var linkedItem: JellyfinItem?
+    #if os(iOS)
+    /// The full-screen player is up, until it has finished going away.
+    @State private var playerCovers = false
+    #endif
 
     private var session: ServerSession? { accounts.session }
 
@@ -52,9 +61,16 @@ struct RootView: View {
             #endif
         }
         #else
-        .fullScreenCover(item: $player.presented) { model in
+        .fullScreenCover(item: $player.presented) {
+            #if os(iOS)
+            playerCovers = false
+            #endif
+        } content: { model in
             PlayerView(model: model) { Task { await player.dismiss() } }
                 .environment(\.session, session)
+                #if os(iOS)
+                .onAppear { playerCovers = true }
+                #endif
         }
         #endif
         .alert("Something Went Wrong", isPresented: Binding(get: { messages.current != nil }, set: { if !$0 { messages.current = nil } })) {
@@ -66,6 +82,22 @@ struct RootView: View {
             Button("OK") { player.problem = nil }
         } message: {
             Text(player.problem ?? "")
+        }
+        .alert("Can't Watch Together", isPresented: Binding(get: { sharePlay.problem != nil }, set: { if !$0 { sharePlay.problem = nil } })) {
+            Button("OK") { sharePlay.problem = nil }
+        } message: {
+            Text(sharePlay.problem ?? "")
+        }
+        #if os(iOS) || os(macOS)
+        .sheet(isPresented: showsRemoteScreen) {
+            RemoteScreen()
+                .environment(\.session, session)
+        }
+        #endif
+        // Others can play to this device while it's open, or while it plays in the background.
+        .task(id: socketConnection) {
+            guard socketConnection != nil, let client = accounts.client else { return }
+            await socket.run(client: client)
         }
         .onOpenURL { url in open(url) }
         // A tapped notification, Siri, Shortcuts and Spotlight open titles as a link would.
@@ -94,6 +126,34 @@ struct RootView: View {
             await spotlightRefresh
             #endif
         }
+    }
+
+    #if os(iOS) || os(macOS)
+    /// The remote's screen. On iPhone and iPad it waits for the player that handed its playback
+    /// over to be gone: a sheet presented over the full-screen player keeps it from closing, and
+    /// one presented while it goes takes on its dark appearance on a light sheet.
+    private var showsRemoteScreen: Binding<Bool> {
+        Binding {
+            #if os(iOS)
+            remote.showsScreen && !playerCovers
+            #else
+            remote.showsScreen
+            #endif
+        } set: {
+            remote.showsScreen = $0
+        }
+    }
+    #endif
+
+    /// The sign-in the socket is open for; nil while it's closed: signed out, or in the background
+    /// with nothing playing, when the server then stops listing this device to play to. On the
+    /// Mac, which doesn't suspend apps, it stays open.
+    private var socketConnection: String? {
+        guard let client = accounts.client, let account = accounts.account else { return nil }
+        #if !os(macOS)
+        if scenePhase == .background, player.presented?.isPlaying != true { return nil }
+        #endif
+        return "\(client.serverURL.absoluteString) \(account.userId) \(client.token ?? "")"
     }
 
     /// Plays a file, or follows a vinnyfin:// link.
@@ -137,8 +197,26 @@ struct MainTabs: View {
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
     #endif
+    #if os(iOS) || os(macOS)
+    @Environment(RemoteControl.self) private var remote
+    #endif
 
     var body: some View {
+        tabs
+            #if os(iOS)
+            .tabViewBottomAccessory(isEnabled: remote.isActive) { RemoteMiniPlayer() }
+            #elseif os(macOS)
+            .safeAreaInset(edge: .bottom) {
+                if remote.isActive {
+                    RemoteMiniPlayer()
+                        .padding(.vertical, 10)
+                        .background(.bar)
+                }
+            }
+            #endif
+    }
+
+    private var tabs: some View {
         TabView(selection: $selection) {
             Tab("Home", systemImage: "house", value: .home) {
                 HomeView(path: $homePath) { selection = .downloads }
