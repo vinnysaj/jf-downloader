@@ -462,18 +462,18 @@ struct TranscodeServerTests {
     @Test func forgetsWhatWasAskedForAloneOnceTheServerIsSeenTranscoding() {
         var live = TranscodedDownloads.Live()
         live.probedAt = .now
-        live.observe(.ended)
+        live.observe(.ended, pieceLength: 3)
         #expect(live.probedAt != nil)
-        live.observe(.running(position: 30))
+        live.observe(.running(position: 30), pieceLength: 3)
         #expect(live.probedAt == nil)
         #expect(live.seenRunning)
-        live.observe(.ended)
+        live.observe(.ended, pieceLength: 3)
         #expect(live.server == .ended)
         // Down, it can't say it's transcoding until it knows the device again: what came since it
         // went down is waited on.
-        live.observe(.gone)
+        live.observe(.gone, pieceLength: 3)
         live.probedAt = .now
-        live.observe(.gone)
+        live.observe(.gone, pieceLength: 3)
         #expect(live.probedAt != nil)
     }
 
@@ -743,6 +743,27 @@ struct ServerDownTests {
         // Past the end, once it's known, nothing stays.
         host.jobs[0].transcode?.pieceCount = 20
         #expect(!transcodes.mayKeep(20, of: host.jobs[0]))
+    }
+
+    /// The init segment is asked for once the server's transcode has made a piece since it was
+    /// seen starting: pieces served from what a stopped run left don't mean it has one yet.
+    @Test func waitsForARunToMakeAPieceBeforeAskingForItsInitSegment() {
+        var live = TranscodedDownloads.Live()
+        #expect(!live.hasMadeAPiece(at: 100, pieceLength: 3))
+        live.observe(.running(position: 100), pieceLength: 3)
+        #expect(!live.hasMadeAPiece(at: 102, pieceLength: 3))
+        #expect(live.hasMadeAPiece(at: 103, pieceLength: 3))
+        live.observe(.running(position: 104), pieceLength: 3)
+        #expect(live.hasMadeAPiece(at: 104, pieceLength: 3))
+        // Started again, further back.
+        #expect(live.startsAfresh(.running(position: 20), pieceLength: 3))
+        live.observe(.running(position: 20), pieceLength: 3)
+        #expect(!live.hasMadeAPiece(at: 21, pieceLength: 3))
+        live.observe(.ended, pieceLength: 3)
+        #expect(!live.hasMadeAPiece(at: 30, pieceLength: 3))
+        #expect(live.startsAfresh(.running(position: 30), pieceLength: 3))
+        live.observe(.running(position: 30), pieceLength: 3)
+        #expect(live.hasMadeAPiece(at: 33, pieceLength: 3))
     }
 
     /// The app stops the server's transcode to start it again elsewhere: the queue is planned

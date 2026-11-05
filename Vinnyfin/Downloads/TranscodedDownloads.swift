@@ -101,6 +101,9 @@ final class TranscodedDownloads {
         /// The next piece asked for alone starts the transcode again for the app, which isn't
         /// the server stopping.
         var restartIsOwn = false
+        /// How far the server's transcode had got when it was first seen running since it last
+        /// started (`startsAfresh`).
+        var runFirstSeen: Double?
 
         struct Anchor: Equatable {
             var piece: Int
@@ -112,17 +115,39 @@ final class TranscodedDownloads {
         /// transcoding or going down: after that, it's asked again. While it stays down, what
         /// came since is waited on, as the server can't say it's transcoding until it knows the
         /// device again.
-        mutating func observe(_ server: TranscodeServer) {
+        mutating func observe(_ server: TranscodeServer, pieceLength: Double) {
             switch server {
-            case .running:
+            case .running(let position):
+                if startsAfresh(server, pieceLength: pieceLength) || runFirstSeen == nil { runFirstSeen = position }
                 seenRunning = true
                 probedAt = nil
             case .gone where self.server != .gone:
                 probedAt = nil
-            case .gone, .ended, .unknown:
+                runFirstSeen = nil
+            case .gone, .ended:
+                runFirstSeen = nil
+            case .unknown:
                 break
             }
             self.server = server
+        }
+
+        /// Whether `server` shows the server's transcode started since it was last seen: running
+        /// after it wasn't, or back by more than a piece.
+        func startsAfresh(_ server: TranscodeServer, pieceLength: Double) -> Bool {
+            guard case .running(let position) = server else { return false }
+            return switch self.server {
+            case .ended, .gone: true
+            case .running(let before): position + pieceLength < before
+            case .unknown: false
+            }
+        }
+
+        /// Whether the server's transcode, at `position`, has made a piece since it was first
+        /// seen running, and with it its init segment. Asked for before the server has it, the
+        /// init segment starts the transcode again from the title's start to make it.
+        func hasMadeAPiece(at position: Double, pieceLength: Double) -> Bool {
+            runFirstSeen.map { position >= $0 + pieceLength } ?? false
         }
     }
 
@@ -302,9 +327,14 @@ final class TranscodedDownloads {
             pollSoon(job.id)
             return []
         }
-        if server.position != nil, state.needsInitCheck, !state.unchecked.isEmpty {
-            // The init segment of the transcode as it runs now, which the piece came from.
-            begin(.checkInit, for: job.id)
+        if let position = server.position, state.needsInitCheck, !state.unchecked.isEmpty {
+            // The init segment of the transcode as it runs now, which the piece came from; a
+            // piece served from what a stopped one left doesn't say the server has it yet.
+            if live[job.id]?.hasMadeAPiece(at: position, pieceLength: state.pieceLength) == true {
+                begin(.checkInit, for: job.id)
+            } else {
+                pollSoon(job.id)
+            }
             return []
         }
         if server.position == nil, let probedAt = live[job.id]?.probedAt {
@@ -1440,13 +1470,8 @@ final class TranscodedDownloads {
         var change: ((inout TranscodeState) -> Void)?
         switch server {
         case .running(let position):
-            let startedAfresh = switch previous {
-            case .ended, .gone: true
-            case .running(let before): position + state.pieceLength < before
-            case .unknown: false
-            }
             // Before any piece is in, a start is the first.
-            let restarted = startedAfresh && !state.collected.isEmpty
+            let restarted = live.startsAfresh(server, pieceLength: state.pieceLength) && !state.collected.isEmpty
             if restarted { Self.log.notice("[\(id.uuidString.prefix(8))] The server's transcode started again at \(Int(position)) s") }
             let checks = restarted && !state.needsInitCheck
             if checks || state.heldSince != nil {
@@ -1468,7 +1493,7 @@ final class TranscodedDownloads {
         }
         let wasStale = knownServer(of: id, now: now) == .unknown
         polledAt[id] = now
-        live.observe(server)
+        live.observe(server, pieceLength: state.pieceLength)
         live.throttle.observe(position: server.position, downloadPosition: state.downloadPosition, now: now)
         self.live[id] = live
         if let change {
