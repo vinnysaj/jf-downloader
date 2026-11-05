@@ -56,10 +56,14 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     var chunkSize = DownloadJob.initialChunkSize
     /// When a dropped connection last halved `chunkSize`.
     var lastCutAt: Date?
-    /// Failures in a row that never reached the server or were cut off. Never makes the job give up.
+    /// Failures in a row that never reached the server or were cut off, those of transfers out
+    /// together counting once (`lastFailureAt`). Never makes the job give up.
     var networkFailures = 0
-    /// Error answers from the server in a row. The job gives up after `maxServerFailures`.
+    /// Error answers from the server in a row, counted as `networkFailures` are. The job gives
+    /// up after `maxServerFailures`.
     var serverFailures = 0
+    /// When a failure last counted in `networkFailures` or `serverFailures`.
+    var lastFailureAt: Date?
     var lastError: String?
     /// Transfers started before this date are scheduled to begin at it.
     var retryAt: Date?

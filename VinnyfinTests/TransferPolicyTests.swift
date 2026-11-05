@@ -442,9 +442,10 @@ struct SchedulingTests {
         job.recordFailure(.network("refused"), receivedBytes: 0, attemptStart: now, now: now)
         #expect(job.chunkSize == start)
         #expect(job.retryAt == now.addingTimeInterval(1))
-        job.recordFailure(.network("dropped"), receivedBytes: 500, attemptStart: now, now: now + 1)
+        // Its retry, begun after it, cut off.
+        job.recordFailure(.network("dropped"), receivedBytes: 500, attemptStart: now + 1, now: now + 1.5)
         #expect(job.chunkSize == start / 2)
-        #expect(job.retryAt == now.addingTimeInterval(3))
+        #expect(job.retryAt == now.addingTimeInterval(3.5))
         for attempt in 2..<42 {
             let began = now + Double(attempt)
             job.recordFailure(.network("dropped"), receivedBytes: 1, attemptStart: began, now: began + 0.5)
@@ -502,11 +503,11 @@ struct SchedulingTests {
         var job = DownloadJob(item: Samples.movie, source: Samples.source)
         let start = Date(timeIntervalSince1970: 1000)
         for attempt in 0..<DownloadJob.maxServerFailures {
-            job.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: start, now: start + Double(attempt))
+            job.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: start + Double(attempt) - 0.5, now: start + Double(attempt))
         }
         #expect(job.status == .active)
         #expect(job.retryAt != nil)
-        job.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: start, otherArrival: start + 5, now: start + 100)
+        job.recordFailure(.server("HTTP 500"), receivedBytes: 0, attemptStart: start + 99, otherArrival: start + 5, now: start + 100)
         #expect(job.status == .failed)
         #expect(job.lastError == "HTTP 500")
     }
@@ -524,6 +525,77 @@ struct SchedulingTests {
         // A whole file a server sends without validators: most of it in, but more than a chunk left.
         #expect(!DownloadJob.finishesWhenPaused(received: 3 * chunk, expected: 4 * chunk + 1, canResume: false))
         #expect(DownloadJob.finishesWhenPaused(received: 3 * chunk, expected: 4 * chunk, canResume: false))
+    }
+
+    /// A playback holding downloads wants the connection now: a transfer that can't keep its
+    /// bytes finishes only when it's a moment from done, at most `playbackFinishLimit` left.
+    @Test func letsATransferAMomentFromDoneFinishThroughAPlayback() {
+        let limit = DownloadJob.playbackFinishLimit
+        #expect(DownloadJob.finishesWhenPaused(received: 12 << 20, expected: (12 << 20) + limit, canResume: false, limit: limit))
+        #expect(!DownloadJob.finishesWhenPaused(received: 12 << 20, expected: (12 << 20) + limit + 1, canResume: false, limit: limit))
+        #expect(!DownloadJob.finishesWhenPaused(received: 1 << 20, expected: 3 << 20, canResume: false, limit: limit))
+        // One that can keep its bytes is set aside with them.
+        #expect(!DownloadJob.finishesWhenPaused(received: 12 << 20, expected: 13 << 20, canResume: true, limit: limit))
+    }
+
+    /// The transfers out when the server goes down fail together and count once: a restart that
+    /// fails eight pieces at once waits a second for the first retry, not minutes.
+    @Test func countsTransfersFailingTogetherOnce() {
+        let start = Date(timeIntervalSince1970: 1000)
+        var job = job()
+        for index in 0..<8 {
+            job.recordFailure(.server("HTTP 503"), receivedBytes: 0, attemptStart: start, now: start + 1 + Double(index) / 4)
+        }
+        #expect(job.serverFailures == 1)
+        #expect(job.lastFailureAt == start + 1)
+        #expect(job.retryAt == start + 1.75 + 1 + 1)
+        // Their retries, started after, fail again: that counts.
+        job.recordFailure(.server("HTTP 503"), receivedBytes: 0, attemptStart: start + 2.1, now: start + 3)
+        job.recordFailure(.server("HTTP 503"), receivedBytes: 0, attemptStart: start + 2.2, now: start + 3.1)
+        #expect(job.serverFailures == 2)
+        job.recordFailure(.network("refused"), receivedBytes: 0, attemptStart: start + 2.3, now: start + 3.2)
+        #expect(job.networkFailures == 0)
+    }
+
+    /// A transfer timed for a retry is started again at once when the job no longer waits that
+    /// long: another of its transfers came through.
+    @Test func retimesATransferWaitingPastItsJobsRetry() {
+        let now = Date(timeIntervalSince1970: 1000)
+        var job = job()
+        job.retryAt = now + 256
+        #expect(!job.waitsPastRetry(beginningAt: now + 256, now: now))
+        #expect(!job.waitsPastRetry(beginningAt: nil, now: now))
+        job.recordSuccess(now: now)
+        #expect(job.waitsPastRetry(beginningAt: now + 256, now: now))
+        // Begun already, it's the daemon's.
+        #expect(!job.waitsPastRetry(beginningAt: now - 1, now: now))
+    }
+
+    /// A transfer timed for later is on the clock from when it may begin, so the rule for
+    /// transfers that never got an answer doesn't count the wait it was given.
+    @Test func startsATimedTransfersClockWhenItMayBegin() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let begin = start + 240
+        var timed = TransferActivity(bytes: 0, resumed: false, now: begin)
+        #expect(timed.lastProgress == begin)
+        timed.restartClock(now: start + 10)
+        #expect(timed.lastProgress == begin)
+        timed.restartClock(now: begin + 10)
+        #expect(timed.lastProgress == begin + 10)
+    }
+
+    /// A transfer that looks stalled is replaced only if the session still runs it: one it
+    /// lists as completed or no longer lists is done, its report still to come, and is given up
+    /// on only when that report never comes.
+    @Test func asksTheSessionBeforeCallingATransferStalled() {
+        let now = Date(timeIntervalSince1970: 1000)
+        let limit: TimeInterval = 300
+        #expect(TransferActivity.verdict(listed: .running, unlistedSince: nil, now: now, reportLimit: limit) == .replace)
+        #expect(TransferActivity.verdict(listed: .completed, unlistedSince: nil, now: now, reportLimit: limit) == .awaitReport)
+        #expect(TransferActivity.verdict(listed: nil, unlistedSince: now - 60, now: now, reportLimit: limit) == .awaitReport)
+        #expect(TransferActivity.verdict(listed: nil, unlistedSince: now - 301, now: now, reportLimit: limit) == .forget)
+        #expect(TransferActivity.verdict(listed: .suspended, unlistedSince: nil, now: now, reportLimit: limit) == .leave)
+        #expect(TransferActivity.verdict(listed: .canceling, unlistedSince: nil, now: now, reportLimit: limit) == .leave)
     }
 
     /// What the task says decides: a transfer the daemon hasn't got to, or one that's moving,

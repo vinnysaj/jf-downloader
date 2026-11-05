@@ -44,7 +44,7 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
             case failed
         }
 
-        let title: Title
+        var title: Title
         let state: State
         /// How far along, in whole percent; nil until the size is known.
         let percent: Int?

@@ -161,7 +161,7 @@ final class WidgetDownloads: DownloadsRunning {
     /// Writes the pictures the snapshot's titles lack, deletes those it no longer shows, then
     /// the snapshot, marked with the pictures it has.
     @concurrent
-    private nonisolated static func write(_ snapshot: DownloadsSnapshot, pictures: [String: URL], to folder: URL) async throws -> DownloadsSnapshot {
+    nonisolated static func write(_ snapshot: DownloadsSnapshot, pictures: [String: URL], to folder: URL) async throws -> DownloadsSnapshot {
         let manager = FileManager.default
         let artworkFolder = folder.appending(path: "Artwork", directoryHint: .isDirectory)
         try manager.createDirectory(at: artworkFolder, withIntermediateDirectories: true)
@@ -178,7 +178,9 @@ final class WidgetDownloads: DownloadsRunning {
             return title
         }
         snapshot.downloads = try snapshot.downloads.map { download in
-            DownloadsSnapshot.Download(title: try withArtwork(download.title), state: download.state, percent: download.percent)
+            var download = download
+            download.title = try withArtwork(download.title)
+            return download
         }
         snapshot.ready = try snapshot.ready.map(withArtwork)
         for file in try manager.contentsOfDirectory(at: artworkFolder, includingPropertiesForKeys: nil)

@@ -328,6 +328,26 @@ struct DownloadsSnapshotTests {
             == at.addingTimeInterval(DownloadsSnapshot.changeReloadInterval))
     }
 
+    #if os(iOS) || os(macOS)
+    /// The copy the widget reads keeps what each download waits for and what its server does,
+    /// with the picture it adds.
+    @Test func theWidgetsCopyKeepsWhatEachDownloadWaitsForAndWhatItsServerDoes() async throws {
+        let jobs = [job("a", .active, minutesIn: 0, done: 10), job("b", .active, minutesIn: 1, done: 10)]
+        let snapshot = DownloadsSnapshot(jobs: jobs, receivedBytes: [:], downloadingJobId: jobs[0].id, isHeldForPlayback: false,
+                                         isNetworkReachable: true, waits: [jobs[1].id: DownloadWait.wifi.status],
+                                         notes: [jobs[0].id: "Server preparing 42%"], isWatched: { _ in false })
+        let folder = FileManager.default.temporaryDirectory.appending(path: "WidgetSnapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let written = try await WidgetDownloads.write(snapshot, pictures: [:], to: folder)
+        let read = try JSONDecoder().decode(DownloadsSnapshot.self, from: Data(contentsOf: folder.appending(path: "snapshot.json")))
+        for copy in [written, read] {
+            #expect(copy.downloads.map(\.note) == ["Server preparing 42%", nil])
+            #expect(copy.downloads.map(\.wait) == [nil, "Waiting for Wi-Fi"])
+            #expect(copy.downloads.map(\.state) == snapshot.downloads.map(\.state))
+        }
+    }
+    #endif
+
     @Test func roundTripsThroughJSON() throws {
         var snapshot = DownloadsSnapshot(jobs: [job("a", .active, minutesIn: 0, done: 10)], receivedBytes: [:], downloadingJobId: nil,
                                          isHeldForPlayback: false, isNetworkReachable: true, isWatched: { _ in false })

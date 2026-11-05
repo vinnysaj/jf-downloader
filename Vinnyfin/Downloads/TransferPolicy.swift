@@ -454,15 +454,20 @@ nonisolated extension DownloadJob {
         let since = failingSince ?? now
         failingSince = since
         if let otherArrival, otherArrival > since, failedAloneAt == nil { failedAloneAt = now }
+        // An attempt that began before the last failure counted fails of the same cause: the
+        // transfers out when a server goes down fail together, and count once, or the wait for
+        // the first retry after a restart would be minutes.
+        let counts = attemptStart > (lastFailureAt ?? .distantPast)
+        if counts { lastFailureAt = now }
         switch failure {
         case .network(let message):
-            networkFailures += 1
+            if counts { networkFailures += 1 }
             if unreachable { serverUnreachableSince = serverUnreachableSince ?? now }
             recordCut(receivedBytes: receivedBytes, attemptStart: attemptStart, now: now)
             lastError = message
             retryAt = now.addingTimeInterval(Self.backoff(attempt: networkFailures, cap: 60))
         case .server(let message):
-            serverFailures += 1
+            if counts { serverFailures += 1 }
             serverUnreachableSince = nil
             lastError = message
             if serverFailures >= Self.maxServerFailures, yields {
@@ -472,6 +477,13 @@ nonisolated extension DownloadJob {
                 retryAt = now.addingTimeInterval(Self.backoff(attempt: serverFailures, cap: 300))
             }
         }
+    }
+
+    /// Whether a transfer timed to begin at `begin` waits longer than the job's retry now asks:
+    /// one of its transfers came through since, or failed of a cause counted already.
+    func waitsPastRetry(beginningAt begin: Date?, now: Date) -> Bool {
+        guard let begin, begin > now else { return false }
+        return begin > (retryAt ?? now)
     }
 
     /// 1, 2, 4, 8 … seconds, up to `cap`.
@@ -505,13 +517,19 @@ nonisolated extension DownloadJob {
     /// Whether a transfer under way finishes when its download is paused, instead of being cut:
     /// one that can't keep its bytes (the server sent neither ETag nor Last-Modified, which
     /// resume data needs), with `received` of its `expected` bytes, when it has fetched at least
-    /// as much as it has left, and that's no more than the largest chunk. Cut, it would lose more
-    /// than finishing fetches; one less far along loses less than it would still fetch.
-    static func finishesWhenPaused(received: Int64, expected: Int64?, canResume: Bool) -> Bool {
+    /// as much as it has left, and that's no more than `limit`. Cut, it would lose more than
+    /// finishing fetches; one less far along loses less than it would still fetch.
+    ///
+    /// A pause lets one with up to the largest chunk left finish. A playback holding downloads
+    /// wants the connection now, so only `playbackFinishLimit`: a second or two of a typical
+    /// link, less than the player buffers before it starts.
+    static func finishesWhenPaused(received: Int64, expected: Int64?, canResume: Bool, limit: Int64 = maximumChunkSize) -> Bool {
         guard !canResume, let expected, received > 0 else { return false }
         let left = expected - received
-        return left <= received && left <= maximumChunkSize
+        return left <= received && left <= limit
     }
+
+    static let playbackFinishLimit: Int64 = 4 << 20
 }
 
 /// How a transfer in the session has moved, as the app looks at its task: whether the daemon
@@ -525,7 +543,7 @@ nonisolated struct TransferActivity: Equatable, Sendable {
     private(set) var bytes: Int64
     /// When the daemon was first seen working on it: a response, or bytes beyond those it had.
     private(set) var underWaySince: Date?
-    /// When its bytes last grew, or it got under way.
+    /// When its bytes last grew, or it got under way; before then, when it could first begin.
     private(set) var lastProgress: Date
 
     init(bytes: Int64, resumed: Bool, now: Date) {
@@ -554,7 +572,7 @@ nonisolated struct TransferActivity: Equatable, Sendable {
 
     /// Counts from now: the app has just acted on it, or couldn't look at it while suspended.
     mutating func restartClock(now: Date) {
-        lastProgress = now
+        lastProgress = max(lastProgress, now)
     }
 
     /// Whether a replacement carries on from its bytes, by its resume data: not when it was
@@ -564,6 +582,34 @@ nonisolated struct TransferActivity: Equatable, Sendable {
     /// Whether the daemon runs it, has it under way and it has moved nothing for `limit`.
     func isStalled(state: URLSessionTask.State, now: Date, limit: TimeInterval) -> Bool {
         state == .running && isUnderWay && now.timeIntervalSince(lastProgress) > limit
+    }
+
+    /// What to do with a transfer that looks stalled, once the session has said what it has.
+    enum StallVerdict: Equatable, Sendable {
+        case replace
+        /// Done in the daemon, its report still to come: the system can hold reports back for a
+        /// minute or more while the app is in the background.
+        case awaitReport
+        /// Done in the daemon long ago with no report: its range is planned again.
+        case forget
+        /// Suspended or being cancelled: not stalled.
+        case leave
+    }
+
+    /// `listed` is its task's state as the session lists it, nil when it doesn't list it;
+    /// `unlistedSince` when it was first found done without a report.
+    static func verdict(listed: URLSessionTask.State?, unlistedSince: Date?, now: Date, reportLimit: TimeInterval) -> StallVerdict {
+        switch listed {
+        case .running:
+            return .replace
+        case .suspended, .canceling:
+            return .leave
+        case .completed, nil:
+            guard let unlistedSince, now.timeIntervalSince(unlistedSince) > reportLimit else { return .awaitReport }
+            return .forget
+        @unknown default:
+            return .leave
+        }
     }
 }
 #endif

@@ -64,12 +64,13 @@ import OSLog
 /// Whenever the process runs, in front or kept running in the background (`BackgroundDownloads`,
 /// `KeepAwakeAudio`), finished chunks go into place as they arrive, files are published, and
 /// `trackProgress` replaces stalled transfers, by what their tasks say they've received
-/// (`TransferActivity`). Whatever a transfer the app cancelled delivers anyway, having finished
-/// first, is kept, unless its job started over. Pausing cuts the transfers that can keep their
-/// bytes in resume data, and lets those that can't finish once they've more behind than ahead
-/// (`DownloadJob.finishesWhenPaused`); a playback holds them all, as it needs the connection
-/// now. `DownloadNotifications` tells the user when files
-/// are ready to watch offline and when one needs them. Swiping the app away in the app switcher
+/// (`TransferActivity`) and what the session says of them. Whatever a transfer the app
+/// cancelled delivers anyway, having finished first, is kept, unless its job started over.
+/// Pausing cuts the transfers that can keep their bytes in resume data, and lets those that
+/// can't finish once they've more behind than ahead (`DownloadJob.finishesWhenPaused`); a
+/// playback holds them all but those that can't and are a moment from done, as it needs the
+/// connection now. `DownloadNotifications` tells the user when files are ready to watch
+/// offline and when one needs them. Swiping the app away in the app switcher
 /// makes the system cancel every transfer and leave the app closed until it's opened again; the
 /// reason comes with the cancellations then, and is kept in `systemCancellation` to tell the
 /// user. Which downloads someone started, rather than smart downloads by themselves, is in
@@ -189,7 +190,9 @@ final class DownloadManager {
             self.received = received
             self.carried = carried
             self.resumed = resumed
-            activity = TransferActivity(bytes: task.countOfBytesReceived, resumed: resumed, now: .now)
+            // One timed for later is on the clock from when it may begin.
+            activity = TransferActivity(bytes: task.countOfBytesReceived, resumed: resumed,
+                                        now: max(.now, task.earliestBeginDate ?? .distantPast))
         }
 
         /// The daemon has a response for it, or bytes: it's under way rather than waiting its turn.
@@ -238,6 +241,17 @@ final class DownloadManager {
     /// Tasks of jobs started over or forgotten: whatever they deliver is dropped, being bytes of
     /// the file as it was.
     @ObservationIgnored private var discarded: Set<Int> = []
+    /// Tasks whose report has been handled in this run: the system can report a task twice, the
+    /// second time without its body.
+    @ObservationIgnored private var handledTasks: Set<Int> = []
+    /// Tasks cancelled as stalled, with the bytes they had and when their attempt began: cut
+    /// partway, they say the link drops (`recordCut`); finished first, they say nothing.
+    @ObservationIgnored private var cancelledAsStalled: [Int: (received: Int64, attemptStart: Date)] = [:]
+    /// The session is being asked about transfers that look stalled.
+    @ObservationIgnored private var isCheckingStalls = false
+    /// Transfers that looked stalled that the session no longer lists, and since when: done in
+    /// the daemon, their reports still to come.
+    @ObservationIgnored private var unlistedSince: [Int: Date] = [:]
     /// Chunks on their way from staging into their partial file, with their size: their ranges
     /// stay claimed, and their bytes count as the download's, until they're in.
     @ObservationIgnored private var writing: [TransferTag: Int64] = [:]
@@ -260,6 +274,10 @@ final class DownloadManager {
     @ObservationIgnored private var settling: Task<Void, Never>?
     #endif
     @ObservationIgnored private var lastSample: (date: Date, bytes: [UUID: Int64])?
+    /// When each download's bytes last grew, as `refreshLiveProgress` samples them, lately.
+    @ObservationIgnored private var arrivedAt: [UUID: Date] = [:]
+    /// A download whose bytes grew this recently counts as transferring.
+    nonisolated static let arrivalLinger: TimeInterval = 3
     @ObservationIgnored private var lastStallCheck = Date.now
     /// The open players, by their model's id, and whether each is playing.
     @ObservationIgnored private var players: [UUID: Bool] = [:]
@@ -422,6 +440,8 @@ final class DownloadManager {
             switch event {
             case .progress(let taskIdentifier, let received):
                 guard let transfer = running[taskIdentifier] else { continue }
+                // An error page isn't the file's bytes; the report says what the server answered.
+                if let status = (transfer.task.response as? HTTPURLResponse)?.statusCode, !(200..<300).contains(status) { continue }
                 lastActivity = .now
                 running[taskIdentifier]?.received = received
                 running[taskIdentifier]?.reported = received
@@ -540,8 +560,7 @@ final class DownloadManager {
         for index in jobs.indices where ids.contains(jobs[index].id) { jobs[index].status = .paused }
         let transfers = running.filter { ids.contains($0.value.tag.jobId) }
         let finishing = transfers.filter { _, transfer in
-            let expected = transfer.tag.range?.count64 ?? jobs.first { $0.id == transfer.tag.jobId }?.totalBytes
-            return DownloadJob.finishesWhenPaused(received: transfer.bytes, expected: expected, canResume: transfer.canResume)
+            DownloadJob.finishesWhenPaused(received: transfer.bytes, expected: expectedBytes(of: transfer), canResume: transfer.canResume)
         }
         if !finishing.isEmpty { Self.log.info("Pausing: \(finishing.count) transfers that can't keep their bytes finish first") }
         setAside(transfers.filter { finishing[$0.key] == nil })
@@ -755,9 +774,21 @@ final class DownloadManager {
         if hold { holdTransfers() } else { pump() }
     }
 
+    /// Sets every transfer aside with its bytes, but for those that can't keep them and are
+    /// close enough to done that finishing costs the playback less than cutting them would lose
+    /// (`DownloadJob.finishesWhenPaused`, `playbackFinishLimit`).
     private func holdTransfers() {
-        Self.log.info("Holding \(self.running.count) transfers for a playback")
-        setAside(running)
+        let finishing = running.filter { _, transfer in
+            DownloadJob.finishesWhenPaused(received: transfer.bytes, expected: expectedBytes(of: transfer), canResume: transfer.canResume,
+                                           limit: DownloadJob.playbackFinishLimit)
+        }
+        Self.log.info("Holding \(self.running.count - finishing.count) transfers for a playback; \(finishing.count) that can't keep their bytes finish first")
+        setAside(running.filter { finishing[$0.key] == nil })
+    }
+
+    /// What a transfer is to fetch: its range, or the whole file.
+    private func expectedBytes(of transfer: RunningTransfer) -> Int64? {
+        transfer.tag.range?.count64 ?? jobs.first { $0.id == transfer.tag.jobId }?.totalBytes
     }
 
     /// Cancels the transfers keeping any resume data, to carry on from later, those waiting
@@ -1174,11 +1205,11 @@ final class DownloadManager {
 
     /// Takes back transfers that haven't started and shouldn't wait in the session now: those
     /// of files not in `inSession`, or made for networks the rules no longer give their file,
-    /// and pieces of a transcode that asking for now would start the server's transcode
-    /// elsewhere. Ones with bytes, under way or carrying on from resume data, finish, unless they
-    /// can't use the network the device is on while the rules now let their file use it: their
-    /// bytes go, as resume data keeps the networks a transfer was made for, and their range is
-    /// planned again for this one.
+    /// timed for a retry their job no longer waits as long for, and pieces of a transcode that
+    /// asking for now would start the server's transcode elsewhere. Ones with bytes, under way
+    /// or carrying on from resume data, finish, unless they can't use the network the device is
+    /// on while the rules now let their file use it: their bytes go, as resume data keeps the
+    /// networks a transfer was made for, and their range is planned again for this one.
     private func takeBack(keeping inSession: Set<UUID>) {
         let rules = rules
         let byId = Dictionary(jobs.map { ($0.id, $0) }) { first, _ in first }
@@ -1195,6 +1226,7 @@ final class DownloadManager {
                 transfer.task.cancel()
                 stranded += 1
             } else if let job, inSession.contains(job.id), transfer.access == rules.access(for: job),
+                      !job.waitsPastRetry(beginningAt: transfer.task.earliestBeginDate, now: .now),
                       transfer.tag.segment.map({ transcodes.mayKeep($0, of: job) }) ?? true {
                 continue
             } else {
@@ -1429,10 +1461,7 @@ final class DownloadManager {
     /// for a network it may use. When nothing at all has moved or reported for that long while
     /// the app is in front, the oldest `connectionsPerHost` waiting count too: a transfer can
     /// stall before any answer. Off screen, transfers wait at the system's discretion, so nothing
-    /// moving says nothing. A replaced transfer carries on from the bytes it has, by its resume
-    /// data, but for one resumed that never got going: the daemon can carry its wait over into the
-    /// resume data, so its range is planned again. A paused download's transfer left to finish is
-    /// set aside instead.
+    /// moving says nothing. The session is asked first (`replace(stalled:listed:now:)`).
     private func replaceStalledTransfers(now: Date) {
         for (identifier, transfer) in running {
             let before = transfer.activity.lastProgress
@@ -1440,26 +1469,65 @@ final class DownloadManager {
                                                   now: now)
             if running[identifier]?.activity.lastProgress != before { lastActivity = now }
         }
-        guard isNetworkReachable, !isPausedForPlayback else { return }
+        guard isNetworkReachable, !isPausedForPlayback, !isCheckingStalls else { return }
         let movable = running.filter { $0.value.access.allows(network) && ($0.value.task.earliestBeginDate ?? .distantPast) <= now }
-        var due = movable.filter { $0.value.activity.isStalled(state: $0.value.task.state, now: now, limit: Self.stallLimit) }
+        var due = Set(movable.filter { $0.value.activity.isStalled(state: $0.value.task.state, now: now, limit: Self.stallLimit) }.keys)
         if isInFront, now.timeIntervalSince(lastActivity) > Self.stallLimit {
             let waiting = movable.filter { _, transfer in
                 !transfer.activity.isUnderWay && transfer.task.state == .running
                     && now.timeIntervalSince(transfer.activity.lastProgress) > Self.stallLimit
             }
-            for (identifier, transfer) in waiting.sorted(by: { $0.key < $1.key }).prefix(Self.connectionsPerHost) {
-                due[identifier] = transfer
-            }
+            due.formUnion(waiting.keys.sorted().prefix(Self.connectionsPerHost))
         }
-        for (identifier, transfer) in due {
+        guard !due.isEmpty else { return }
+        isCheckingStalls = true
+        Task { [weak self, session] in
+            let tasks = await session.allTasks
+            guard let self else { return }
+            self.isCheckingStalls = false
+            self.replace(stalled: due, listed: Dictionary(tasks.map { ($0.taskIdentifier, $0) }) { first, _ in first }, now: .now)
+        }
+    }
+
+    /// A transfer the session no longer lists whose report hasn't come in this long is given
+    /// up on, and its range planned again.
+    static let unreportedLimit: TimeInterval = 5 * 60
+
+    /// Replaces the transfers that looked stalled, but for those the session says otherwise of:
+    /// one it no longer lists, or lists as completed, is done in the daemon, its report still to
+    /// come (the system can hold reports back for a minute or more while the app is in the
+    /// background). A replaced transfer carries on from the bytes it has, by its resume data,
+    /// but for one resumed that never got going: the daemon can carry its wait over into the
+    /// resume data, so its range is planned again. A paused download's transfer left to finish
+    /// is set aside instead. Whether it was cut partway, which shrinks its job's chunks, its
+    /// report tells (`handle`).
+    private func replace(stalled identifiers: Set<Int>, listed: [Int: URLSessionTask], now: Date) {
+        for identifier in identifiers {
+            guard let transfer = running[identifier] else { continue }
+            let state = listed[identifier]?.state
+            switch TransferActivity.verdict(listed: state, unlistedSince: unlistedSince[identifier], now: now,
+                                            reportLimit: Self.unreportedLimit) {
+            case .replace:
+                break
+            case .leave:
+                continue
+            case .awaitReport:
+                if unlistedSince[identifier] == nil { unlistedSince[identifier] = now }
+                Self.log.info("Task \(identifier) [\(transfer.tag.encoded)] is done in the daemon; waiting for its report")
+                continue
+            case .forget:
+                Self.log.notice("Task \(identifier) [\(transfer.tag.encoded)] never reported; planning its range again")
+                unlistedSince[identifier] = nil
+                running[identifier] = nil
+                pump()
+                continue
+            }
             Self.log.notice("Task \(identifier) [\(transfer.tag.encoded)]: no bytes for \(Int(now.timeIntervalSince(transfer.activity.lastProgress)))s, replacing it")
             guard let index = index(of: transfer.tag.jobId), jobs[index].status == .active else {
                 setAside([identifier: transfer])
                 continue
             }
-            // Stuck partway: the link can't carry a chunk this big between drops.
-            jobs[index].recordCut(receivedBytes: transfer.received, attemptStart: transfer.attemptStart, now: now)
+            cancelledAsStalled[identifier] = (transfer.received, transfer.attemptStart)
             cancelledByUs.insert(identifier)
             if !transfer.activity.carriesOnWhenReplaced {
                 // Resuming didn't get it going: the range goes back to be planned again in
@@ -1508,9 +1576,25 @@ final class DownloadManager {
     // MARK: Finished transfers
 
     private func handle(_ finished: TransferDelegate.Finished) async {
+        guard handledTasks.insert(finished.taskIdentifier).inserted else {
+            Self.log.notice("Task \(finished.taskIdentifier) [\(finished.tag?.encoded ?? "untagged")] reported again; dropping the second report")
+            discard(finished.stagedFile)
+            return
+        }
         let transfer = running.removeValue(forKey: finished.taskIdentifier)
         let cancelled = cancelledByUs.remove(finished.taskIdentifier) != nil
         let isDiscarded = discarded.remove(finished.taskIdentifier) != nil
+        unlistedSince[finished.taskIdentifier] = nil
+        if let stalled = cancelledAsStalled.removeValue(forKey: finished.taskIdentifier), finished.error != nil,
+           let tag = transfer?.tag ?? finished.tag, let index = index(of: tag.jobId), jobs[index].status == .active {
+            // Cut partway after it stalled: the link can't carry a chunk this big between drops.
+            let chunkSize = jobs[index].chunkSize
+            jobs[index].recordCut(receivedBytes: stalled.received, attemptStart: stalled.attemptStart)
+            if jobs[index].chunkSize != chunkSize {
+                Self.log.notice("Task \(finished.taskIdentifier) [\(tag.encoded)] was cut after it stalled; chunks now \(self.jobs[index].chunkSize)")
+                save()
+            }
+        }
         // A transfer cancelled after it had finished delivers its body all the same: kept, but
         // for a job started over since.
         guard !isDiscarded, !(cancelled && finished.error != nil), let tag = transfer?.tag ?? finished.tag,
@@ -1547,6 +1631,7 @@ final class DownloadManager {
                                           attemptStart: transfer?.attemptStart ?? .now, unreachable: Self.isUnreachable(error),
                                           otherArrival: otherArrival(than: tag.jobId))
                 save()
+                if tag.segment != nil, (error as? URLError)?.code == .cannotConnectToHost { transcodes.serverDown(tag.jobId) }
             }
             // A range that can resume carries on from its bytes, as one set aside, instead of
             // being planned again, unless it has been already: after a relaunch, the wait for
@@ -1559,6 +1644,13 @@ final class DownloadManager {
 
         if let segment = tag.segment {
             await acceptSegment(finished, segment: segment, of: jobs[index], received: received, attemptStart: transfer?.attemptStart)
+            return
+        }
+        if tag.range != nil, jobs[index].isDelivered(tag) {
+            // Another transfer brought it first: one that looked stalled, finishing after its
+            // replacement started, or the replacement.
+            Self.log.info("Task \(finished.taskIdentifier) [\(tag.encoded)] brought bytes already here")
+            discard(finished.stagedFile)
             return
         }
 
@@ -2021,11 +2113,13 @@ final class DownloadManager {
             lastActivity = now
         }
         var speeds: [UUID: Double] = [:]
+        var grown: Set<UUID> = []
         if let lastSample, now > lastSample.date {
             let interval = now.timeIntervalSince(lastSample.date)
             for (id, value) in bytes {
                 let instant = max(0, Double(value - (lastSample.bytes[id] ?? value)) / interval)
                 speeds[id] = (bytesPerSecond[id] ?? instant) * 0.7 + instant * 0.3
+                if instant > 0 { grown.insert(id) }
             }
         }
         // A retry coming due can change which files the session holds (`DownloadJob.sessionFiles`).
@@ -2036,7 +2130,8 @@ final class DownloadManager {
         if retryCameDue { pump() }
         if receivedBytes != bytes { receivedBytes = bytes }
         if bytesPerSecond != speeds { bytesPerSecond = speeds }
-        let transferring = Set(running.values.filter(\.isUnderWay).map(\.tag.jobId))
+        let transferring = Self.transferring(underWay: Set(running.values.filter(\.isUnderWay).map(\.tag.jobId)), grown: grown,
+                                             arrivals: &arrivedAt, now: now)
         if transferringJobIds != transferring { transferringJobIds = transferring }
         if now.timeIntervalSince(lastStallCheck) > 10 {
             lastStallCheck = now
@@ -2044,6 +2139,15 @@ final class DownloadManager {
             // Room can come from elsewhere on the device.
             if waits.values.contains(where: { if case .space = $0 { true } else { false } }) { pump() }
         }
+    }
+
+    /// The downloads with transfers under way, or whose bytes grew within `arrivalLinger`:
+    /// transfers too short to be seen under way, as a transcode's pieces are, still show as
+    /// bytes arriving. Takes in the downloads whose bytes have `grown` since the last sample.
+    nonisolated static func transferring(underWay: Set<UUID>, grown: Set<UUID>, arrivals: inout [UUID: Date], now: Date) -> Set<UUID> {
+        for id in grown { arrivals[id] = now }
+        arrivals = arrivals.filter { now.timeIntervalSince($0.value) < arrivalLinger }
+        return underWay.union(arrivals.keys)
     }
 
     // MARK: Helpers

@@ -509,6 +509,22 @@ struct JobStatusTests {
             == .heldForPlayback)
     }
 
+    /// Pieces of a transcode are too short to be seen under way between two looks, but bytes
+    /// arriving count as transferring for a few seconds after they grew: the row says how fast,
+    /// not that it waits for the server.
+    @Test func bytesArrivingCountAsTransferring() {
+        let start = now
+        let piecesJob = UUID()
+        let fileJob = UUID()
+        var arrivals: [UUID: Date] = [:]
+        #expect(DownloadManager.transferring(underWay: [fileJob], grown: [piecesJob], arrivals: &arrivals, now: start) == [fileJob, piecesJob])
+        #expect(DownloadManager.transferring(underWay: [], grown: [], arrivals: &arrivals, now: start + 2) == [piecesJob])
+        #expect(DownloadManager.transferring(underWay: [], grown: [], arrivals: &arrivals, now: start + DownloadManager.arrivalLinger) == [])
+        #expect(arrivals.isEmpty)
+        let file = job()
+        #expect(status(file, speed: 7_000_000, transferring: true, inHand: file.id) == .arriving(bytesPerSecond: 7_000_000, next: nil))
+    }
+
     @Test func saysWhatADownloadWaitsFor() {
         let file = job()
         #expect(status(file, waits: [file.id: .power], inHand: file.id) == .waiting(.power))
@@ -534,6 +550,16 @@ struct JobStatusTests {
         var inOutage = job(at: 1)
         inOutage.recordFailure(.network("offline"), receivedBytes: 0, attemptStart: now, now: now)
         #expect(status(inOutage, inHand: inOutage.id) == .retrying(at: inOutage.retryAt, error: "offline", othersGoFirst: false))
+    }
+
+    /// Its retry under way, a file that failed says it's trying again and why, not that it
+    /// waits for the server, while the file behind it goes ahead to tell whether it fails alone.
+    @Test func saysAFailedFileTriesAgain() {
+        var file = job()
+        file.recordFailure(.network("The connection stalled."), receivedBytes: 0, attemptStart: now - 70, now: now - 10)
+        #expect(status(file, inHand: file.id) == .retrying(at: nil, error: "The connection stalled.", othersGoFirst: false))
+        file.recordSuccess()
+        #expect(status(file, inHand: file.id) == .waitingForServer)
     }
 }
 

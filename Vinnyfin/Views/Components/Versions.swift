@@ -124,7 +124,7 @@ enum JobStatus: Equatable {
             if let wait = waits[job.id] { return .waiting(wait) }
             if !isNetworkReachable { return .offline }
             let retryAt = job.retryAt.flatMap { $0 > now ? $0 : nil }
-            if job.yields || retryAt != nil { return .retrying(at: retryAt, error: job.lastError, othersGoFirst: job.yields) }
+            if job.isFailing || retryAt != nil { return .retrying(at: retryAt, error: job.lastError, othersGoFirst: job.yields) }
             if let transcodeNote { return .transcoding(transcodeNote, bytesPerSecond: nil, next: nil) }
             if fileInHand != job.id { return .queued }
             if let overtaken = waitsOn.first { return .startingAfter(overtaken.shortName) }

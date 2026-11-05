@@ -258,10 +258,16 @@ nonisolated struct DownloadStorage: Sendable {
     }
 
     /// Moves the finished partial file into `finished` and returns its path relative to it.
-    /// A name already taken gets the version appended, then a number.
+    /// A name already taken gets the version appended, then a number. A transcode's finished
+    /// file is its joined file as indexed (`FlattenedMP4`), which takes the partial file's
+    /// place first.
     func publish(_ job: DownloadJob) throws -> String {
+        if job.transcode != nil { try adoptJoinedFile(for: job.id) }
         // A chunk written for a job that was restarted meanwhile can lie past the new end.
         if let totalBytes = job.totalBytes {
+            guard size(of: partialFile(for: job.id)) >= totalBytes else {
+                throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The finished file is shorter than the download."])
+            }
             let handle = try FileHandle(forWritingTo: partialFile(for: job.id))
             try handle.truncate(atOffset: UInt64(totalBytes))
             try handle.close()

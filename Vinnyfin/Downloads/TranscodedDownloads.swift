@@ -35,17 +35,22 @@ protocol TranscodeHost: AnyObject {
 /// front; the queue fetches them through its background session like a file's chunks, as many
 /// at a time as the server can serve (`SegmentPlanner`), and they're joined into the job's
 /// partial file in order: the init segment, then piece 0, 1, 2 … (`DownloadStorage`). The
-/// joined file is checked before the download counts as done (`TranscodeVerifier`).
+/// joined file is checked, and indexed for players, before the download counts as done
+/// (`TranscodeVerifier`, `FlattenedMP4`).
 ///
 /// The server stops a transcode a minute after it last heard about it, deleting what it made,
 /// and requests in flight don't count; so while the app runs and the download is the one in
 /// hand, it pings the transcode every 25 seconds and asks the server how far it has got, which
-/// is what the window of pieces follows. It keeps pinging while a playback holds downloads,
-/// unless that playback streams a server transcode, which would then share the server with this
-/// one. When the transcode stopped or was lost (the app was suspended, the server restarted),
-/// the first missing piece is asked for alone, which starts the server's transcode again
-/// there; the transcode's init segment is fetched again and compared with the one kept, and the
-/// download starts over if it differs. The first piece that tells is held back until then.
+/// is what the window of pieces follows (`TranscodeServer`). It keeps pinging while a playback
+/// holds downloads, unless that playback streams a server transcode, which would then share the
+/// server with this one. When the server isn't transcoding (it finished, failed, or was stopped
+/// while the app was suspended; it restarted, which a piece refused or answered with 503 tells
+/// before the server can), whether it still has the pieces left shows only
+/// by asking: the first missing piece is asked for alone, and it comes from what the server
+/// kept, or from its transcode started again there, which then shows as running. Either way the
+/// transcode's init segment is fetched once the piece is in and compared with the one kept, and
+/// the download starts over if it differs; the pieces that came meanwhile wait for that. A
+/// server still not transcoding then has the pieces left, and they're all asked for at once.
 ///
 /// The account's permissions are looked at before the transcode starts and again after a gap,
 /// with the version's tag: a version that changed on the server starts the download over. Once
@@ -54,12 +59,35 @@ protocol TranscodeHost: AnyObject {
 final class TranscodedDownloads {
     /// What's known now about a transcoded download's server side, for the queue and its views.
     struct Live: Equatable {
+        /// What the server said last.
         var server = TranscodeServer.unknown
-        /// What the server said last, read as `server` with what had been collected then.
-        var sessionFound = false
-        var transcoding: TranscodingInfo?
         var throttle = ThrottleWatch()
         var activity: Activity?
+        /// The piece last asked for alone to find out whether the server has the pieces left,
+        /// and when it, or the init segment that started the transcode, came: the server has
+        /// `TranscodeServer.progressLag` from then to show it transcoding.
+        var probe: Int?
+        var probedAt: Date?
+        /// The server has been seen transcoding since a piece was last asked for alone.
+        var seenRunning = false
+
+        /// Takes in what the server said. What was asked for alone, or the init segment, tells
+        /// that a server not transcoding kept the pieces only until the server is seen
+        /// transcoding or going down: after that, it's asked again. While it stays down, what
+        /// came since is waited on, as the server can't say it's transcoding until it knows the
+        /// device again.
+        mutating func observe(_ server: TranscodeServer) {
+            switch server {
+            case .running:
+                seenRunning = true
+                probedAt = nil
+            case .gone where self.server != .gone:
+                probedAt = nil
+            case .gone, .ended, .unknown:
+                break
+            }
+            self.server = server
+        }
     }
 
     enum Activity: Equatable {
@@ -125,10 +153,12 @@ final class TranscodedDownloads {
     /// nothing is worth saying.
     func note(for job: DownloadJob) -> String? {
         guard let state = job.transcode, job.status == .active, !job.isTransferComplete else { return nil }
-        return Self.note(for: state, live: live[job.id])
+        return Self.note(for: state, live: live[job.id], serverIsCurrent: knownServer(of: job.id, now: .now) != .unknown)
     }
 
-    static func note(for state: TranscodeState, live: Live?) -> String? {
+    /// `serverIsCurrent` whether what the server said last is recent enough to go by: it isn't
+    /// asked about a download that waits its turn.
+    static func note(for state: TranscodeState, live: Live?, serverIsCurrent: Bool) -> String? {
         switch live?.activity {
         case .preparing: return state.fileLength > 0 ? "Server starting the transcode" : "Asking the server for a transcode"
         case .checkingInit: return "Checking the server's transcode"
@@ -137,6 +167,7 @@ final class TranscodedDownloads {
         }
         if !state.repairs.isEmpty { return state.repairs.count == 1 ? "Mending 1 piece" : "Mending \(state.repairs.count) pieces" }
         if state.isCollected { return "Checking the download" }
+        guard serverIsCurrent else { return nil }
         if live?.throttle.isThrottled == true { return "Server paused until the download catches up" }
         guard case .running(let position) = live?.server, let runtime = state.runtimeSeconds, runtime > 0 else { return nil }
         return "Server preparing \(Int(min(99, max(0, position / runtime * 100))))%"
@@ -192,21 +223,37 @@ final class TranscodedDownloads {
             return [:]
         }
         guard let segmentCount = state.segmentCount else { return [:] }
-        if state.needsInitCheck, !state.unchecked.isEmpty {
-            // The server serves the init segment of the transcode it has, or of one this request
-            // starts with the same settings, which makes the same one.
-            begin(.checkInit, for: job.id)
-            return [:]
-        }
         let server = knownServer(of: job.id, now: now)
         if server == .unknown {
             pollSoon(job.id)
             return [:]
         }
+        if server.position != nil, state.needsInitCheck, !state.unchecked.isEmpty {
+            // The init segment of the transcode as it runs now, which the piece came from.
+            begin(.checkInit, for: job.id)
+            return [:]
+        }
+        if server.position == nil, let probedAt = live[job.id]?.probedAt {
+            // What was asked for alone came, and the server isn't transcoding, or was last seen
+            // not knowing the device: once it has had the time to show a transcode the request
+            // started, it sent what it had kept.
+            let settled = probedAt.addingTimeInterval(TranscodeServer.progressLag)
+            guard let polled = polledAt[job.id], polled >= settled else {
+                pollSoon(job.id, after: settled.timeIntervalSince(now))
+                return [:]
+            }
+            if server != .gone, state.needsInitCheck {
+                begin(.checkInit, for: job.id)
+                return [:]
+            }
+            // The init segment that started it came, and the transcode didn't: it's to be started again.
+            live[job.id]?.probedAt = nil
+        }
+        let isHeld = state.isHeld(at: now) && !state.needsInitCheck
         let own = Set(claimed.compactMap { $0.jobId == job.id ? $0.segment : nil })
         var limit: Int?
         switch server {
-        case .finished where !queuingAhead:
+        case .ended where isHeld && !queuingAhead:
             limit = max(0, SegmentPlanner.finishedBatch - own.count)
         case .running where queuingAhead:
             let bitrate = Double((state.videoBitrate ?? state.request.videoBitrate) + (state.audioBitrate ?? state.request.audioBitrate))
@@ -215,28 +262,44 @@ final class TranscodedDownloads {
         default:
             break
         }
-        let window = SegmentPlanner.window(segmentCount: segmentCount, segmentDuration: state.segmentDuration,
-                                           collected: state.collected, claimed: own, server: server,
-                                           needsInitCheck: state.needsInitCheck, mayAskAhead: !queuingAhead, limit: limit)
-        if window.startsTranscode {
-            // The server makes the piece again if it doesn't have it, and nothing more is asked
-            // for until it has been looked at since; it transcoding then is no surprise.
-            Self.log.info("[\(job.id.uuidString.prefix(8))] Piece \(window.segments.first ?? -1) may start the server's transcode")
-            live[job.id]?.server = .unknown
-            polledAt[job.id] = nil
-            if !state.collected.isEmpty { host?.changeJob(job.id) { $0.transcode?.needsInitCheck = true } }
-        }
+        let window = SegmentPlanner.window(segmentCount: segmentCount, segmentDuration: state.segmentDuration, runtime: state.runtimeSeconds,
+                                           collected: state.collected, claimed: own, server: server, isHeld: isHeld,
+                                           mayAskAhead: !queuingAhead, limit: limit)
+        if window.isProbe, let segment = window.segments.first, !beginProbe(job.id, segment: segment, state: state) { return [:] }
         return window.segments.isEmpty ? [:] : [job.id: window.segments]
     }
 
-    /// The server's transcode as last seen, unless that was too long ago to go by, read with what
-    /// has been collected since: the last piece arriving tells that a quiet transcode finished.
+    /// Notes the piece about to be asked for alone, whose transcode's init segment is to be
+    /// checked once it's in. False when the server keeps stopping about there, which stops the job.
+    private func beginProbe(_ id: UUID, segment: Int, state: TranscodeState) -> Bool {
+        let seenRunning = live[id]?.seenRunning ?? false
+        live[id, default: Live()].probe = segment
+        live[id, default: Live()].probedAt = nil
+        live[id, default: Live()].seenRunning = false
+        let position = Double(segment) * state.segmentDuration
+        var stops = 0
+        host?.changeJob(id) { job in
+            job.transcode?.needsInitCheck = true
+            stops = job.transcode?.noteRestart(at: position, seenRunning: seenRunning) ?? 0
+        }
+        Self.log.info("""
+            [\(id.uuidString.prefix(8))] The server isn't transcoding: asking for piece \(segment) alone, which it has kept or makes again \
+            (\(stops) time(s) about there)
+            """)
+        guard stops >= 3 else { return true }
+        host?.stopJob(id, because: """
+            The server's transcode keeps stopping \(Duration.seconds(position).formatted(.time(pattern: .hourMinuteSecond))) in. \
+            Its log says why. Retry to try again, or download a version as it is.
+            """)
+        return false
+    }
+
+    /// The server's transcode as last seen, unless that was too long ago to go by.
     private func knownServer(of id: UUID, now: Date) -> TranscodeServer {
-        guard let polledAt = polledAt[id], now.timeIntervalSince(polledAt) < Self.staleAfter,
-              let live = live[id], live.server != .unknown, let state = job(id)?.transcode
-        else { return .unknown }
-        return TranscodeServer.interpret(sessionFound: live.sessionFound, transcoding: live.transcoding, state: state,
-                                         speed: state.serverSpeed, now: now)
+        guard let polledAt = polledAt[id], now.timeIntervalSince(polledAt) < Self.staleAfter, let server = live[id]?.server else {
+            return .unknown
+        }
+        return server
     }
 
     /// What the server said goes stale after this long: in front it's asked every few seconds,
@@ -248,8 +311,9 @@ final class TranscodedDownloads {
         let server = knownServer(of: job.id, now: now)
         guard let state = job.transcode, server != .unknown else { return true }
         let firstOutstanding = (0..<(state.segmentCount ?? 0)).first { !state.collected.contains($0) }
-        return SegmentPlanner.mayStay(segment, segmentCount: state.segmentCount ?? 0, segmentDuration: state.segmentDuration,
-                                      firstOutstanding: firstOutstanding, server: server)
+        return SegmentPlanner.mayStay(segment, segmentDuration: state.segmentDuration, runtime: state.runtimeSeconds,
+                                      firstOutstanding: firstOutstanding, server: server,
+                                      isHeld: state.isHeld(at: now) && !state.needsInitCheck)
     }
 
     /// The request for a piece, addressed with the sign-in's token as it is now.
@@ -391,7 +455,16 @@ final class TranscodedDownloads {
         switch Self.evaluate(finished.response, stagedSize: finished.stagedSize, segment: segment) {
         case .retry(let failure):
             discard(staged)
-            if finished.response?.statusCode == 404 { pollSoon(job.id) }
+            switch finished.response?.statusCode {
+            case 404:
+                // Not there after all: the pieces left aren't waiting on the server.
+                if state.heldSince != nil { host?.changeJob(job.id) { $0.transcode?.heldSince = nil } }
+                pollSoon(job.id)
+            case 503:
+                serverDown(job.id)
+            default:
+                break
+            }
             return .retry(failure)
         case .giveUp(let message):
             discard(staged)
@@ -400,6 +473,13 @@ final class TranscodedDownloads {
             break
         }
         guard let staged else { return .retry(.network("Piece \(segment) didn't arrive.")) }
+        if live[job.id]?.probe == segment {
+            // The piece asked for alone came: from what the server kept, or from its transcode
+            // started again, which shows by the time it has settled.
+            live[job.id]?.probe = nil
+            live[job.id]?.probedAt = .now
+            pollSoon(job.id, after: TranscodeServer.progressLag)
+        }
         guard !state.collected.contains(segment) else {
             discard(staged)
             return .collected
@@ -409,6 +489,8 @@ final class TranscodedDownloads {
             restartFromNothing(job.id, because: "The download's init segment went missing from this device.")
             return .dropped
         }
+        let endsBefore = SegmentPlanner.endsBefore(segment, segmentCount: segmentCount, segmentDuration: state.segmentDuration,
+                                                   runtime: state.runtimeSeconds)
         let piece: FragmentedMP4.Piece
         let size: Int64
         do {
@@ -417,25 +499,26 @@ final class TranscodedDownloads {
             piece = try FragmentedMP4.piece(data, header: header.parsed)
         } catch {
             discard(staged)
+            if endsBefore { return transcodeEnds(before: segment, of: job.id, because: "came unreadable (\(error.localizedDescription))") }
             return .retry(.server("Piece \(segment) came damaged: \(error.localizedDescription)"))
         }
         if piece.isEmpty {
             discard(staged)
+            // A last piece too short to hold a frame.
             guard segment == segmentCount - 1 else { return .retry(.server("Piece \(segment) came without pictures.")) }
-            // A last piece too short to hold a frame: the transcode ends before it.
-            Self.log.info("[\(job.id.uuidString.prefix(8))] The last piece, \(segment), is empty; the transcode ends before it")
-            let duration = state.segmentDuration
-            host?.changeJob(job.id) { job in
-                job.transcode?.segmentCount = segment
-                job.transcode?.finalSegmentDuration = duration
-            }
-            assemble(job.id)
-            return .collected
+            return transcodeEnds(before: segment, of: job.id, because: "is empty")
         }
-        let expectedStart = Double(segment) * state.segmentDuration
-        if let start = piece.videoStart, abs(start - expectedStart) > TranscodeVerifier.placementTolerance {
-            discard(staged)
-            return .retry(.server("Piece \(segment) starts at \(Int(start)) s instead of \(Int(expectedStart)) s."))
+        // Each piece's place counts from where the first starts, which a source's clock sets.
+        let origin = segment == 0 ? piece.videoStart : state.timelineOrigin
+        if let origin, let start = piece.videoStart {
+            let offset = start - origin
+            let expected = Double(segment) * state.segmentDuration
+            if abs(offset - expected) > TranscodeVerifier.placementTolerance {
+                discard(staged)
+                let place = "starts \(offset.formatted(.number.precision(.fractionLength(2)))) s in instead of \(Int(expected)) s"
+                if endsBefore { return transcodeEnds(before: segment, of: job.id, because: place) }
+                return .retry(.server("Piece \(segment) \(place)."))
+            }
         }
         do {
             try storage.keepSegment(staged, segment, for: job.id)
@@ -452,6 +535,7 @@ final class TranscodedDownloads {
             guard var transcode = job.transcode else { return }
             transcode.collected.insert(segment)
             transcode.sideBytes += size
+            if segment == 0 { transcode.timelineOrigin = piece.videoStart }
             if lapsed { transcode.needsInitCheck = true }
             if transcode.needsInitCheck { transcode.unchecked.insert(segment) }
             job.transcode = transcode
@@ -564,7 +648,7 @@ final class TranscodedDownloads {
 
     private func begin(_ step: Step, for id: UUID) {
         guard work[id] == nil else { return }
-        work[id] = Task { [weak self] in
+        let task = Task { [weak self] in
             #if !os(macOS)
             let backgroundTime = BackgroundTime(named: "Transcoded download")
             defer { backgroundTime.end() }
@@ -576,6 +660,13 @@ final class TranscodedDownloads {
             case .checkInit: await self.checkInit(id)
             case .verify: await self.verify(id)
             }
+        }
+        work[id] = task
+        Task { [weak self] in
+            await task.value
+            // A step that started the job over has already handed it to the next step, which
+            // would otherwise run twice.
+            guard let self, self.work[id] == task else { return }
             self.work[id] = nil
             self.host?.transcodesChanged()
         }
@@ -700,15 +791,12 @@ final class TranscodedDownloads {
                 transcode.audioBitrate = copiesAudio ? nil : HLSPlaylist.queryValue("AudioBitrate", in: path).flatMap(Int.init)
                 transcode.variant = master.variantAttributes
                 transcode.checkedAt = .now
-                // A new play session is a new transcode on the server.
-                transcode.serverPosition = nil
-                transcode.serverSeenAt = nil
-                transcode.serverQuietAt = nil
-                transcode.serverFinishedAt = nil
+                // A new play session is a new transcode on the server, which has made nothing yet.
+                transcode.heldSince = nil
                 if !transcode.collected.isEmpty { transcode.needsInitCheck = true }
                 job.transcode = transcode
             }
-            live[id, default: Live()].server = .unknown
+            live[id] = Live()
         } catch {
             stepFailed(id, .prepare, error)
         }
@@ -745,14 +833,18 @@ final class TranscodedDownloads {
                 job.transcode?.sideBytes += Int64(data.count)
                 job.recordSuccess()
             }
-            pollSoon(id)
+            // Asking for it started the transcode, which shows by the time it has settled.
+            live[id, default: Live()].probedAt = .now
+            pollSoon(id, after: TranscodeServer.progressLag)
         } catch {
             stepFailed(id, .fetchInit, error)
         }
     }
 
-    /// The server's transcode started again: its init segment, now made again, has to match the
-    /// one the file starts with for the pieces after to join it.
+    /// The server's transcode may have started again: its init segment, now made again, has to
+    /// match the one the file starts with for the pieces after to join it. Asked for once a
+    /// piece has come since, so the server has it rather than starting a transcode to make it;
+    /// a server not transcoding then has the pieces left (`TranscodeState.heldSince`).
     private func checkInit(_ id: UUID) async {
         guard let url = initURL(for: id), let saved = header(for: id) else { return }
         live[id, default: Live()].activity = .checkingInit
@@ -764,11 +856,22 @@ final class TranscodedDownloads {
                 restartFromNothing(id, because: "The server's transcode came back different from before.")
                 return
             }
-            Self.log.info("[\(id.uuidString.prefix(8))] The server's init segment matches the one kept")
+            let now = Date.now
+            let isHeld = live[id]?.probedAt != nil && knownServer(of: id, now: now) == .ended
+            Self.log.info("""
+                [\(id.uuidString.prefix(8))] The server's init segment matches the one kept\
+                \(isHeld ? "; it isn't transcoding, so it has the pieces left" : "")
+                """)
+            live[id]?.probe = nil
+            live[id]?.probedAt = nil
             host?.changeJob(id) { job in
                 job.transcode?.needsInitCheck = false
                 job.transcode?.unchecked = IndexSet()
-                job.transcode?.initCheckedAt = .now
+                job.transcode?.initCheckedAt = now
+                if isHeld {
+                    job.transcode?.heldSince = now
+                    job.transcode?.stopsAtSamePlace = 0
+                }
             }
             assemble(id)
         } catch {
@@ -776,6 +879,9 @@ final class TranscodedDownloads {
         }
     }
 
+    /// Checks the joined file and indexes it (`TranscodeVerifier`). Bad pieces are fetched again,
+    /// twice at most; anything else wrong stops the job with what it has kept, which a later
+    /// build can check again without fetching it again.
     private func verify(_ id: UUID) async {
         guard let state = job(id)?.transcode, let count = state.segmentCount else { return }
         guard let header = header(for: id) else {
@@ -784,21 +890,36 @@ final class TranscodedDownloads {
         }
         live[id, default: Live()].activity = .checkingFile
         defer { live[id]?.activity = nil }
-        let outcome = await TranscodeVerifier.verify(storage.partialFile(for: id), header: header.data, expectedPieces: count,
-                                                     segmentDuration: state.segmentDuration, runtime: state.runtimeSeconds)
+        let joined = storage.joinedFile(for: id)
+        let started = ContinuousClock.now
+        let outcome: TranscodeVerifier.Outcome
+        do {
+            outcome = try await TranscodeVerifier.verify(storage.partialFile(for: id), into: joined, header: header.data,
+                                                         expectedPieces: count, segmentDuration: state.segmentDuration,
+                                                         runtime: state.runtimeSeconds)
+        } catch {
+            removeJoinedFile(of: id)
+            writeFailed(id, error)
+            return
+        }
+        if case .good = outcome {} else { removeJoinedFile(of: id) }
+        let took = ContinuousClock.now - started
         switch outcome {
-        case .good(let openSeconds):
-            Self.log.info("[\(id.uuidString.prefix(8))] The joined file checks out; it opens in \(Int(openSeconds * 1000)) ms")
+        case .good(let length, let openSeconds):
+            Self.log.info("""
+                [\(id.uuidString.prefix(8))] The download checks out in \(took.formatted(.units(allowed: [.seconds, .milliseconds]))): \
+                \(length) bytes, which open in \(Int(openSeconds * 1000)) ms
+                """)
             host?.changeJob(id) { job in
                 job.transcode?.isVerified = true
                 job.transcode?.verifyFailure = nil
                 job.transcode?.repairRounds = 0
-                job.totalBytes = job.transcode?.fileLength
+                job.totalBytes = length
             }
         case .badPieces(let pieces, let reason):
             Self.log.error("[\(id.uuidString.prefix(8))] The joined file didn't check out: \(reason, privacy: .public)")
             guard state.repairRounds < 2 else {
-                restartFromNothing(id, because: "The download still didn't check out after mending: \(reason).")
+                host?.stopJob(id, because: "The download still didn't check out after fetching the pieces again: \(reason). \(Self.kept)")
                 return
             }
             host?.changeJob(id) { job in
@@ -807,9 +928,20 @@ final class TranscodedDownloads {
                 job.transcode?.repairRounds += 1
                 job.transcode?.verifyFailure = reason
             }
-        case .unusable(let reason):
-            Self.log.error("[\(id.uuidString.prefix(8))] The joined file is unusable: \(reason, privacy: .public)")
-            restartFromNothing(id, because: "The download didn't check out: \(reason)")
+        case .unmendable(let reason):
+            Self.log.error("[\(id.uuidString.prefix(8))] The joined file didn't check out: \(reason, privacy: .public)")
+            host?.stopJob(id, because: "The download didn't check out: \(reason) \(Self.kept)")
+        }
+    }
+
+    /// What a download that didn't check out keeps, said after why.
+    private static let kept = "What it fetched is kept, so an update to vinnyfin can check it again without fetching it again; Retry checks it again now."
+
+    private func removeJoinedFile(of id: UUID) {
+        do {
+            try storage.removeJoinedFile(for: id)
+        } catch {
+            Self.log.error("[\(id.uuidString.prefix(8))] Couldn't delete the indexed file: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -843,8 +975,8 @@ final class TranscodedDownloads {
         var tick = 0
         while !Task.isCancelled, let id = currentJobId, let host,
               let job = job(id), job.status == .active, let state = job.transcode, state.isPrepared, !job.isTransferComplete {
-            let server = live[id]?.server ?? .unknown
-            let pinging = server != .finished && !(host.isPausedForPlayback && host.isPlaybackTranscoding)
+            // Pieces the server has kept need nothing kept alive.
+            let pinging = !state.isHeld(at: .now) && !(host.isPausedForPlayback && host.isPlaybackTranscoding)
             if pinging, tick % (Self.pingInterval / Self.pollInterval) == 0 { await ping(id) }
             if tick % (host.isInFront ? 1 : 3) == 0 { await poll(id) }
             tick += 1
@@ -857,25 +989,45 @@ final class TranscodedDownloads {
         do {
             try await client.pingPlaySession(playSessionId)
             let now = Date.now
-            host?.changeJob(id) { job in
-                guard var transcode = job.transcode else { return }
-                if let last = transcode.lastPing, now.timeIntervalSince(last) > TranscodeServer.killDelay, transcode.serverFinishedAt == nil {
-                    // Unpinged for longer than the server waits, it stopped its transcode and
-                    // deleted the pieces: what was seen of it is gone with them.
-                    transcode.serverPosition = nil
-                    transcode.serverSeenAt = nil
-                    transcode.serverQuietAt = nil
-                }
-                transcode.lastPing = now
-                job.transcode = transcode
-            }
+            host?.changeJob(id) { $0.transcode?.lastPing = now }
         } catch {
             Self.log.notice("[\(id.uuidString.prefix(8))] Ping failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func pollSoon(_ id: UUID) {
-        Task { [weak self] in await self?.poll(id) }
+    /// The transcode ends before the last piece the server listed (`SegmentPlanner.endsBefore`):
+    /// the download ends with the piece before.
+    private func transcodeEnds(before segment: Int, of id: UUID, because reason: String) -> SegmentOutcome {
+        Self.log.info("[\(id.uuidString.prefix(8))] The last piece, \(segment), \(reason, privacy: .public); the transcode ends before it")
+        guard let duration = job(id)?.transcode?.segmentDuration else { return .dropped }
+        host?.changeJob(id) { job in
+            job.transcode?.segmentCount = segment
+            job.transcode?.finalSegmentDuration = duration
+        }
+        assemble(id)
+        return .collected
+    }
+
+    /// A piece's request found the server down, refusing connections, or starting up (HTTP
+    /// 503): once it's back it has forgotten the transcode, and asking for the pieces out in
+    /// whatever order they reach it would start its transcode at one of them, and again at
+    /// each earlier one. Taken as gone until the server says otherwise, so they're taken back
+    /// and the first missing piece is asked for alone, which starts the transcode there.
+    func serverDown(_ id: UUID) {
+        guard job(id)?.transcode != nil, live[id]?.server != .gone else { return }
+        Self.log.notice("[\(id.uuidString.prefix(8))] The server is down or starting up")
+        live[id, default: Live()].server = .gone
+        live[id]?.probedAt = nil
+        polledAt[id] = .now
+        if job(id)?.transcode?.heldSince != nil { host?.changeJob(id) { $0.transcode?.heldSince = nil } }
+        host?.transcodesChanged()
+    }
+
+    private func pollSoon(_ id: UUID, after delay: TimeInterval = 0) {
+        Task { [weak self] in
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+            await self?.poll(id)
+        }
     }
 
     private func poll(_ id: UUID) async {
@@ -891,121 +1043,61 @@ final class TranscodedDownloads {
         }
     }
 
-    /// Takes in what the server said about the transcode.
+    /// Takes in what the server said about the transcode. Transcoding after it was seen not to
+    /// be, or behind where it was, it started again without this download seeing it, and its
+    /// init segment may differ; transcoding at all, the pieces left aren't waiting on it.
     private func observe(sessionFound: Bool, transcoding: TranscodingInfo?, for id: UUID, now: Date) {
         guard let state = job(id)?.transcode else { return }
         var live = self.live[id] ?? Live()
-        let previousServer = live.server
-        let server = TranscodeServer.interpret(sessionFound: sessionFound, transcoding: transcoding, state: state,
-                                               speed: state.serverSpeed, now: now)
+        let previous = live.server
+        let server = TranscodeServer.interpret(sessionFound: sessionFound, transcoding: transcoding, runtime: state.runtimeSeconds)
         var change: ((inout TranscodeState) -> Void)?
-        var persist = false
         switch server {
         case .running(let position):
-            var speed = state.serverSpeed
-            // Running again after it was seen not to be, or behind where it was: a transcode this
-            // download didn't see start, whose init segment may differ.
-            var restarted: Bool
-            switch previousServer {
-            case .finished, .stopped: restarted = true
-            case .running, .gone, .unknown: restarted = false
+            let startedAfresh = switch previous {
+            case .ended, .gone: true
+            case .running(let before): position + state.segmentDuration < before
+            case .unknown: false
             }
-            if let previous = state.serverPosition, let seenAt = state.serverSeenAt {
-                if position + state.segmentDuration < previous {
-                    restarted = true
-                } else if !restarted, position > previous, now > seenAt, now.timeIntervalSince(seenAt) < 120 {
-                    let instant = (position - previous) / now.timeIntervalSince(seenAt)
-                    speed = speed.map { $0 * 0.6 + instant * 0.4 } ?? instant
-                }
-            }
-            if restarted {
-                Self.log.notice("[\(id.uuidString.prefix(8))] The server's transcode started again at \(Int(position)) s")
-                speed = nil
-            }
-            let started = previousServer.position == nil
-            persist = restarted || started || now.timeIntervalSince(savedPositionAt[id] ?? .distantPast) >= 30
-            change = { transcode in
-                transcode.serverPosition = position
-                transcode.serverSeenAt = now
-                transcode.serverSpeed = speed
-                transcode.serverQuietAt = nil
-                transcode.serverFinishedAt = nil
-                if restarted, !transcode.collected.isEmpty { transcode.needsInitCheck = true }
-            }
-        case .finished:
-            if state.serverFinishedAt == nil {
-                Self.log.info("[\(id.uuidString.prefix(8))] The server's transcode finished")
-                persist = true
+            // Before any piece is in, a start is the first.
+            let restarted = startedAfresh && !state.collected.isEmpty
+            if restarted { Self.log.notice("[\(id.uuidString.prefix(8))] The server's transcode started again at \(Int(position)) s") }
+            let checks = restarted && !state.needsInitCheck
+            if checks || state.heldSince != nil {
                 change = { transcode in
-                    transcode.serverFinishedAt = now
-                    transcode.lastStopPosition = nil
-                    transcode.stopsAtSamePlace = 0
-                }
-            }
-        case .stopped(let madeUpTo):
-            if previousServer.position != nil, let madeUpTo {
-                // Stopped by itself while kept alive: it failed there.
-                let again = state.lastStopPosition.map { abs($0 - madeUpTo) <= 2 * state.segmentDuration } ?? false
-                let stops = again ? state.stopsAtSamePlace + 1 : 1
-                Self.log.error("[\(id.uuidString.prefix(8))] The server's transcode stopped at \(Int(madeUpTo)) s (\(stops) time(s) about there)")
-                if stops >= 3 {
-                    host?.stopJob(id, because: """
-                        The server's transcode keeps stopping \(Duration.seconds(madeUpTo).formatted(.time(pattern: .hourMinuteSecond))) in. \
-                        Its log says why. Retry to try again, or download a version as it is.
-                        """)
-                    return
-                }
-                persist = true
-                change = { transcode in
-                    transcode.lastStopPosition = madeUpTo
-                    transcode.stopsAtSamePlace = stops
+                    transcode.heldSince = nil
+                    if checks { transcode.needsInitCheck = true }
                 }
             }
         case .gone:
-            if previousServer != .gone {
+            if previous != .gone {
                 Self.log.notice("[\(id.uuidString.prefix(8))] The server doesn't know the downloads' device: it restarted")
-                persist = true
-                change = { transcode in
-                    transcode.serverPosition = nil
-                    transcode.serverSeenAt = nil
-                    transcode.serverFinishedAt = nil
-                    if !transcode.collected.isEmpty { transcode.needsInitCheck = true }
-                }
-                register()
+                if state.heldSince != nil { change = { $0.heldSince = nil } }
             }
-        case .unknown:
+            // On each look that finds it forgotten: the last telling may not have got through,
+            // or came before a restart the app had already taken the server to be down for.
+            register()
+        case .ended, .unknown:
             break
-        }
-        if sessionFound, transcoding?.completionPercentage == nil, state.serverSeenAt != nil, state.serverQuietAt == nil {
-            // The first look at a quiet server since it was seen transcoding: it ended before now.
-            persist = true
-            let earlier = change
-            change = { transcode in
-                earlier?(&transcode)
-                transcode.serverQuietAt = now
-            }
         }
         let wasStale = knownServer(of: id, now: now) == .unknown
         polledAt[id] = now
-        live.server = server
-        live.sessionFound = sessionFound
-        live.transcoding = transcoding
+        live.observe(server)
         live.throttle.observe(position: server.position, downloadPosition: state.downloadPosition, now: now)
         self.live[id] = live
-        if persist, let change {
-            savedPositionAt[id] = now
+        if let change {
             host?.changeJob(id) { job in
                 guard var transcode = job.transcode else { return }
                 change(&transcode)
                 job.transcode = transcode
             }
         }
-        // The window moves a piece at a time.
+        // The window moves a piece at a time; a piece asked for alone waits on this.
         let duration = state.segmentDuration
         func step(_ server: TranscodeServer) -> TranscodeServer {
             server.position.map { .running(position: ($0 / duration).rounded(.down)) } ?? server
         }
-        if wasStale || step(previousServer) != step(server) { host?.transcodesChanged() }
+        if wasStale || step(previous) != step(server) || live.probedAt != nil { host?.transcodesChanged() }
     }
 
     /// Tells the server about the downloads' device again, which it forgets when it restarts:

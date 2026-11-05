@@ -37,7 +37,8 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
     /// The bytes beside the file: the init segment's copy and the pieces that came early.
     var sideBytes: Int64 = 0
     /// The server may have started its transcode again since the pieces collected so far were
-    /// made, so its init segment is compared with the one kept before any newer piece counts.
+    /// made, so its init segment is compared with the one kept before any newer piece counts:
+    /// once a piece has come from the transcode as it is now.
     var needsInitCheck = false
     /// Pieces collected while `needsInitCheck` was set, which count once the init segment matches.
     var unchecked = IndexSet()
@@ -46,15 +47,15 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
     /// RESOLUTION=1280x720` and the like.
     var variant: String?
 
-    /// The server's position the last time it was seen transcoding, in seconds, and when, and
-    /// how many seconds of the title it was making a second.
-    var serverPosition: Double?
-    var serverSeenAt: Date?
-    var serverSpeed: Double?
-    /// When the server was first seen not transcoding after that: its transcode ended before then.
-    var serverQuietAt: Date?
-    /// When the server's transcode was first seen to have reached the end.
-    var serverFinishedAt: Date?
+    /// Where the first piece's picture starts, in seconds of the transcode's timeline: the
+    /// server keeps the source's timestamps, which don't start at 0 for every source. Each
+    /// piece's place counts from it.
+    var timelineOrigin: Double?
+
+    /// When the pieces left were found waiting on the server, its transcode ended: pieces asked
+    /// for while it wasn't transcoding came, and it still wasn't once they had. It had finished,
+    /// and keeps them as files until its cleanup, so they can all be asked for at once.
+    var heldSince: Date?
     /// When the server last acknowledged a ping for this download: it stops a transcode a minute
     /// after the last.
     var lastPing: Date?
@@ -65,12 +66,19 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
     /// stopping its own for want of pings (the app was suspended or closed meanwhile), and the
     /// init segment hasn't been checked since it could have.
     func isLapsed(at now: Date) -> Bool {
-        guard serverFinishedAt == nil, let lastPing else { return false }
+        guard heldSince == nil, let lastPing else { return false }
         let mayHaveStopped = lastPing.addingTimeInterval(TranscodeServer.killDelay)
         return now > mayHaveStopped && (initCheckedAt ?? .distantPast) < mayHaveStopped
     }
-    /// Where the server's transcode last stopped short of the end on its own, and how many times
-    /// in a row it did about there.
+
+    /// Whether the pieces left are waiting on the server (`heldSince`) at `now`.
+    func isHeld(at now: Date) -> Bool {
+        heldSince.map { now.timeIntervalSince($0) < TranscodeServer.keptFor } ?? false
+    }
+
+    /// Where, in seconds, the server's transcode was last started again after it had ended
+    /// short of every piece having come, having been seen transcoding since the time before;
+    /// and how many times in a row that was about there.
     var lastStopPosition: Double?
     var stopsAtSamePlace = 0
 
@@ -155,23 +163,35 @@ nonisolated struct TranscodeState: Codable, Equatable, Sendable {
         lastStopPosition = kept.lastStopPosition
         stopsAtSamePlace = kept.stopsAtSamePlace
     }
+
+    /// Takes in where the server's transcode is being started again because it ended short,
+    /// `seenRunning` since the time before: three times in a row about the same place, it's
+    /// failing there. Returns how many times that was.
+    mutating func noteRestart(at position: Double, seenRunning: Bool) -> Int {
+        let again = seenRunning && (lastStopPosition.map { abs($0 - position) <= 2 * segmentDuration } ?? false)
+        stopsAtSamePlace = again ? stopsAtSamePlace + 1 : 1
+        lastStopPosition = position
+        return stopsAtSamePlace
+    }
 }
 
 // MARK: The server's transcode
 
-/// What the app knows about the server's transcode for a download.
+/// What the server says about its transcode for a download: no more than it shows.
+///
+/// The server lists the downloads' device as a session, and while ffmpeg runs, the share of the
+/// title it has made (`TranscodingInfo.CompletionPercentage`). Once ffmpeg exits, the share goes,
+/// whether it finished, failed or was stopped, and a stopped transcode's pieces go with it
+/// unless it had finished: whether the pieces left are there to be had shows only by asking
+/// for some (`TranscodeState.heldSince`). The share also reads empty for the moment between a
+/// transcode starting and ffmpeg's first progress line.
 nonisolated enum TranscodeServer: Equatable, Sendable {
-    /// Nothing heard yet in this run of the app.
+    /// Nothing heard in this run of the app, or not lately enough to go by.
     case unknown
     /// Transcoding, this far in seconds.
     case running(position: Double)
-    /// Done: every piece from where it last started is on the server, as files, until it's
-    /// cleaned up.
-    case finished
-    /// Not transcoding, short of the end. Its pieces up to `madeUpTo` are still on the server
-    /// (it stopped by itself), or none are (nil: it was stopped for want of pings, which deletes
-    /// them). Asking for a piece it doesn't have starts it again there.
-    case stopped(madeUpTo: Double?)
+    /// Not transcoding.
+    case ended
     /// The server doesn't know the download's device: it restarted, and its transcodes went with it.
     case gone
 
@@ -184,41 +204,16 @@ nonisolated enum TranscodeServer: Equatable, Sendable {
     /// The server's cleanup deletes transcode files a day after they were written.
     static let keptFor: TimeInterval = 20 * 60 * 60
 
-    /// How far behind ffmpeg the percentage the server lists can be, in seconds of its work: the
-    /// server takes it from ffmpeg's progress lines, and ffmpeg makes its last pieces between two
-    /// looks at it.
+    /// How long a transcode a request started can take to show as running: the server reads its
+    /// share from ffmpeg's progress lines, a fast ffmpeg makes the first pieces before the first
+    /// line, and the server serves them as they're made.
     static let progressLag: TimeInterval = 5
 
-    /// What the server's sessions for the download's device say, read against what was known:
-    /// the position it was last seen at, when, and how fast it went; when it was first seen not
-    /// transcoding since; when it was last pinged.
-    ///
-    /// The server clears its percentage once ffmpeg exits, whether it finished, failed or was
-    /// stopped. It finished if, going as fast as it was, it would have reached the last piece
-    /// before it was first seen quiet, or before the server stopped it a minute after the last
-    /// ping, allowing for the percentage lagging. Otherwise it stopped short: by itself,
-    /// keeping its pieces, if it was pinged within the minute; else for want of pings, which
-    /// deletes them.
-    static func interpret(sessionFound: Bool, transcoding: TranscodingInfo?, state: TranscodeState, speed: Double?,
-                          now: Date) -> TranscodeServer {
+    /// What the server's sessions for the download's device say.
+    static func interpret(sessionFound: Bool, transcoding: TranscodingInfo?, runtime: Double?) -> TranscodeServer {
         guard sessionFound else { return .gone }
-        if let percent = transcoding?.completionPercentage, let runtime = state.runtimeSeconds, runtime > 0 {
-            return .running(position: percent / 100 * runtime)
-        }
-        if let finishedAt = state.serverFinishedAt {
-            return now.timeIntervalSince(finishedAt) < keptFor ? .finished : .stopped(madeUpTo: nil)
-        }
-        guard transcoding != nil, let position = state.serverPosition, let seenAt = state.serverSeenAt else {
-            return .stopped(madeUpTo: nil)
-        }
-        let lastPing = state.lastPing ?? seenAt
-        let pinged = now.timeIntervalSince(lastPing) < killDelay
-        // The last piece is made last: a quiet server that had it, its pieces kept, got to the end.
-        if pinged, let count = state.segmentCount, count > 0, state.collected.contains(count - 1) { return .finished }
-        let ended = min(now, state.serverQuietAt ?? now, max(seenAt, lastPing.addingTimeInterval(killDelay)))
-        let reach = position + (speed ?? 0) * (max(0, ended.timeIntervalSince(seenAt)) + progressLag)
-        if reach >= state.endPosition { return .finished }
-        return pinged ? .stopped(madeUpTo: position) : .stopped(madeUpTo: nil)
+        guard let percent = transcoding?.completionPercentage, let runtime, runtime > 0 else { return .ended }
+        return .running(position: percent / 100 * runtime)
     }
 }
 
@@ -253,8 +248,9 @@ nonisolated struct TranscodingSession: Decodable, Sendable {
 nonisolated enum SegmentPlanner {
     struct Window: Equatable, Sendable {
         var segments: [Int] = []
-        /// Asking for them starts the server's transcode (again) at the first.
-        var startsTranscode = false
+        /// One piece asked for to find out whether the server has the pieces left, which may
+        /// start its transcode again there.
+        var isProbe = false
     }
 
     /// The server starts its transcode again at a piece more than 24 / length pieces past the
@@ -263,37 +259,60 @@ nonisolated enum SegmentPlanner {
         max(1, min(4, Int(24 / max(1, segmentDuration.rounded())) / 2))
     }
 
-    /// In front, pieces of a finished transcode are handed to the session this many at a time,
-    /// which is plenty for its four connections and little to take back if the transcode turns
-    /// out not to be finished after all.
+    /// In front, pieces waiting on the server are handed to the session this many at a time,
+    /// which is plenty for its four connections and little to take back if they turn out not to
+    /// be there after all.
     static let finishedBatch = 16
+
+    /// The server starts a transcode it's asked to start at a piece no later than 5 seconds
+    /// before the title's end (half a second earlier still when it copies the video), and
+    /// numbers what it makes from that piece all the same, so pieces it makes after starting
+    /// later are out of place. This much before the end leaves room for both.
+    static let restartMargin: TimeInterval = 6
+
+    /// The piece to start the server's transcode at to get `firstOutstanding`: that one, unless
+    /// the server would start too late for it to be in place, then the last that's early enough.
+    static func restartPiece(firstOutstanding: Int, segmentDuration: Double, runtime: Double?) -> Int {
+        guard let runtime, runtime > restartMargin else { return firstOutstanding }
+        return min(firstOutstanding, Int(((runtime - restartMargin) / segmentDuration).rounded(.down)))
+    }
+
+    /// Whether the last piece coming back as something else (unreadable, without pictures, or
+    /// out of place) shows the transcode ends before it. The server lists pieces to the end of
+    /// the title as it knows its length, and a transcode can end sooner: one that starts the
+    /// picture at the source's first frame (subtitles burned in) makes a source whose clock
+    /// starts late that much shorter. Asked for a piece its transcode never made, the server
+    /// transcodes again from too late to put it in place, so for the last piece, when that's
+    /// all asking can get, it isn't there to get.
+    static func endsBefore(_ segment: Int, segmentCount: Int, segmentDuration: Double, runtime: Double?) -> Bool {
+        segment == segmentCount - 1
+            && restartPiece(firstOutstanding: segment, segmentDuration: segmentDuration, runtime: runtime) < segment
+    }
 
     /// The pieces that may be asked for now, lowest first, leaving out those collected and
     /// those `claimed` by transfers under way.
     ///
-    /// - Once the server has finished, every piece left, up to `limit`.
-    /// - While it transcodes, the pieces it has made (each ends at least a piece behind it),
-    ///   then, once fewer than `aheadLimit` of those are left, up to `aheadLimit` past its
+    /// - While the server transcodes, the pieces it has made (each ends at least a piece behind
+    ///   it), then, once fewer than `aheadLimit` of those are left, up to `aheadLimit` past its
     ///   position, which it serves as it makes them, when `mayAskAhead`.
-    /// - Stopped by itself, the pieces it left on the server, then the last piece, alone: a
-    ///   transcode that got to the end before its progress said so has it there, and one that
-    ///   failed starts again to make it; the pieces asked for next then start it where they are,
-    ///   which shows as it running.
-    /// - Stopped for want of pings (its pieces deleted), gone or not known, the first piece
-    ///   missing, alone: asking for it starts the transcode there, and the output joins cleanly.
-    /// - While the init segment has to be checked, nothing but the one piece that tells.
-    static func window(segmentCount: Int, segmentDuration: Double, collected: IndexSet, claimed: Set<Int>,
-                       server: TranscodeServer, needsInitCheck: Bool, mayAskAhead: Bool, limit: Int? = nil) -> Window {
+    /// - Not transcoding, with the pieces left known to wait on it (`isHeld`): every piece left,
+    ///   up to `limit`.
+    /// - Otherwise (not transcoding, gone, not known), one piece, alone, once nothing else is out:
+    ///   the server sends it from what it kept, or starts its transcode again there, which then
+    ///   shows. That's the first piece missing (`restartPiece`), from which the output joins
+    ///   cleanly; near the end, an earlier piece, already here.
+    static func window(segmentCount: Int, segmentDuration: Double, runtime: Double?, collected: IndexSet, claimed: Set<Int>,
+                       server: TranscodeServer, isHeld: Bool, mayAskAhead: Bool, limit: Int? = nil) -> Window {
         let outstanding = (0..<segmentCount).filter { !collected.contains($0) }
         let missing = outstanding.filter { !claimed.contains($0) }
         guard let firstOutstanding = outstanding.first, !missing.isEmpty else { return Window() }
-        let alone = claimed.isEmpty ? Window(segments: [firstOutstanding], startsTranscode: true) : Window()
         var window: Window
         switch server {
-        case _ where needsInitCheck:
-            window = alone
-        case .finished:
+        case .ended where isHeld:
             window = Window(segments: missing)
+        case .ended, .gone, .unknown:
+            let start = restartPiece(firstOutstanding: firstOutstanding, segmentDuration: segmentDuration, runtime: runtime)
+            window = claimed.isEmpty ? Window(segments: [start], isProbe: true) : Window()
         case .running(let position):
             let current = Int(position / segmentDuration)
             let made = missing.filter { $0 + 2 <= current }
@@ -303,17 +322,6 @@ nonisolated enum SegmentPlanner {
                 let next = missing.filter { $0 + 2 > current && $0 <= current + ahead }
                 window.segments += next.prefix(ahead - made.count)
             }
-        case .stopped(let madeUpTo):
-            let made = madeUpTo.map { end in missing.filter { Double($0 + 2) * segmentDuration <= end } } ?? []
-            if !made.isEmpty {
-                window = Window(segments: made)
-            } else if madeUpTo != nil, claimed.isEmpty, missing.last == segmentCount - 1 {
-                window = Window(segments: [segmentCount - 1], startsTranscode: true)
-            } else {
-                window = alone
-            }
-        case .unknown, .gone:
-            window = alone
         }
         if let limit { window.segments = Array(window.segments.prefix(max(0, limit))) }
         return window
@@ -321,18 +329,16 @@ nonisolated enum SegmentPlanner {
 
     /// Whether a piece handed to the session that hasn't started yet may stay there: asking for
     /// it now doesn't start the server's transcode somewhere else.
-    static func mayStay(_ segment: Int, segmentCount: Int, segmentDuration: Double, firstOutstanding: Int?,
-                        server: TranscodeServer) -> Bool {
+    static func mayStay(_ segment: Int, segmentDuration: Double, runtime: Double?, firstOutstanding: Int?, server: TranscodeServer,
+                        isHeld: Bool) -> Bool {
         switch server {
-        case .finished:
-            return true
         case .running(let position):
             return segment <= Int(position / segmentDuration) + aheadLimit(segmentDuration: segmentDuration)
-        case .stopped(let madeUpTo):
-            if let madeUpTo, Double(segment + 2) * segmentDuration <= madeUpTo || segment == segmentCount - 1 { return true }
-            return segment == firstOutstanding
-        case .unknown, .gone:
-            return segment == firstOutstanding
+        case .ended where isHeld:
+            return true
+        case .ended, .gone, .unknown:
+            guard let firstOutstanding else { return false }
+            return segment == restartPiece(firstOutstanding: firstOutstanding, segmentDuration: segmentDuration, runtime: runtime)
         }
     }
 

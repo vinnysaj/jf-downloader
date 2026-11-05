@@ -164,10 +164,11 @@ struct DownloadPolicyTests {
 }
 
 struct SegmentPlannerTests {
-    private func window(_ server: TranscodeServer, collected: Range<Int> = 0..<0, claimed: Set<Int> = [], needsInitCheck: Bool = false,
+    /// The title runs 420 s: 140 pieces of 3 s.
+    private func window(_ server: TranscodeServer, collected: some Sequence<Int> = 0..<0, claimed: Set<Int> = [], isHeld: Bool = false,
                         mayAskAhead: Bool = true, limit: Int? = nil) -> SegmentPlanner.Window {
-        SegmentPlanner.window(segmentCount: 140, segmentDuration: 3, collected: IndexSet(integersIn: collected), claimed: claimed,
-                              server: server, needsInitCheck: needsInitCheck, mayAskAhead: mayAskAhead, limit: limit)
+        SegmentPlanner.window(segmentCount: 140, segmentDuration: 3, runtime: 420, collected: IndexSet(collected), claimed: claimed,
+                              server: server, isHeld: isHeld, mayAskAhead: mayAskAhead, limit: limit)
     }
 
     @Test func keepsWellInsideTheServersRestartWindow() {
@@ -184,43 +185,64 @@ struct SegmentPlannerTests {
         // Never 8 or more past the server.
         let ahead = window(.running(position: 30), collected: 0..<10).segments
         #expect(ahead.allSatisfy { $0 <= 10 + 4 })
-        #expect(!window(.running(position: 30), collected: 0..<9).startsTranscode)
+        #expect(!window(.running(position: 30), collected: 0..<9).isProbe)
     }
 
-    @Test func onceFinishedAsksForEverythingLeft() {
-        #expect(window(.finished, collected: 0..<130).segments == Array(130..<140))
-        #expect(window(.finished, collected: 0..<100, limit: 16).segments == Array(100..<116))
-        #expect(window(.finished, collected: 0..<140).segments.isEmpty)
+    /// Found waiting on the server once it ended: everything left, in batches in front.
+    @Test func asksForEveryPieceTheServerKept() {
+        #expect(window(.ended, collected: 0..<130, isHeld: true).segments == Array(130..<140))
+        #expect(window(.ended, collected: 0..<100, isHeld: true, limit: 16).segments == Array(100..<116))
+        #expect(window(.ended, collected: 0..<140, isHeld: true).segments.isEmpty)
     }
 
-    @Test func stoppedAsksForWhatItLeftThenTheFirstMissingAlone() {
-        #expect(window(.stopped(madeUpTo: 30), collected: 0..<5).segments == [5, 6, 7, 8])
-        // Stopped by itself: the last piece tells a transcode that finished from one that failed.
-        let probe = window(.stopped(madeUpTo: 30), collected: 0..<9)
-        #expect(probe == SegmentPlanner.Window(segments: [139], startsTranscode: true))
-        var withLast = IndexSet(integersIn: 0..<9)
-        withLast.insert(139)
-        let restart = SegmentPlanner.window(segmentCount: 140, segmentDuration: 3, collected: withLast, claimed: [],
-                                            server: .stopped(madeUpTo: 30), needsInitCheck: false, mayAskAhead: true)
-        #expect(restart == SegmentPlanner.Window(segments: [9], startsTranscode: true))
-        #expect(window(.stopped(madeUpTo: nil), collected: 0..<20) == SegmentPlanner.Window(segments: [20], startsTranscode: true))
-        // One request starts it: none while another is out.
-        #expect(window(.stopped(madeUpTo: nil), collected: 0..<20, claimed: [20]).segments.isEmpty)
-        #expect(window(.gone, collected: 0..<20).segments == [20])
-        #expect(window(.unknown).segments == [0])
+    /// Not transcoding, and not known to have the pieces left (it finished, failed, was stopped,
+    /// or restarted): one piece alone, which comes from what it kept or starts it there, once
+    /// nothing else is out. Never the last piece to find out: it isn't where a failed transcode
+    /// would start again.
+    @Test func otherwiseAsksForTheFirstMissingPieceAlone() {
+        let probe = SegmentPlanner.Window(segments: [20], isProbe: true)
+        #expect(window(.ended, collected: 0..<20) == probe)
+        #expect(window(.gone, collected: 0..<20) == probe)
+        #expect(window(.unknown) == SegmentPlanner.Window(segments: [0], isProbe: true))
+        #expect(window(.ended, collected: 0..<20, claimed: [20]).segments.isEmpty)
+        #expect(window(.ended, collected: 0..<20, claimed: [25]).segments.isEmpty)
+        #expect(window(.ended, collected: Array(0..<20) + [139]) == probe)
     }
 
-    @Test func checksTheInitSegmentWithOnePieceFirst() {
-        #expect(window(.finished, collected: 0..<20, needsInitCheck: true).segments == [20])
+    /// The server starts no later than 5 s before the end, numbering what it makes from the
+    /// piece asked for all the same: a piece missing there is got by starting it earlier.
+    @Test func startsTheServerNoLaterThanItStartsInPlace() {
+        #expect(SegmentPlanner.restartPiece(firstOutstanding: 139, segmentDuration: 3, runtime: 420) == 138)
+        #expect(SegmentPlanner.restartPiece(firstOutstanding: 137, segmentDuration: 3, runtime: 420) == 137)
+        #expect(SegmentPlanner.restartPiece(firstOutstanding: 199, segmentDuration: 3, runtime: 598.8) == 197)
+        #expect(SegmentPlanner.restartPiece(firstOutstanding: 3, segmentDuration: 3, runtime: nil) == 3)
+        // Already here, it's asked for again to start the server where it makes the rest in place.
+        #expect(window(.ended, collected: 0..<139) == SegmentPlanner.Window(segments: [138], isProbe: true))
+    }
+
+    /// A source whose clock starts 1.48 s late, with subtitles burned in, makes a transcode that
+    /// much shorter than the 41 pieces listed: the last one, asked for, comes from a transcode
+    /// started too late to put it in place, which is all asking can get.
+    @Test func takesALastPieceTheServerCantPutInPlaceAsTheEnd() {
+        #expect(SegmentPlanner.endsBefore(40, segmentCount: 41, segmentDuration: 3, runtime: 121.51))
+        #expect(!SegmentPlanner.endsBefore(39, segmentCount: 41, segmentDuration: 3, runtime: 121.51))
+        // One a restart can start in place is asked for again.
+        #expect(!SegmentPlanner.endsBefore(40, segmentCount: 41, segmentDuration: 3, runtime: 130))
+        #expect(!SegmentPlanner.endsBefore(40, segmentCount: 41, segmentDuration: 3, runtime: nil))
     }
 
     @Test func takesBackPiecesThatWouldMoveTheTranscode() {
-        #expect(SegmentPlanner.mayStay(14, segmentCount: 140, segmentDuration: 3, firstOutstanding: 9, server: .running(position: 30)))
-        #expect(!SegmentPlanner.mayStay(15, segmentCount: 140, segmentDuration: 3, firstOutstanding: 9, server: .running(position: 30)))
-        #expect(SegmentPlanner.mayStay(9, segmentCount: 140, segmentDuration: 3, firstOutstanding: 9, server: .gone))
-        #expect(!SegmentPlanner.mayStay(10, segmentCount: 140, segmentDuration: 3, firstOutstanding: 9, server: .stopped(madeUpTo: nil)))
-        #expect(SegmentPlanner.mayStay(100, segmentCount: 140, segmentDuration: 3, firstOutstanding: 9, server: .finished))
-        #expect(SegmentPlanner.mayStay(139, segmentCount: 140, segmentDuration: 3, firstOutstanding: 9, server: .stopped(madeUpTo: 30)))
+        func mayStay(_ segment: Int, _ server: TranscodeServer, firstOutstanding: Int? = 9, isHeld: Bool = false) -> Bool {
+            SegmentPlanner.mayStay(segment, segmentDuration: 3, runtime: 420, firstOutstanding: firstOutstanding, server: server,
+                                   isHeld: isHeld)
+        }
+        #expect(mayStay(14, .running(position: 30)))
+        #expect(!mayStay(15, .running(position: 30)))
+        #expect(mayStay(9, .gone))
+        #expect(!mayStay(10, .ended))
+        #expect(mayStay(100, .ended, isHeld: true))
+        #expect(mayStay(138, .ended, firstOutstanding: 139))
+        #expect(!mayStay(139, .ended, firstOutstanding: 139))
     }
 
     @Test func handsTheSessionWhatItCanFetchBeforeTheServerStops() {
@@ -235,82 +257,41 @@ struct SegmentPlannerTests {
     }
 }
 
+/// The server says no more than whether it knows the device and, while ffmpeg runs, how far it is.
 struct TranscodeServerTests {
-    private let now = Date(timeIntervalSince1970: 1_000_000)
-
-    private func state(position: Double?, seen: TimeInterval = 10, ping: TimeInterval = 5) -> TranscodeState {
-        var state = Titles.state()
-        state.serverPosition = position
-        state.serverSeenAt = now.addingTimeInterval(-seen)
-        state.lastPing = now.addingTimeInterval(-ping)
-        return state
+    /// A piece asked for alone at the start, or the init segment, says nothing once the server has
+    /// been seen transcoding: stopped later, whether it kept the pieces is asked again.
+    @Test func forgetsWhatWasAskedForAloneOnceTheServerIsSeenTranscoding() {
+        var live = TranscodedDownloads.Live()
+        live.probedAt = .now
+        live.observe(.ended)
+        #expect(live.probedAt != nil)
+        live.observe(.running(position: 30))
+        #expect(live.probedAt == nil)
+        #expect(live.seenRunning)
+        live.observe(.ended)
+        #expect(live.server == .ended)
+        // Down, it can't say it's transcoding until it knows the device again: what came since it
+        // went down is waited on.
+        live.observe(.gone)
+        live.probedAt = .now
+        live.observe(.gone)
+        #expect(live.probedAt != nil)
     }
 
     @Test func aSessionTheServerDoesntListIsGone() {
-        #expect(TranscodeServer.interpret(sessionFound: false, transcoding: nil, state: Titles.state(), speed: nil, now: now) == .gone)
+        #expect(TranscodeServer.interpret(sessionFound: false, transcoding: nil, runtime: 420) == .gone)
     }
 
     @Test func readsThePositionFromThePercentage() {
-        let info = TranscodingInfo(completionPercentage: 50)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: info, state: Titles.state(), speed: nil, now: now)
+        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: TranscodingInfo(completionPercentage: 50), runtime: 420)
             == .running(position: 210))
     }
 
-    @Test func tellsFinishedFromStoppedOnceThePercentageIsGone() {
-        let info = TranscodingInfo()
-        // 400 s in at 2× ten seconds ago reaches the last piece (417 s).
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: info, state: state(position: 400), speed: 2, now: now)
-            == .finished)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: info, state: state(position: 100), speed: 2, now: now)
-            == .stopped(madeUpTo: 100))
-        // Unpinged for over a minute: stopped by the server, which deletes its pieces, unless it
-        // would have reached the end before then.
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: info, state: state(position: 100, seen: 300, ping: 200),
-                                          speed: 0.5, now: now) == .stopped(madeUpTo: nil))
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: info, state: state(position: 100, seen: 300, ping: 200),
-                                          speed: 2, now: now) == .finished)
-    }
-
-    @Test func goesByWhenTheServerWasFirstSeenQuiet() {
-        let info = TranscodingInfo()
-        // Last seen at 376 s going 5.4× ten seconds ago, quiet five seconds later: the percentage
-        // lagged, and it reached the end.
-        var nearEnd = state(position: 376, seen: 10, ping: 5)
-        nearEnd.serverQuietAt = now.addingTimeInterval(-5)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: info, state: nearEnd, speed: 5.4, now: now) == .finished)
-        // A transcode that stopped at 200 s stays stopped however long it's kept alive.
-        var failed = state(position: 200, seen: 10, ping: 5)
-        failed.serverQuietAt = now.addingTimeInterval(-5)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: info, state: failed, speed: 5.4, now: now)
-            == .stopped(madeUpTo: 200))
-        failed.lastPing = now.addingTimeInterval(95)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: info, state: failed, speed: 5.4, now: now.addingTimeInterval(100))
-            == .stopped(madeUpTo: 200))
-    }
-
-    @Test func aQuietServerThatHadTheLastPieceFinished() {
-        var state = state(position: 100, seen: 10, ping: 5)
-        state.collected.insert(139)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: TranscodingInfo(), state: state, speed: nil, now: now) == .finished)
-        // Unpinged past the server's patience, its pieces are deleted, whatever it got to.
-        var lapsed = self.state(position: 100, seen: 100, ping: 90)
-        lapsed.collected.insert(139)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: TranscodingInfo(), state: lapsed, speed: nil, now: now)
-            == .stopped(madeUpTo: nil))
-    }
-
-    @Test func aFinishedTranscodeLastsUntilTheServersCleanup() {
-        var state = Titles.state()
-        state.serverFinishedAt = now.addingTimeInterval(-3600)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: TranscodingInfo(), state: state, speed: nil, now: now) == .finished)
-        state.serverFinishedAt = now.addingTimeInterval(-TranscodeServer.keptFor - 1)
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: TranscodingInfo(), state: state, speed: nil, now: now)
-            == .stopped(madeUpTo: nil))
-    }
-
-    @Test func aSessionThatNeverTranscodedHasNothingOnTheServer() {
-        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: nil, state: state(position: 400), speed: 2, now: now)
-            == .stopped(madeUpTo: nil))
+    @Test func withoutAPercentageItHasEnded() {
+        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: TranscodingInfo(), runtime: 420) == .ended)
+        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: nil, runtime: 420) == .ended)
+        #expect(TranscodeServer.interpret(sessionFound: true, transcoding: TranscodingInfo(completionPercentage: 50), runtime: nil) == .ended)
     }
 }
 
@@ -368,8 +349,34 @@ struct TranscodeStateTests {
         #expect(!state.isLapsed(at: now))
         state.initCheckedAt = now.addingTimeInterval(-100)
         #expect(state.isLapsed(at: now))
-        state.serverFinishedAt = now.addingTimeInterval(-200)
+        // Pieces the server kept don't lapse: it only stops transcodes that run.
+        state.heldSince = now.addingTimeInterval(-200)
         #expect(!state.isLapsed(at: now))
+    }
+
+    @Test func piecesTheServerKeptLastUntilItsCleanup() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        var state = Titles.state()
+        #expect(!state.isHeld(at: now))
+        state.heldSince = now.addingTimeInterval(-3600)
+        #expect(state.isHeld(at: now))
+        state.heldSince = now.addingTimeInterval(-TranscodeServer.keptFor - 1)
+        #expect(!state.isHeld(at: now))
+    }
+
+    /// Started again three times in a row about the same place, having run in between: it's
+    /// failing there.
+    @Test func countsRestartsAboutTheSamePlace() {
+        var state = Titles.state()
+        #expect(state.noteRestart(at: 300, seenRunning: false) == 1)
+        #expect(state.noteRestart(at: 303, seenRunning: true) == 2)
+        // Not seen running since: the last start may not have happened yet.
+        #expect(state.noteRestart(at: 303, seenRunning: false) == 1)
+        #expect(state.noteRestart(at: 300, seenRunning: true) == 2)
+        #expect(state.noteRestart(at: 306, seenRunning: true) == 3)
+        #expect(state.noteRestart(at: 900, seenRunning: true) == 1)
+        state.reset()
+        #expect(state.stopsAtSamePlace == 1)
     }
 
     @Test func appendsOnlyTheCheckedRunAfterTheFile() {
@@ -581,27 +588,99 @@ struct SegmentResponseTests {
     @Test func saysWhatTheServerIsDoing() {
         var state = Titles.state()
         var live = TranscodedDownloads.Live(server: .running(position: 210))
-        #expect(TranscodedDownloads.note(for: state, live: live) == "Server preparing 50%")
+        #expect(TranscodedDownloads.note(for: state, live: live, serverIsCurrent: true) == "Server preparing 50%")
         live.activity = .preparing
-        #expect(TranscodedDownloads.note(for: state, live: live) == "Asking the server for a transcode")
+        #expect(TranscodedDownloads.note(for: state, live: live, serverIsCurrent: true) == "Asking the server for a transcode")
         live.activity = nil
-        live.server = .finished
-        #expect(TranscodedDownloads.note(for: state, live: live) == nil)
+        live.server = .ended
+        #expect(TranscodedDownloads.note(for: state, live: live, serverIsCurrent: true) == nil)
         live.throttle.observe(position: 300, downloadPosition: 0, now: .distantPast)
         live.throttle.observe(position: 300, downloadPosition: 0, now: .distantPast.addingTimeInterval(30))
-        #expect(TranscodedDownloads.note(for: state, live: live) == "Server paused until the download catches up")
+        #expect(TranscodedDownloads.note(for: state, live: live, serverIsCurrent: true) == "Server paused until the download catches up")
         state.repairs = [3: 0..<10]
-        #expect(TranscodedDownloads.note(for: state, live: live) == "Mending 1 piece")
+        #expect(TranscodedDownloads.note(for: state, live: live, serverIsCurrent: true) == "Mending 1 piece")
+    }
+
+    /// A download waiting its turn behind another isn't asked about: what its server said when it
+    /// was last in hand isn't said as what it does now.
+    @Test func saysNothingOfWhatTheServerSaidLongAgo() {
+        var live = TranscodedDownloads.Live(server: .running(position: 210))
+        #expect(TranscodedDownloads.note(for: Titles.state(), live: live, serverIsCurrent: false) == nil)
+        live.throttle.observe(position: 300, downloadPosition: 0, now: .distantPast)
+        live.throttle.observe(position: 300, downloadPosition: 0, now: .distantPast.addingTimeInterval(30))
+        #expect(TranscodedDownloads.note(for: Titles.state(), live: live, serverIsCurrent: false) == nil)
+        live.activity = .checkingInit
+        #expect(TranscodedDownloads.note(for: Titles.state(), live: live, serverIsCurrent: false) == "Checking the server's transcode")
+    }
+}
+
+@MainActor
+private final class TranscodeHostStub: TranscodeHost {
+    var jobs: [DownloadJob]
+    var isInFront = true
+    var isPausedForPlayback = false
+    var isPlaybackTranscoding = false
+    var changes = 0
+
+    init(_ jobs: [DownloadJob]) { self.jobs = jobs }
+
+    func changeJob(_ id: UUID, _ change: (inout DownloadJob) -> Void) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        change(&jobs[index])
+    }
+
+    func transcodesChanged() { changes += 1 }
+    func startOver(_ id: UUID, because reason: String) {}
+    func stopJob(_ id: UUID, because message: String) {}
+    func outOfSpace(_ id: UUID, error: any Error) {}
+}
+
+@MainActor
+struct ServerDownTests {
+    /// A piece answered 503, or refused: the pieces out are taken back but the first missing,
+    /// which is asked for alone once the server is back, so its transcode starts there rather
+    /// than at whichever piece reaches it first, and again at each earlier one.
+    @Test func takesBackEveryPieceButTheFirstMissingWhenTheServerGoesDown() throws {
+        var job = DownloadJob(item: Titles.item, plan: .transcode(Titles.uhd, Titles.request()))
+        var state = Titles.state()
+        state.collected = IndexSet(0..<20)
+        state.heldSince = .now
+        job.transcode = state
+        let host = TranscodeHostStub([job])
+        let base = FileManager.default.temporaryDirectory.appending(path: "ServerDownTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let defaults = try #require(UserDefaults(suiteName: "ServerDownTests-\(UUID().uuidString)"))
+        let transcodes = TranscodedDownloads(accounts: AccountStore(defaults: defaults),
+                                             storage: DownloadStorage(finished: base.appending(path: "Finished"), root: base.appending(path: "Root")))
+        transcodes.host = host
+        #expect(transcodes.mayKeep(25, of: host.jobs[0]))
+        transcodes.serverDown(job.id)
+        #expect(transcodes.live[job.id]?.server == .gone)
+        #expect(host.jobs[0].transcode?.heldSince == nil)
+        #expect(host.changes == 1)
+        #expect(transcodes.mayKeep(20, of: host.jobs[0]))
+        #expect(!transcodes.mayKeep(21, of: host.jobs[0]))
+        #expect(!transcodes.mayKeep(25, of: host.jobs[0]))
+        // Down already: nothing more to do.
+        transcodes.serverDown(job.id)
+        #expect(host.changes == 1)
     }
 }
 
 // MARK: Fragmented MP4
 
-/// Builds the boxes Jellyfin's fragmented MP4 is made of: an init segment with one video track
-/// at 90 kHz, and pieces of three one-second samples.
+/// Builds the boxes Jellyfin's fragmented MP4 is made of: an init segment with one track at
+/// 90 kHz, its samples H.264 unless said otherwise, and pieces of one-second samples of ten
+/// bytes: a six-byte NAL unit after its four-byte length, or an AC-3 frame.
 private enum MP4 {
     static let timescale: UInt32 = 90_000
+    static let sampleSize = 10
 
+    enum Entry {
+        case avc, ac3
+    }
+
+    static func uint16(_ value: UInt16) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
     static func uint32(_ value: UInt32) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
     static func uint64(_ value: UInt64) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
 
@@ -613,31 +692,61 @@ private enum MP4 {
         box(type, uint32(UInt32(version) << 24 | flags) + payload)
     }
 
-    static let header: Data = {
+    static let header = makeHeader()
+
+    /// `editMediaTime` gives the track an edit list starting there, as for pictures whose
+    /// composition starts after their decoding.
+    static func makeHeader(entry: Entry = .avc, editMediaTime: UInt32? = nil) -> Data {
         let ftyp = box("ftyp", Data("iso5".utf8) + uint32(512) + Data("iso5iso6mp41".utf8))
+        let mvhd = fullBox("mvhd", uint32(0) + uint32(0) + uint32(1000) + uint32(0) + Data(count: 80))
         let tkhd = fullBox("tkhd", flags: 3, uint32(0) + uint32(0) + uint32(1) + Data(count: 68))
+        let edts = editMediaTime.map { box("edts", fullBox("elst", uint32(1) + uint32(0) + uint32($0) + uint32(0x0001_0000))) } ?? Data()
         let mdhd = fullBox("mdhd", uint32(0) + uint32(0) + uint32(timescale) + uint32(0) + uint32(0))
         let hdlr = fullBox("hdlr", uint32(0) + Data("vide".utf8) + Data(count: 12) + Data("Video\0".utf8))
-        let trak = box("trak", tkhd + box("mdia", mdhd + hdlr))
+        let sampleEntry = switch entry {
+        case .avc:
+            // Six reserved bytes and the data reference, 70 bytes of picture fields, then avcC:
+            // four-byte NAL lengths, no parameter sets.
+            box("avc1", Data(count: 6) + uint16(1) + Data(count: 70) + box("avcC", Data([1, 0x64, 0, 0x28, 0xFF, 0xE0, 0])))
+        case .ac3:
+            box("ac-3", Data(count: 6) + uint16(1) + Data(count: 20))
+        }
+        let stbl = box("stbl", fullBox("stsd", uint32(1) + sampleEntry))
+        let trak = box("trak", tkhd + edts + box("mdia", mdhd + hdlr + box("minf", stbl)))
         let trex = fullBox("trex", uint32(1) + uint32(1) + uint32(0) + uint32(0) + uint32(0))
-        return ftyp + box("moov", trak + box("mvex", trex))
-    }()
+        return ftyp + box("moov", mvhd + trak + box("mvex", trex))
+    }
 
-    /// A piece whose picture starts at `start` seconds, with `samples` one-second samples.
-    static func piece(start: Double, samples: Int = 3, decodeTime: UInt64? = nil) -> Data {
-        let sampleSize: UInt32 = 10
+    /// A sample's ten bytes.
+    static func sample(_ entry: Entry) -> Data {
+        switch entry {
+        case .avc: Data([0, 0, 0, 6, 0x65]) + Data(repeating: 0xAB, count: 5)
+        case .ac3: Data([0x0B, 0x77]) + Data(repeating: 0xAB, count: 8)
+        }
+    }
+
+    /// A piece whose picture starts at `start` seconds, with `samples` one-second samples, the
+    /// first a keyframe; `extraBytes` more in its media data than its samples take.
+    static func piece(start: Double, samples: Int = 3, decodeTime: Int64? = nil, entry: Entry = .avc, extraBytes: Int = 0) -> Data {
         let tfhd = fullBox("tfhd", flags: 0x020000, uint32(1))
-        let tfdt = fullBox("tfdt", version: 1, uint64(decodeTime ?? UInt64(start * Double(timescale))))
+        let tfdt = fullBox("tfdt", version: 1, uint64(UInt64(bitPattern: decodeTime ?? Int64((start * Double(timescale)).rounded()))))
         func trun(offset: UInt32) -> Data {
             var entries = Data()
-            for _ in 0..<samples { entries += uint32(timescale) + uint32(sampleSize) }
-            return fullBox("trun", flags: 0x000301, uint32(UInt32(samples)) + uint32(offset) + entries)
+            for index in 0..<samples {
+                entries += uint32(timescale) + uint32(UInt32(sampleSize)) + uint32(index == 0 ? 0x0200_0000 : 0x0101_0000)
+            }
+            return fullBox("trun", flags: 0x000701, uint32(UInt32(samples)) + uint32(offset) + entries)
         }
         let mfhd = fullBox("mfhd", uint32(1))
         let moofLength = 8 + mfhd.count + 8 + tfhd.count + tfdt.count + trun(offset: 0).count
         let moof = box("moof", mfhd + box("traf", tfhd + tfdt + trun(offset: UInt32(moofLength + 8))))
-        let mdat = box("mdat", Data(repeating: 0xAB, count: samples * Int(sampleSize)))
+        let mdat = box("mdat", (0..<samples).reduce(Data()) { data, _ in data + sample(entry) } + Data(repeating: 0, count: extraBytes))
         return box("styp", Data("msdh".utf8) + uint32(0) + Data("msdhmsix".utf8)) + moof + mdat
+    }
+
+    /// Where a piece's media data starts within it.
+    static func mediaStart(of piece: Data) -> Int {
+        piece.range(of: Data("mdat".utf8))!.upperBound - piece.startIndex
     }
 }
 
@@ -646,10 +755,14 @@ struct FragmentedMP4Tests {
         let header = try FragmentedMP4.header(MP4.header)
         #expect(header.videoTrack == 1)
         #expect(header.tracks[1]?.timescale == MP4.timescale)
+        #expect(header.tracks[1]?.format == .nalUnits(lengthSize: 4))
+        #expect(header.movieTimescale == 1000)
         #expect(header.length == Int64(MP4.header.count))
+        #expect(try FragmentedMP4.header(MP4.makeHeader(entry: .ac3)).tracks[1]?.format == .ac3Frames)
+        #expect(try FragmentedMP4.header(MP4.makeHeader(editMediaTime: 1800)).tracks[1]?.presentationOffset == 1800)
     }
 
-    @Test func readsWhereAPiecesPictureLies() throws {
+    @Test func readsWhereAPiecesPictureLiesAndEverySample() throws {
         let header = try FragmentedMP4.header(MP4.header)
         let data = MP4.piece(start: 30)
         let piece = try FragmentedMP4.piece(data, header: header)
@@ -658,6 +771,18 @@ struct FragmentedMP4Tests {
         #expect(piece.videoSamples == 3)
         #expect(piece.range == 0..<Int64(data.count))
         #expect(!piece.isEmpty)
+        let run = try #require(piece.runs.first)
+        #expect(piece.runs.count == 1)
+        #expect(run.decodeTime == 30 * Int64(MP4.timescale))
+        #expect(run.samples.map(\.size) == [10, 10, 10])
+        #expect(run.samples.map(\.duration) == [MP4.timescale, MP4.timescale, MP4.timescale])
+        #expect(run.samples.map(\.isSync) == [true, false, false])
+        #expect(run.dataOffset == MP4.mediaStart(of: data))
+        #expect(piece.sampleCount == 3)
+        #expect(piece.largestSample == 10)
+        let shifted = piece.shifted(by: 1000)
+        #expect(shifted.range == 1000..<Int64(1000 + data.count))
+        #expect(shifted.runs.first?.dataOffset == run.dataOffset + 1000)
     }
 
     @Test func refusesACutOffPieceAndTellsAnEmptyOne() throws {
@@ -669,8 +794,32 @@ struct FragmentedMP4Tests {
 
     @Test func readsADecodeTimeBelowZero() throws {
         let header = try FragmentedMP4.header(MP4.header)
-        let piece = try FragmentedMP4.piece(MP4.piece(start: 0, decodeTime: UInt64(bitPattern: -1800)), header: header)
+        let piece = try FragmentedMP4.piece(MP4.piece(start: 0, decodeTime: -1800), header: header)
         #expect(piece.videoStart == -0.02)
+    }
+
+    @Test func refusesMediaDataTheSamplesDontFill() throws {
+        let header = try FragmentedMP4.header(MP4.header)
+        #expect(throws: FragmentedMP4.Problem.self) { try FragmentedMP4.piece(MP4.piece(start: 3, extraBytes: 4), header: header) }
+    }
+
+    /// Damage that keeps every box's length: a NAL unit's length that no longer adds up to its
+    /// sample, a NAL unit header with its forbidden bit set, an AC-3 frame without its sync word.
+    @Test func refusesSamplesWhoseInsidesDontHoldTogether() throws {
+        let header = try FragmentedMP4.header(MP4.header)
+        var length = MP4.piece(start: 3)
+        let media = MP4.mediaStart(of: length)
+        length[length.startIndex + media + MP4.sampleSize + 3] = 9
+        #expect(throws: FragmentedMP4.Problem.self) { try FragmentedMP4.piece(length, header: header) }
+        var forbidden = MP4.piece(start: 3)
+        forbidden[forbidden.startIndex + media + 4] = 0xE5
+        #expect(throws: FragmentedMP4.Problem.self) { try FragmentedMP4.piece(forbidden, header: header) }
+
+        let audioHeader = try FragmentedMP4.header(MP4.makeHeader(entry: .ac3))
+        var frame = MP4.piece(start: 3, entry: .ac3)
+        #expect(try FragmentedMP4.piece(frame, header: audioHeader).sampleCount == 3)
+        frame[frame.startIndex + MP4.mediaStart(of: frame) + 2 * MP4.sampleSize] = 0x0C
+        #expect(throws: FragmentedMP4.Problem.self) { try FragmentedMP4.piece(frame, header: audioHeader) }
     }
 
     @Test func findsThePiecesAfterADamagedOne() throws {
@@ -682,6 +831,25 @@ struct FragmentedMP4Tests {
         let starts = FragmentedMP4.pieceStarts(in: joined, from: MP4.header.count)
         #expect(starts == [MP4.header.count, MP4.header.count + pieces[0].count, MP4.header.count + pieces[0].count + pieces[1].count])
     }
+
+    /// Past a damaged box, the next piece is looked for a block at a time, as in a file read in
+    /// stretches: one whose styp straddles two blocks is found.
+    @Test func findsAPieceStartAcrossTheBlocksItReads() throws {
+        let first = MP4.piece(start: 0)
+        let second = MP4.piece(start: 3)
+        let damaged = MP4.header.count + first.count
+        // The search starts 5 bytes into the damaged box and reads 1 MiB blocks: the second
+        // piece's styp type begins 2 bytes before the first block ends.
+        let fillerEnd = damaged + 5 + (1 << 20) - 2 - 4
+        let joined = MP4.header + first + MP4.uint32(0xFFFF_FFF0) + Data("junk".utf8) + Data(count: fillerEnd - damaged - 8) + second
+        var reads: [Range<Int>] = []
+        let starts = try FragmentedMP4.pieceStarts(count: joined.count, from: MP4.header.count) { range in
+            reads.append(range)
+            return joined.subdata(in: range)
+        }
+        #expect(starts == [MP4.header.count, fillerEnd])
+        #expect(reads.contains { $0.count == 1 << 20 })
+    }
 }
 
 struct TranscodeVerifierTests {
@@ -691,21 +859,43 @@ struct TranscodeVerifierTests {
         return url
     }
 
-    private func check(_ pieces: [Data], expected: Int = 3, runtime: Double? = 9) throws -> TranscodeVerifier.Outcome {
-        let url = try file(pieces.reduce(MP4.header, +))
+    private func check(_ pieces: [Data], expected: Int = 3, header: Data = MP4.header) throws -> TranscodeVerifier.StructureCheck {
+        let url = try file(pieces.reduce(header, +))
         defer { try? FileManager.default.removeItem(at: url) }
-        return TranscodeVerifier.checkStructure(of: url, header: MP4.header, expectedPieces: expected, segmentDuration: 3, runtime: runtime)
+        return TranscodeVerifier.checkStructure(of: url, header: MP4.header, expectedPieces: expected, segmentDuration: 3)
     }
 
-    @Test func passesPiecesInOrderEndingWithTheTitle() throws {
-        #expect(try check((0..<3).map { MP4.piece(start: Double($0) * 3) }) == .good(openSeconds: 0))
+    @Test func readsEveryPieceInOrder() throws {
+        let pieces = (0..<3).map { MP4.piece(start: Double($0) * 3) }
+        guard case .whole(let structure) = try check(pieces) else {
+            Issue.record("pieces in order pass")
+            return
+        }
+        let starts = [MP4.header.count, MP4.header.count + pieces[0].count, MP4.header.count + pieces[0].count + pieces[1].count]
+        #expect(structure.pieces.map(\.range.lowerBound) == starts.map(Int64.init))
+        #expect(structure.pieces.last?.runs.first?.dataOffset == MP4.header.count + pieces[0].count + pieces[1].count + MP4.mediaStart(of: pieces[2]))
+        #expect(structure.fileLength == Int64(pieces.reduce(MP4.header, +).count))
     }
 
-    @Test func pointsAtADamagedOrMisplacedPiece() throws {
+    /// A source whose clock starts 1.48 s in makes pieces that start there: each piece's place
+    /// counts from the first's.
+    @Test func countsEachPlaceFromWhereTheFirstPieceStarts() throws {
+        guard case .whole = try check((0..<3).map { MP4.piece(start: 1.48 + Double($0) * 3) }) else {
+            Issue.record("pieces in place from a late start pass")
+            return
+        }
+        guard case .failed(.badPieces(let misplaced, _)) = try check([1.48, 31.48, 7.48].map { MP4.piece(start: $0) }) else {
+            Issue.record("a piece out of place is found")
+            return
+        }
+        #expect(Array(misplaced.keys) == [1])
+    }
+
+    @Test func pointsAtADamagedPiece() throws {
         var damaged = MP4.piece(start: 3)
         // Its moof claims to run past the end of the file.
         damaged.replaceSubrange(24..<28, with: MP4.uint32(0xFFFF_FFF0))
-        guard case .badPieces(let bad, _) = try check([MP4.piece(start: 0), damaged, MP4.piece(start: 6)]) else {
+        guard case .failed(.badPieces(let bad, _)) = try check([MP4.piece(start: 0), damaged, MP4.piece(start: 6)]) else {
             Issue.record("a damaged piece is found")
             return
         }
@@ -713,22 +903,128 @@ struct TranscodeVerifierTests {
         let start = MP4.header.count + MP4.piece(start: 0).count
         #expect(bad[1] == Int64(start)..<Int64(start + damaged.count))
 
-        guard case .badPieces(let misplaced, _) = try check([MP4.piece(start: 0), MP4.piece(start: 30), MP4.piece(start: 6)]) else {
-            Issue.record("a piece out of place is found")
+        var first = MP4.piece(start: 0)
+        // The first piece's own start is damaged: it runs up to the second's.
+        first.replaceSubrange(0..<4, with: MP4.uint32(0xFFFF_FFF0))
+        guard case .failed(.badPieces(let firstBad, _)) = try check([first, MP4.piece(start: 3), MP4.piece(start: 6)]) else {
+            Issue.record("a damaged first piece is found")
             return
         }
-        #expect(Array(misplaced.keys) == [1])
+        #expect(firstBad[0] == Int64(MP4.header.count)..<Int64(MP4.header.count + first.count))
     }
 
-    @Test func refusesAFileMissingPiecesOrEndingEarly() throws {
-        guard case .unusable = try check([MP4.piece(start: 0), MP4.piece(start: 3)]) else {
-            Issue.record("a missing piece makes the file unusable")
+    /// Wrong in a way no piece can be blamed for: the job stops, keeping its pieces.
+    @Test func namesNoPieceForAFileMissingOneOrNotStartingWithTheInitSegment() throws {
+        guard case .failed(.unmendable) = try check([MP4.piece(start: 0), MP4.piece(start: 3)]) else {
+            Issue.record("a missing piece names none")
             return
         }
-        guard case .unusable = try check((0..<3).map { MP4.piece(start: Double($0) * 3) }, runtime: 60) else {
-            Issue.record("a file ending well before the title is unusable")
+        var otherHeader = MP4.header
+        otherHeader[otherHeader.startIndex + 8] = 0
+        guard case .failed(.unmendable) = try check((0..<3).map { MP4.piece(start: Double($0) * 3) }, header: otherHeader) else {
+            Issue.record("a file not starting with the init segment names no piece")
             return
         }
+    }
+}
+
+struct FlattenedMP4Tests {
+    private let folder = FileManager.default.temporaryDirectory.appending(path: "FlattenedMP4Tests-\(UUID().uuidString)")
+
+    /// Joins `pieces` after `header`, indexes them, and returns the indexed file's bytes and the
+    /// index.
+    private func flatten(_ pieces: [Data], header: Data = MP4.header) throws -> (data: Data, index: FlattenedMP4.Index, joined: Data) {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let joined = pieces.reduce(header, +)
+        let partial = folder.appending(path: "partial.mp4")
+        let flat = folder.appending(path: "joined.mp4")
+        try joined.write(to: partial)
+        let parsed = try FragmentedMP4.header(header)
+        var offset = header.count
+        let read = try pieces.map { data in
+            defer { offset += data.count }
+            return try FragmentedMP4.piece(data, header: parsed).shifted(by: offset)
+        }
+        let index = try FlattenedMP4.index(header: header, parsed: parsed, pieces: read, fileLength: Int64(joined.count))
+        let length = try FlattenedMP4.write(index, from: partial, to: flat)
+        let data = try Data(contentsOf: flat)
+        #expect(length == Int64(data.count))
+        // The joined file stays as it was.
+        #expect(try Data(contentsOf: partial) == joined)
+        return (data, index, joined)
+    }
+
+    private func box(_ path: [String], in data: Data) throws -> FragmentedMP4.Box {
+        var range = 0..<data.count
+        var found: FragmentedMP4.Box?
+        for type in path {
+            found = try FragmentedMP4.boxes(in: data, range: range).first { $0.type == type }
+            guard let found else { throw FragmentedMP4.Problem(message: "No \(type) box.") }
+            range = found.payload
+        }
+        return try #require(found)
+    }
+
+    /// The 32-bit fields of a full box after its version and flags.
+    private func fields(_ box: FragmentedMP4.Box, in data: Data) -> [UInt32] {
+        stride(from: box.payload.lowerBound + 4, to: box.payload.upperBound, by: 4).map { data.uint32(at: $0) }
+    }
+
+    @Test func indexesEverySampleWhereItAlreadyLies() throws {
+        let pieces = (0..<3).map { MP4.piece(start: Double($0) * 3) }
+        let (data, index, joined) = try flatten(pieces)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let top = try FragmentedMP4.boxes(in: data, range: 0..<data.count)
+        #expect(top.map(\.type) == ["ftyp", "mdat", "moov"])
+        // The media data spans everything that was there, the pieces' bytes untouched.
+        #expect(top[1].range == index.mdatOffset..<joined.count)
+        #expect(data.subdata(in: (index.mdatOffset + 16)..<joined.count) == joined.subdata(in: (index.mdatOffset + 16)..<joined.count))
+        let stbl = ["moov", "trak", "mdia", "minf", "stbl"]
+        #expect(fields(try box(stbl + ["stsz"], in: data), in: data) == [10, 9])
+        #expect(fields(try box(stbl + ["stts"], in: data), in: data) == [1, 9, MP4.timescale])
+        #expect(fields(try box(stbl + ["stss"], in: data), in: data) == [3, 1, 4, 7])
+        #expect(fields(try box(stbl + ["stsc"], in: data), in: data) == [1, 1, 3, 1])
+        let offsets = fields(try box(stbl + ["stco"], in: data), in: data)
+        #expect(offsets.count == 4)
+        for offset in offsets.dropFirst() {
+            #expect(data.subdata(in: Int(offset)..<(Int(offset) + 5)) == Data([0, 0, 0, 6, 0x65]))
+        }
+        #expect(try box(stbl + ["stsd"], in: data).range.count > 0)
+        #expect(throws: FragmentedMP4.Problem.self) { try box(["moov", "mvex"], in: data) }
+        // Nine seconds, from 0.
+        let elst = try box(["moov", "trak", "edts", "elst"], in: data)
+        #expect(data.byte(at: elst.payload.lowerBound) == 1)
+        #expect(data.uint32(at: elst.payload.lowerBound + 4) == 1)
+        #expect(data.uint64(at: elst.payload.lowerBound + 8) == 9000)
+        #expect(data.uint64(at: elst.payload.lowerBound + 16) == 0)
+        let mvhd = try box(["moov", "mvhd"], in: data)
+        #expect(data.byte(at: mvhd.payload.lowerBound) == 1)
+        #expect(data.uint64(at: mvhd.payload.lowerBound + 24) == 9000)
+        let mdhd = try box(["moov", "trak", "mdia", "mdhd"], in: data)
+        #expect(data.uint64(at: mdhd.payload.lowerBound + 24) == 9 * UInt64(MP4.timescale))
+        #expect(index.origin == 0)
+    }
+
+    /// A source whose clock starts 1.5 s in: the file starts at its first picture, and an edit
+    /// list starting the pictures after their decoding keeps doing so.
+    @Test func putsTheFirstPictureAtTheStart() throws {
+        let (late, lateIndex, _) = try flatten((0..<3).map { MP4.piece(start: 1.5 + Double($0) * 3) })
+        #expect(lateIndex.origin == 1.5)
+        let elst = try box(["moov", "trak", "edts", "elst"], in: late)
+        #expect(late.uint64(at: elst.payload.lowerBound + 16) == 0)
+        let (shifted, _, _) = try flatten((0..<3).map { MP4.piece(start: 1.5 + Double($0) * 3) }, header: MP4.makeHeader(editMediaTime: 1800))
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let shiftedEdit = try box(["moov", "trak", "edts", "elst"], in: shifted)
+        #expect(shifted.uint64(at: shiftedEdit.payload.lowerBound + 16) == 1800)
+        #expect(shifted.uint64(at: shiftedEdit.payload.lowerBound + 8) == 8980)
+    }
+
+    /// A gap between two pieces lengthens the sample before it, so every sample keeps its time.
+    @Test func keepsEverySampleAtItsTimeAcrossAGap() throws {
+        let (data, _, _) = try flatten([0.0, 3, 7].map { MP4.piece(start: $0) })
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let stts = try box(["moov", "trak", "mdia", "minf", "stbl", "stts"], in: data)
+        #expect(fields(stts, in: data) == [3, 5, MP4.timescale, 1, 2 * MP4.timescale, 3, MP4.timescale])
     }
 }
 
@@ -779,6 +1075,35 @@ struct TranscodeAssemblyTests {
         let mended = try Data(contentsOf: storage.partialFile(for: jobId))
         #expect(mended == MP4.header + pieces[0] + pieces[1] + pieces[2])
         #expect(length == Int64(mended.count))
+    }
+
+    /// What's published is the indexed file, however far the last run got after the check
+    /// passed: before it took the joined file's place, or after.
+    @Test func publishesTheIndexedFile() throws {
+        let storage = try makeStorage()
+        var job = DownloadJob(item: Titles.item, plan: .transcode(Titles.uhd, Titles.request()))
+        let indexed = Data("indexed".utf8) + Data(repeating: 1, count: 100)
+        try storage.beginTranscodedFile(header: MP4.header + MP4.piece(start: 0), for: job.id)
+        try indexed.write(to: storage.joinedFile(for: job.id))
+        job.totalBytes = Int64(indexed.count)
+        let path = try storage.publish(job)
+        #expect(try Data(contentsOf: storage.finished.appending(path: path)) == indexed)
+        #expect(!FileManager.default.fileExists(atPath: storage.joinedFile(for: job.id).path))
+
+        var adopted = DownloadJob(item: Titles.item, plan: .transcode(Titles.uhd, Titles.request()))
+        try storage.beginTranscodedFile(header: MP4.header, for: adopted.id)
+        try indexed.write(to: storage.joinedFile(for: adopted.id))
+        try storage.adoptJoinedFile(for: adopted.id)
+        adopted.totalBytes = Int64(indexed.count)
+        #expect(try Data(contentsOf: storage.finished.appending(path: try storage.publish(adopted))) == indexed)
+    }
+
+    @Test func refusesToPublishAFileShorterThanTheDownload() throws {
+        let storage = try makeStorage()
+        var job = DownloadJob(item: Titles.item, plan: .transcode(Titles.uhd, Titles.request()))
+        try storage.beginTranscodedFile(header: MP4.header, for: job.id)
+        job.totalBytes = Int64(MP4.header.count + 1)
+        #expect(throws: CocoaError.self) { try storage.publish(job) }
     }
 }
 #endif

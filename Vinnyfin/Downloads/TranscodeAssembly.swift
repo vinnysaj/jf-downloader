@@ -3,10 +3,12 @@ import Foundation
 
 /// Where a transcoded download's pieces are kept and how they become one file.
 ///
-/// The file being built is the job's partial file, as for any download, so it publishes the
-/// same way: the init segment, then pieces 0, 1, 2 … appended in order. `Transcodes/<job>/`
-/// beside it holds the server's playlist, a copy of the init segment to compare a restarted
-/// transcode's with, and pieces that arrived before the ones ahead of them.
+/// The file being built is the job's partial file, as for any download: the init segment, then
+/// pieces 0, 1, 2 … appended in order. `Transcodes/<job>/` beside it holds the server's
+/// playlist, a copy of the init segment to compare a restarted transcode's with, pieces that
+/// arrived before the ones ahead of them, and once every piece is in, the joined file indexed as
+/// an ordinary MP4 (`FlattenedMP4`), which is what's published. The partial file stays as it is
+/// until then, so a check that fails leaves the pieces as they came.
 nonisolated extension DownloadStorage {
     var transcodes: URL { root.appending(path: "Transcodes", directoryHint: .isDirectory) }
 
@@ -19,6 +21,22 @@ nonisolated extension DownloadStorage {
 
     func segmentFile(_ index: Int, for jobId: UUID) -> URL {
         transcodeFolder(for: jobId).appending(path: "\(index).m4s")
+    }
+
+    /// The joined file indexed as an ordinary MP4, written by the check of the whole file.
+    func joinedFile(for jobId: UUID) -> URL { transcodeFolder(for: jobId).appending(path: "joined.mp4") }
+
+    /// Puts the indexed file in the partial file's place, once it checked out; nothing when it
+    /// has already taken it.
+    func adoptJoinedFile(for jobId: UUID) throws {
+        let joined = joinedFile(for: jobId)
+        guard FileManager.default.fileExists(atPath: joined.path) else { return }
+        _ = try FileManager.default.replaceItemAt(partialFile(for: jobId), withItemAt: joined)
+    }
+
+    func removeJoinedFile(for jobId: UUID) throws {
+        let joined = joinedFile(for: jobId)
+        if FileManager.default.fileExists(atPath: joined.path) { try FileManager.default.removeItem(at: joined) }
     }
 
     func savePlaylist(_ text: String, for jobId: UUID) throws {
