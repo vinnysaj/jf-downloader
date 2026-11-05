@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 
 /// A show: play the next episode, download a season or all of it, keep it downloaded, and its
@@ -111,6 +112,8 @@ struct SeriesView: View {
             if nextUp != nil, focusedEpisode == nil { focusedAction = .play }
         }
         #endif
+        // Siri knows which show the page is about: "continue watching this".
+        .appEntityIdentifier(EntityIdentifier.title(series))
         .task(id: series.id) { await load() }
         .task(id: seasonId) { await loadEpisodes() }
         .onChange(of: player.endedPlayback) {

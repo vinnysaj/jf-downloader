@@ -75,17 +75,20 @@ extension View {
             .environment(app.settings)
             .environment(app.history)
             .environment(app.messages)
+            .environment(app.links)
             .environment(app.player)
         #else
         environment(app.accounts)
             .environment(app.settings)
             .environment(app.history)
             .environment(app.messages)
+            .environment(app.links)
             .environment(app.player)
             .environment(app.downloads)
             .environment(app.downloadNotifications)
             .environment(app.smartDownloads)
             .environment(app.localLibrary)
+            .environment(app.spotlight)
             #if os(iOS) || os(visionOS)
             .environment(app.backgroundDownloads)
             .environment(app.diagnostics)
@@ -108,16 +111,18 @@ final class AppDelegate: NSObject {
     #endif
     let history = WatchHistory()
     let messages = AppMessages()
+    let links = IncomingLinks()
     #if os(tvOS)
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history)
     #else
-    private(set) lazy var downloadNotifications = DownloadNotifications(settings: settings)
+    private(set) lazy var downloadNotifications = DownloadNotifications(settings: settings, links: links)
     private(set) lazy var downloads = DownloadManager(accounts: accounts, settings: settings, history: history,
                                                       notifications: downloadNotifications)
     private(set) lazy var smartDownloads = SmartDownloads(accounts: accounts, downloads: downloads, settings: settings, history: history)
     let localLibrary = LocalLibrary()
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history,
                                                      downloads: downloads, smartDownloads: smartDownloads, localLibrary: localLibrary)
+    private(set) lazy var spotlight = SpotlightTitles(accounts: accounts, downloads: downloads)
     #endif
     #if os(iOS) || os(visionOS)
     private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads)
@@ -132,18 +137,27 @@ final class AppDelegate: NSObject {
         #if os(iOS) || os(macOS)
         if let problem = accounts.sharingProblem { messages.show(problem) }
         #endif
+        // Siri, Shortcuts, Spotlight and the Downloads control act on these, also with the app in
+        // the background.
+        let accounts = accounts
+        let links = links
+        AppDependencyManager.shared.add(dependency: accounts)
+        AppDependencyManager.shared.add(dependency: links)
         #if !os(tvOS)
         downloadNotifications.start()
+        let settings = settings
+        let history = history
         let downloads = downloads
         let smartDownloads = smartDownloads
-        // Siri, Shortcuts and the Downloads control act on these, also with the app in the background.
-        AppDependencyManager.shared.add(dependency: self.accounts)
-        AppDependencyManager.shared.add(dependency: self.settings)
-        AppDependencyManager.shared.add(dependency: self.history)
+        let spotlight = spotlight
+        AppDependencyManager.shared.add(dependency: settings)
+        AppDependencyManager.shared.add(dependency: history)
         AppDependencyManager.shared.add(dependency: downloads)
         AppDependencyManager.shared.add(dependency: smartDownloads)
+        AppDependencyManager.shared.add(dependency: spotlight)
         Task { await downloads.run() }
         Task { await downloads.trackProgress() }
+        Task { await spotlight.run() }
         #endif
         #if os(iOS) || os(macOS)
         let widgetDownloads = widgetDownloads

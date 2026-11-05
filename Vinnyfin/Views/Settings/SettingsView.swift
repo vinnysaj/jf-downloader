@@ -7,6 +7,7 @@ struct SettingsView: View {
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
     @Environment(DownloadNotifications.self) private var downloadNotifications
+    @Environment(SpotlightTitles.self) private var spotlight
     @Environment(\.openURL) private var openURL
     #endif
     @State private var confirmingSignOut = false
@@ -85,6 +86,7 @@ struct SettingsView: View {
                 whenToDownload
                 storage
                 notifications
+                spotlightSection
                 #endif
                 Section("About") {
                     LabeledContent("Version", value: Self.version)
@@ -193,6 +195,31 @@ struct SettingsView: View {
             Text("Tells you when downloads are ready to watch offline, a show's episodes together, and when one needs you: it failed, there's no room for it, or your server has been out of reach for a while.")
         }
         .task { await downloadNotifications.refreshAuthorization() }
+    }
+
+    /// What Spotlight holds of the server's titles, and why it couldn't be updated.
+    @ViewBuilder private var spotlightSection: some View {
+        if accounts.account != nil || spotlight.problem != nil {
+            Section {
+                if spotlight.isUpdating {
+                    LabeledContent("Spotlight") { ProgressView() }
+                } else if let status = spotlight.status, let account = accounts.account,
+                          status.serverId == account.serverId, status.userId == account.userId {
+                    LabeledContent("In Spotlight", value: status.summary)
+                    LabeledContent("Updated", value: status.refreshedAt.formatted(.relative(presentation: .named)))
+                }
+                if let problem = spotlight.problem {
+                    Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                    if accounts.account != nil {
+                        Button("Try Again") { Task { await spotlight.refreshNow() } }
+                    }
+                }
+            } header: {
+                Text("Spotlight")
+            } footer: {
+                Text("Search on the Home Screen finds your server's movies, shows and episodes and opens them here. A library of up to \(SpotlightPlan.limit.formatted()) goes in whole; a bigger one, what you're watching, have downloaded or made a favourite, what you watched last and what's new. It's brought up to date once a day while vinnyfin is open.")
+            }
+        }
     }
 
     #if os(iOS)

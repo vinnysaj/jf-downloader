@@ -21,7 +21,7 @@ import UIKit
 /// (`beginBackgroundTask`), so it works from a background launch: the session's wake, the
 /// catch-up and continued-processing tasks.
 ///
-/// Tapping one opens its title through `openedLink`, which the root view handles like any
+/// Tapping one opens its title through `IncomingLinks`, which the root view follows like any
 /// vinnyfin:// link.
 @Observable
 final class DownloadNotifications: NSObject, UNUserNotificationCenterDelegate {
@@ -33,8 +33,6 @@ final class DownloadNotifications: NSObject, UNUserNotificationCenterDelegate {
     private static let toldKey = "downloads.notifiedAttention"
     private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "notifications")
 
-    /// A notification's link someone tapped, for the root view to open.
-    var openedLink: URL?
     private(set) var authorizationStatus = UNAuthorizationStatus.notDetermined
     /// Someone said no, in the prompt or in system settings, which is the only place to say yes again.
     var isDenied: Bool { authorizationStatus == .denied }
@@ -42,6 +40,7 @@ final class DownloadNotifications: NSObject, UNUserNotificationCenterDelegate {
     var problem: String?
 
     @ObservationIgnored private let settings: AppSettings
+    @ObservationIgnored private let links: IncomingLinks
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var pendingReady: [DownloadJob] = []
     /// What needs attention, to post once gathering is over.
@@ -56,8 +55,9 @@ final class DownloadNotifications: NSObject, UNUserNotificationCenterDelegate {
     @ObservationIgnored private var told: Set<DownloadAttention>
     @ObservationIgnored private var isRequestingAuthorization = false
 
-    init(settings: AppSettings, defaults: UserDefaults = .standard) {
+    init(settings: AppSettings, links: IncomingLinks, defaults: UserDefaults = .standard) {
         self.settings = settings
+        self.links = links
         self.defaults = defaults
         told = Set((defaults.stringArray(forKey: Self.toldKey) ?? []).compactMap(DownloadAttention.init(key:)))
     }
@@ -215,7 +215,7 @@ final class DownloadNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func open(_ link: URL) {
-        openedLink = link
+        links.open(link)
     }
 }
 

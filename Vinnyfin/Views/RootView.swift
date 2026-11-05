@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 
 struct RootView: View {
@@ -6,6 +7,7 @@ struct RootView: View {
     @Environment(AppMessages.self) private var messages
     @Environment(WatchHistory.self) private var history
     @Environment(AppSettings.self) private var settings
+    @Environment(IncomingLinks.self) private var links
     @Environment(\.scenePhase) private var scenePhase
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
@@ -15,7 +17,7 @@ struct RootView: View {
     #endif
     #if !os(tvOS)
     @Environment(SmartDownloads.self) private var smartDownloads
-    @Environment(DownloadNotifications.self) private var downloadNotifications
+    @Environment(SpotlightTitles.self) private var spotlight
     #endif
     /// A title a link asked to open, for Home to show.
     @State private var linkedItem: JellyfinItem?
@@ -66,14 +68,12 @@ struct RootView: View {
             Text(player.problem ?? "")
         }
         .onOpenURL { url in open(url) }
-        #if !os(tvOS)
-        // A tapped notification opens its title as a link would, launching the app or not.
-        .onChange(of: downloadNotifications.openedLink, initial: true) { _, link in
+        // A tapped notification, Siri, Shortcuts and Spotlight open titles as a link would.
+        .onChange(of: links.pending, initial: true) { _, link in
             guard let link else { return }
-            downloadNotifications.openedLink = nil
+            links.pending = nil
             open(link)
         }
-        #endif
         // Runs while the app is open, and stops as it goes to the background.
         .task(id: scenePhase == .background) {
             guard scenePhase != .background else {
@@ -82,12 +82,16 @@ struct RootView: View {
                 #elseif os(iOS)
                 UpNextWidgets.reload()
                 #endif
+                // What's being watched, which Siri's phrases name, may have changed while it was open.
+                VinnyfinShortcuts.updateAppShortcutParameters()
                 return
             }
             // What was watched offline goes to the server first, so smart downloads plan from it.
             if let session { await history.syncPending(using: session.client, userId: session.userId) }
             #if !os(tvOS)
+            async let spotlightRefresh: Void = spotlight.refreshWhileOpen()
             await smartDownloads.refreshWhileOpen()
+            await spotlightRefresh
             #endif
         }
     }
