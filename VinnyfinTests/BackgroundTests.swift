@@ -178,10 +178,23 @@ struct DownloadNoticeTests {
         cancellation: URLError.BackgroundTaskCancelledReason? = nil,
         refresh: UIBackgroundRefreshStatus = .available,
         lowPower: Bool = false,
+        notKeptRunning: Bool = false,
+        keptRunning: Bool = false,
         dismissed: Set<DownloadNotice> = []
     ) -> [DownloadNotice] {
         DownloadNotice.current(hasActiveDownloads: active, systemCancellation: cancellation, backgroundRefreshStatus: refresh,
-                               isLowPowerModeEnabled: lowPower, dismissed: dismissed)
+                               isLowPowerModeEnabled: lowPower, couldNotKeepRunning: notKeptRunning, isKeptRunning: keptRunning,
+                               dismissed: dismissed)
+    }
+
+    /// While Keep Downloads Running plays, the app isn't suspended, so what suspension would hold
+    /// back isn't said; what the system did to transfers still is.
+    @Test func saysNothingAboutSuspensionWhileKeptRunning() {
+        #expect(notices(notKeptRunning: true) == [.notKeptRunning])
+        #expect(notices(refresh: .denied, lowPower: true, notKeptRunning: true, keptRunning: true).isEmpty)
+        #expect(notices(refresh: .restricted, keptRunning: true).isEmpty)
+        #expect(notices(cancellation: .userForceQuitApplication, lowPower: true, keptRunning: true) == [.closedByUser])
+        #expect(notices(cancellation: .insufficientSystemResources, keptRunning: true) == [.stoppedBySystem])
     }
 
     @Test func showsNothingWithoutActiveDownloads() {

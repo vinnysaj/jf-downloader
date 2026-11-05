@@ -35,8 +35,10 @@ import UIKit
 /// in Settings (`KeepAwakeAudio`); the Live Activity says so while it plays.
 ///
 /// With Background App Refresh off (Low Power Mode turns it off), the system may not launch the
-/// app for any of these, or for finished transfers; `notices` tells the user that, and why the
-/// system cancelled transfers.
+/// app for any of these, or for finished transfers; `notices` tells the user that, when the
+/// system wouldn't keep the app running for downloads someone started, and why the system
+/// cancelled transfers. While Keep Downloads Running plays, the app isn't suspended, so only the
+/// last is told then.
 @Observable
 final class BackgroundDownloads {
     /// Listed under BGTaskSchedulerPermittedIdentifiers in Info.plist, as are the others.
@@ -56,6 +58,9 @@ final class BackgroundDownloads {
     private(set) var isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
     /// Notices the user dismissed. One comes back when what it's about changes.
     private(set) var dismissedNotices: Set<DownloadNotice> = []
+    /// The system wouldn't keep the app running for downloads someone started, to say so until
+    /// dismissed or another continued-processing task starts.
+    private(set) var couldNotKeepRunning = false
     /// Why the system wouldn't give downloads time in the background, to show until dismissed.
     var problem: String?
 
@@ -200,13 +205,16 @@ final class BackgroundDownloads {
 
     // MARK: Notices
 
-    /// What holds downloads back, for the Downloads screen.
+    /// What holds downloads back, for the Downloads screen: not what the app being suspended
+    /// would, while Keep Downloads Running keeps it running.
     func notices(hasActiveDownloads: Bool) -> [DownloadNotice] {
         DownloadNotice.current(
             hasActiveDownloads: hasActiveDownloads,
             systemCancellation: downloads.systemCancellation,
             backgroundRefreshStatus: backgroundRefreshStatus,
             isLowPowerModeEnabled: isLowPowerModeEnabled,
+            couldNotKeepRunning: couldNotKeepRunning,
+            isKeptRunning: keepAwake.isRunning,
             dismissed: dismissedNotices
         )
     }
@@ -218,6 +226,8 @@ final class BackgroundDownloads {
         case .backgroundRefreshOff, .backgroundRefreshRestricted, .lowPowerMode:
             if downloads.systemCancellation == .backgroundUpdatesDisabled { downloads.systemCancellation = nil }
             dismissedNotices.insert(notice)
+        case .notKeptRunning:
+            couldNotKeepRunning = false
         }
     }
 
@@ -341,6 +351,7 @@ final class BackgroundDownloads {
             return
         }
         Self.log.info("Started \(identifier, privacy: .public)")
+        couldNotKeepRunning = false
         task.expirationHandler = { @Sendable [weak self] in
             Task { @MainActor in self?.continuedTaskExpired(identifier) }
         }
@@ -380,8 +391,9 @@ final class BackgroundDownloads {
     }
 
     private func gaveUpContinuing(because reason: String) {
+        Self.log.error("Couldn't keep running in the background for downloads: \(reason, privacy: .public)")
         downloads.forgetUserStartedJobs()
-        problem = "vinnyfin couldn't keep running in the background for these downloads, so they may wait while it's suspended: \(reason)"
+        couldNotKeepRunning = true
     }
     #endif
 }

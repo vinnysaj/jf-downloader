@@ -154,6 +154,8 @@ enum DownloadNotice: String, CaseIterable, Identifiable, Sendable {
     /// Background App Refresh is turned off for this device by Screen Time or a profile.
     case backgroundRefreshRestricted
     case lowPowerMode
+    /// The system wouldn't keep the app running in the background for downloads someone started.
+    case notKeptRunning
 
     var id: Self { self }
 
@@ -164,6 +166,7 @@ enum DownloadNotice: String, CaseIterable, Identifiable, Sendable {
         case .backgroundRefreshOff: "Background App Refresh is off for vinnyfin"
         case .backgroundRefreshRestricted: "Background App Refresh isn't allowed on this \(Device.name)"
         case .lowPowerMode: "Low Power Mode is on"
+        case .notKeptRunning: "vinnyfin couldn't keep running in the background"
         }
     }
 
@@ -183,6 +186,8 @@ enum DownloadNotice: String, CaseIterable, Identifiable, Sendable {
             "Screen Time or a device profile turns it off, so downloads may carry on only while vinnyfin is open."
         case .lowPowerMode:
             "It turns off Background App Refresh, so downloads can stop while vinnyfin is in the background. Keep vinnyfin open, or turn Low Power Mode off in Control Center or Settings › Battery."
+        case .notKeptRunning:
+            "So downloads may wait while it's in the background, until the system lets it run. Keep vinnyfin open, or turn on Keep Downloads Running in vinnyfin's settings."
         }
     }
 
@@ -192,20 +197,34 @@ enum DownloadNotice: String, CaseIterable, Identifiable, Sendable {
         case .stoppedBySystem: "exclamationmark.arrow.triangle.2.circlepath"
         case .backgroundRefreshOff, .backgroundRefreshRestricted: "arrow.clockwise.circle"
         case .lowPowerMode: "battery.25percent"
+        case .notKeptRunning: "moon.zzz"
         }
     }
 
     /// Offers to open the app's page in Settings, where the switch is.
     var opensSettings: Bool { self == .backgroundRefreshOff }
 
+    /// What it says can happen while the app is in the background, which Keep Downloads Running
+    /// keeps from happening while it plays (`KeepAwakeAudio`), rather than what has happened.
+    var isAboutSuspension: Bool {
+        switch self {
+        case .backgroundRefreshOff, .backgroundRefreshRestricted, .lowPowerMode, .notKeptRunning: true
+        case .closedByUser, .stoppedBySystem: false
+        }
+    }
+
     /// The notices to show, in this order, while there are active downloads. With Low Power
     /// Mode on, Background App Refresh reads as off and its switch can't be turned on, so only
-    /// Low Power Mode is mentioned.
+    /// Low Power Mode is mentioned. `couldNotKeepRunning` says the system wouldn't keep the app
+    /// running for downloads someone started; while `isKeptRunning` (Keep Downloads Running
+    /// plays), none of what the app being suspended would hold back is mentioned.
     static func current(
         hasActiveDownloads: Bool,
         systemCancellation: URLError.BackgroundTaskCancelledReason?,
         backgroundRefreshStatus: UIBackgroundRefreshStatus,
         isLowPowerModeEnabled: Bool,
+        couldNotKeepRunning: Bool = false,
+        isKeptRunning: Bool = false,
         dismissed: Set<DownloadNotice>
     ) -> [DownloadNotice] {
         guard hasActiveDownloads else { return [] }
@@ -228,7 +247,8 @@ enum DownloadNotice: String, CaseIterable, Identifiable, Sendable {
             @unknown default: break
             }
         }
-        return notices.filter { !dismissed.contains($0) }
+        if couldNotKeepRunning { notices.append(.notKeptRunning) }
+        return notices.filter { !dismissed.contains($0) && !(isKeptRunning && $0.isAboutSuspension) }
     }
 }
 #endif
