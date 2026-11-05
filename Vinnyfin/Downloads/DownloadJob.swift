@@ -27,6 +27,7 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
     let mediaSourceId: String
     let title: String
     let subtitle: String?
+    /// The version as it was queued, which names the file.
     let versionName: String
     /// Path under Documents without the extension, e.g. "Show/Season 01/Show - S01E02 - Title".
     let destinationStem: String
@@ -127,6 +128,8 @@ nonisolated struct DownloadJob: Codable, Identifiable, Sendable {
 
     var seriesId: String? { item?.seriesId }
     var isEpisode: Bool { item?.isEpisode ?? (subtitle != nil) }
+    /// The version line: a transcode's says what the server made, once it has said.
+    var versionLabel: String { transcode?.label ?? versionName }
     var ignoresRules: Bool { downloadNowAt != nil }
 
     /// A short name for notifications and the system's UI: "Show S01E02" for an episode, else the title.

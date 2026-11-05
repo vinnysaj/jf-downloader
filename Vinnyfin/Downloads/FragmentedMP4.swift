@@ -4,8 +4,9 @@ import Foundation
 /// Reads the box structure of the fragmented MP4 a transcoded download is made of: the init
 /// segment (ftyp, moov) and the pieces after it (styp, moof, mdat). Enough to tell a piece that
 /// came through whole and fits the header from a cut-off, empty or foreign one, where each piece
-/// of the joined file starts and what stretch of the picture it covers, and every sample's size,
-/// timing and place, which `FlattenedMP4` turns into an ordinary MP4's sample tables.
+/// of the joined file starts and what stretch of each track it covers, where a later piece can
+/// take over from its pictures, and every sample's size, timing and place, which `FlattenedMP4`
+/// turns into an ordinary MP4's sample tables.
 ///
 /// Each fragment's samples have to fill its media data exactly, and their insides have to hold
 /// together as far as their lengths tell without decoding: a video sample is NAL units, each after
@@ -41,6 +42,13 @@ nonisolated enum FragmentedMP4 {
             /// sample is presented, before its composition offset.
             var presentationOffset: Int64 = 0
             var format = SampleFormat.opaque
+            /// The picture's transfer characteristics (ITU-T H.273) from its sample entry's colr
+            /// box: 16 is PQ (HDR10), 18 HLG, anything else SDR.
+            var colourTransfer: UInt16?
+            /// How many samples before one its decoder needs, as a roll distance (ISO/IEC 14496-12
+            /// 'roll' sample group): -1 for AAC, whose frames overlap the one before. Nil for
+            /// samples that decode alone.
+            var rollDistance: Int16?
         }
 
         var tracks: [UInt32: Track] = [:]
@@ -49,6 +57,17 @@ nonisolated enum FragmentedMP4 {
         var length: Int64 = 0
 
         var videoTrack: UInt32? { tracks.first { $0.value.isVideo }?.key }
+
+        /// The picture's dynamic range as Jellyfin names it ("SDR", "HDR10", "HLG"), from what the
+        /// header says of its colour; nil when it says nothing.
+        var videoRangeType: String? {
+            guard let transfer = videoTrack.flatMap({ tracks[$0]?.colourTransfer }) else { return nil }
+            return switch transfer {
+            case 16: "HDR10"
+            case 18: "HLG"
+            default: "SDR"
+            }
+        }
     }
 
     struct Sample: Equatable, Sendable {
@@ -73,17 +92,35 @@ nonisolated enum FragmentedMP4 {
         var dataRange: Range<Int> { dataOffset..<(dataOffset + byteCount) }
     }
 
-    /// One piece as found: where it lies, the stretch of the picture it covers in seconds, and
-    /// its samples.
+    /// Where a track's samples in a piece are shown, on the transcode's timeline in the track's
+    /// timescale: each sample's decode time plus its composition offset, less the header's
+    /// presentation offset, so a picture's time is the source's time for it.
+    struct Span: Equatable, Sendable {
+        /// When its earliest sample is shown.
+        var start: Int64
+        /// When its latest sample stops being shown.
+        var end: Int64
+        /// The duration of its first sample in decode order: a frame, or an audio frame.
+        var sampleDuration: Int64
+    }
+
+    /// One piece as found: where it lies, the stretch of each track it covers, and its samples.
     struct Piece: Equatable, Sendable {
         var range: Range<Int64>
-        var videoStart: Double?
-        var videoEnd: Double?
-        var videoSamples = 0
         var fragments = 0
         var runs: [Run] = []
+        var spans: [UInt32: Span] = [:]
+        var videoSamples = 0
+        /// The video's first sample in decode order is a sync sample (a keyframe), which the
+        /// server starts every piece with: decoding can start there, given, for pictures that
+        /// lead it in an open GOP of a copied picture (shown before it, decoded after), the
+        /// pictures before it, which the piece it follows or takes over from has.
+        var startsWithSync = false
+        /// The picture's stretch in seconds.
+        var videoStart: Double?
+        var videoEnd: Double?
 
-        /// No samples at all, as the server sends for a last piece past the end of the picture.
+        /// No samples at all, as the server sends for a piece past the end of the picture.
         var isEmpty: Bool { fragments == 0 || videoSamples == 0 }
         var sampleCount: Int { runs.reduce(0) { $0 + $1.samples.count } }
         var largestSample: UInt32 { runs.lazy.flatMap(\.samples).map(\.size).max() ?? 0 }
@@ -96,6 +133,36 @@ nonisolated enum FragmentedMP4 {
             for index in piece.runs.indices { piece.runs[index].dataOffset += offset }
             return piece
         }
+
+        /// The video's samples in decode order, each with the time it's shown at, as in `Span`.
+        func pictures(header: Header) -> [(sample: Sample, shown: Int64)] {
+            guard let id = header.videoTrack, let track = header.tracks[id] else { return [] }
+            var samples: [(Sample, Int64)] = []
+            for run in runs where run.track == id {
+                var time = run.decodeTime
+                for sample in run.samples {
+                    samples.append((sample, time + Int64(sample.compositionOffset) - track.presentationOffset))
+                    time += Int64(sample.duration)
+                }
+            }
+            return samples
+        }
+    }
+
+    /// The times, in decode order of `samples`, at which a later sample can take over: every
+    /// sample shown before one of them is decoded before every sample shown from it, so the
+    /// samples from there on can be left out without a sample kept missing what it refers to.
+    /// A restarted transcode's piece can follow the pictures kept up to one of these.
+    static func cleanCuts(_ samples: [(sample: Sample, shown: Int64)]) -> [Int64] {
+        var earliestFrom = Array(repeating: Int64.max, count: samples.count + 1)
+        for index in samples.indices.reversed() { earliestFrom[index] = min(samples[index].shown, earliestFrom[index + 1]) }
+        var cuts: [Int64] = []
+        var latestBefore = Int64.min
+        for index in samples.indices {
+            if earliestFrom[index] > latestBefore { cuts.append(earliestFrom[index]) }
+            latestBefore = max(latestBefore, samples[index].shown)
+        }
+        return cuts
     }
 
     // MARK: Header
@@ -170,6 +237,8 @@ nonisolated enum FragmentedMP4 {
                         for stbl in try boxes(in: data, range: child.payload) where stbl.type == "stbl" {
                             for stsd in try boxes(in: data, range: stbl.payload) where stsd.type == "stsd" {
                                 track.format = try sampleFormat(data, stsd.payload)
+                                track.colourTransfer = try colourTransfer(data, stsd.payload)
+                                track.rollDistance = try rollDistance(data, stsd.payload)
                             }
                         }
                     default:
@@ -185,6 +254,8 @@ nonisolated enum FragmentedMP4 {
         merged.timescale = track.timescale
         merged.isVideo = track.isVideo
         merged.format = track.format
+        merged.colourTransfer = track.colourTransfer
+        merged.rollDistance = track.rollDistance
         // The empty edit is in the movie's timescale, which mvhd gave before the tracks.
         let dwell = header.movieTimescale > 0 ? emptyEdit * Int64(track.timescale) / Int64(header.movieTimescale) : 0
         merged.presentationOffset = mediaTime - dwell
@@ -238,6 +309,120 @@ nonisolated enum FragmentedMP4 {
         }
     }
 
+    /// The roll distance of an audio sample entry's samples: -1 for AAC (an mp4a entry whose
+    /// decoder configuration names MPEG-4 audio or MPEG-2 AAC), nil otherwise.
+    private static func rollDistance(_ data: Data, _ payload: Range<Int>) throws -> Int16? {
+        guard payload.count >= 8, let entry = try boxes(in: data, range: (payload.lowerBound + 8)..<payload.upperBound).first,
+              entry.type == "mp4a", let children = boxesInside(data, soundEntry: entry),
+              let esds = try boxes(in: data, range: children).first(where: { $0.type == "esds" }),
+              let configuration = decoderConfiguration(data, esds: esds.payload)
+        else { return nil }
+        return [0x40, 0x66, 0x67, 0x68].contains(data.byte(at: configuration)) ? -1 : nil
+    }
+
+    /// Where a sound sample entry's boxes are: after 28 bytes of fields, QuickTime's versions 1
+    /// and 2 more.
+    private static func boxesInside(_ data: Data, soundEntry entry: Box) -> Range<Int>? {
+        guard entry.payload.count >= 28 else { return nil }
+        let fields = switch data.uint16(at: entry.payload.lowerBound + 8) {
+        case 1: 44
+        case 2: 64
+        default: 28
+        }
+        guard entry.payload.lowerBound + fields <= entry.payload.upperBound else { return nil }
+        return (entry.payload.lowerBound + fields)..<entry.payload.upperBound
+    }
+
+    /// Where an esds box's decoder configuration descriptor (tag 4) has its fields, from its
+    /// objectTypeIndication: after the full box's version and flags, inside an ES descriptor
+    /// (tag 3), each tag followed by a length of up to four bytes.
+    private static func decoderConfiguration(_ data: Data, esds payload: Range<Int>) -> Int? {
+        var at = payload.lowerBound + 4
+        func descriptor(_ tag: UInt8) -> Bool {
+            guard at < payload.upperBound, data.byte(at: at) == tag else { return false }
+            at += 1
+            for _ in 0..<4 {
+                guard at < payload.upperBound else { return false }
+                let byte = data.byte(at: at)
+                at += 1
+                if byte & 0x80 == 0 { break }
+            }
+            return true
+        }
+        guard descriptor(3), at + 3 <= payload.upperBound else { return nil }
+        let flags = data.byte(at: at + 2)
+        at += 3
+        if flags & 0x80 != 0 { at += 2 }
+        if flags & 0x40 != 0, at < payload.upperBound { at += 1 + Int(data.byte(at: at)) }
+        if flags & 0x20 != 0 { at += 2 }
+        guard descriptor(4), at < payload.upperBound else { return nil }
+        return at
+    }
+
+    /// Whether two init segments describe the same tracks, decoded the same way: alike but for
+    /// the bit rates their sample entries give (BitRateBoxes, and an esds box's decoder
+    /// configuration), which only hint at what the samples take. A transcode the server starts
+    /// again works those out afresh, from the samples it starts with, so they differ between
+    /// runs whose pieces join.
+    static func decodeAlike(_ one: Data, _ other: Data) throws -> Bool {
+        try withoutBitRates(one) == withoutBitRates(other)
+    }
+
+    private static func withoutBitRates(_ data: Data) throws -> Data {
+        var masked = data
+        for (entry, isVideo) in try sampleEntries(data) {
+            // A visual sample entry's boxes follow 78 bytes of fields.
+            let inside = isVideo
+                ? (entry.payload.count > 78 ? (entry.payload.lowerBound + 78)..<entry.payload.upperBound : nil)
+                : boxesInside(data, soundEntry: entry)
+            for child in try inside.map({ try boxes(in: data, range: $0) }) ?? [] {
+                var bitRates: Range<Int>?
+                if child.type == "btrt", child.payload.count >= 12 {
+                    bitRates = child.payload.lowerBound..<(child.payload.lowerBound + 12)
+                }
+                // After the object and stream types: the buffer size, the highest bit rate and the average.
+                if child.type == "esds", let configuration = decoderConfiguration(data, esds: child.payload),
+                   configuration + 13 <= child.payload.upperBound {
+                    bitRates = (configuration + 2)..<(configuration + 13)
+                }
+                if let bitRates { masked.replaceSubrange(bitRates, with: Data(count: bitRates.count)) }
+            }
+        }
+        return masked
+    }
+
+    /// Every sample entry in the header, and whether its track is a picture's.
+    private static func sampleEntries(_ data: Data) throws -> [(entry: Box, isVideo: Bool)] {
+        func children(_ box: Box, _ type: String) throws -> [Box] {
+            try boxes(in: data, range: box.payload).filter { $0.type == type }
+        }
+        var entries: [(entry: Box, isVideo: Bool)] = []
+        for moov in try boxes(in: data, range: 0..<data.count) where moov.type == "moov" {
+            for mdia in try children(moov, "trak").flatMap({ try children($0, "mdia") }) {
+                let isVideo = try children(mdia, "hdlr").contains { $0.payload.count >= 12 && data.fourCC(at: $0.payload.lowerBound + 8) == "vide" }
+                let descriptions = try children(mdia, "minf").flatMap { try children($0, "stbl") }.flatMap { try children($0, "stsd") }
+                for stsd in descriptions where stsd.payload.count >= 8 {
+                    entries += try boxes(in: data, range: (stsd.payload.lowerBound + 8)..<stsd.payload.upperBound).map { ($0, isVideo) }
+                }
+            }
+        }
+        return entries
+    }
+
+    /// The transfer characteristics a visual sample entry's colr box names (nclx or nclc).
+    private static func colourTransfer(_ data: Data, _ payload: Range<Int>) throws -> UInt16? {
+        guard payload.count >= 8, let entry = try boxes(in: data, range: (payload.lowerBound + 8)..<payload.upperBound).first,
+              ["avc1", "avc3", "hvc1", "hev1", "dvh1", "dvhe"].contains(entry.type), entry.payload.count > 78
+        else { return nil }
+        for child in try boxes(in: data, range: (entry.payload.lowerBound + 78)..<entry.payload.upperBound) where child.type == "colr" {
+            guard child.payload.count >= 10 else { continue }
+            let kind = data.fourCC(at: child.payload.lowerBound)
+            guard kind == "nclx" || kind == "nclc" else { continue }
+            return UInt16(data.byte(at: child.payload.lowerBound + 6)) << 8 | UInt16(data.byte(at: child.payload.lowerBound + 7))
+        }
+        return nil
+    }
+
     // MARK: Pieces
 
     /// Checks a piece on its own against the header: every box whole, at least one fragment, and
@@ -276,12 +461,7 @@ nonisolated enum FragmentedMP4 {
                 if var piece = current {
                     for run in moof.runs {
                         piece.runs.append(run)
-                        guard let track = header.tracks[run.track], track.isVideo, !run.samples.isEmpty else { continue }
-                        let start = Double(run.decodeTime) / Double(track.timescale)
-                        let end = Double(run.decodeTime &+ run.duration) / Double(track.timescale)
-                        piece.videoStart = min(piece.videoStart ?? start, start)
-                        piece.videoEnd = max(piece.videoEnd ?? end, end)
-                        piece.videoSamples += run.samples.count
+                        if header.tracks[run.track]?.isVideo == true { piece.videoSamples += run.samples.count }
                     }
                     piece.fragments += 1
                     piece.range = piece.range.lowerBound..<Int64(box.range.upperBound)
@@ -299,7 +479,39 @@ nonisolated enum FragmentedMP4 {
         }
         if pendingMoof != nil { throw Problem(message: "The last fragment has no media data.") }
         finish()
-        return pieces
+        return pieces.map { measured($0, header: header) }
+    }
+
+    /// The piece with each track's stretch, and whether it starts with a keyframe.
+    private static func measured(_ piece: Piece, header: Header) -> Piece {
+        var piece = piece
+        for (id, track) in header.tracks {
+            var span: Span?
+            for run in piece.runs where run.track == id {
+                var time = run.decodeTime
+                for sample in run.samples {
+                    let shown = time + Int64(sample.compositionOffset) - track.presentationOffset
+                    let end = shown + Int64(sample.duration)
+                    if var found = span {
+                        found.start = min(found.start, shown)
+                        found.end = max(found.end, end)
+                        span = found
+                    } else {
+                        span = Span(start: shown, end: end, sampleDuration: Int64(sample.duration))
+                    }
+                    time += Int64(sample.duration)
+                }
+            }
+            piece.spans[id] = span
+        }
+        if let id = header.videoTrack, let track = header.tracks[id], let span = piece.spans[id] {
+            let scale = Double(track.timescale)
+            piece.videoStart = Double(span.start) / scale
+            piece.videoEnd = Double(span.end) / scale
+            let first = piece.pictures(header: header).first
+            piece.startsWithSync = first?.sample.isSync ?? false
+        }
+        return piece
     }
 
     /// The samples of a fragment fill its media data, back to back with nothing left over, and
@@ -488,6 +700,43 @@ nonisolated enum FragmentedMP4 {
         return starts
     }
 
+    /// The pieces in `count` bytes that `read` hands over a stretch at a time, from their box and
+    /// fragment headers alone, without their media data, for the stretch each covers and its
+    /// samples' timing: what the pieces of a file being joined are known to hold already.
+    static func outlines(count: Int, from start: Int, header: Header, read: (Range<Int>) throws -> Data) throws -> [Piece] {
+        var pieces: [Piece] = []
+        var cursor = start
+        while cursor + 8 <= count {
+            let boxHeader = try read(cursor..<(cursor + 8))
+            var size = Int(boxHeader.uint32(at: 0))
+            let type = boxHeader.fourCC(at: 4)
+            if size == 1 {
+                guard cursor + 16 <= count else { throw Problem(message: "A box at byte \(cursor) is cut short.") }
+                size = Int(clamping: try read((cursor + 8)..<(cursor + 16)).uint64(at: 0))
+            }
+            guard size >= 8, size <= count - cursor else { throw Problem(message: "The \(type) box at byte \(cursor) is cut short.") }
+            switch type {
+            case "styp":
+                pieces.append(Piece(range: Int64(cursor)..<Int64(cursor + size)))
+            case "moof":
+                let moof = try read(cursor..<(cursor + size))
+                let runs = try readFragment(moof, Box(type: type, range: 0..<size, payload: 8..<size), header: header)
+                guard !pieces.isEmpty else { throw Problem(message: "A fragment at byte \(cursor) belongs to no piece.") }
+                for var run in runs {
+                    run.dataOffset += cursor
+                    pieces[pieces.count - 1].runs.append(run)
+                    if header.tracks[run.track]?.isVideo == true { pieces[pieces.count - 1].videoSamples += run.samples.count }
+                }
+                pieces[pieces.count - 1].fragments += 1
+            default:
+                break
+            }
+            if let last = pieces.indices.last { pieces[last].range = pieces[last].range.lowerBound..<Int64(cursor + size) }
+            cursor += size
+        }
+        return pieces.map { measured($0, header: header) }
+    }
+
     // MARK: Boxes
 
     struct Box {
@@ -523,6 +772,10 @@ nonisolated enum FragmentedMP4 {
 }
 
 nonisolated extension Data {
+    func uint16(at offset: Int) -> UInt16 {
+        withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt16.self) }.bigEndian
+    }
+
     func uint32(at offset: Int) -> UInt32 {
         withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }.bigEndian
     }

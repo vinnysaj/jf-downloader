@@ -116,10 +116,14 @@ nonisolated struct TranscodeRequest: Codable, Equatable, Sendable {
     /// Seconds per piece the server makes (HLS segments).
     var segmentLength: Int
     var runtimeTicks: Int64?
-    /// Frames per second of the source, for telling an empty last piece.
-    var frameRate: Double?
-    /// The source is HDR: an HEVC transcode keeps it, an H.264 one is tone-mapped by the server.
+    /// The source is HDR. The server keeps it only where it copies the picture as it is; where
+    /// it encodes it again, Jellyfin 10.11 maps it to SDR (`tonemapx`), HEVC or not, unless its
+    /// hardware keeps HDR, which the transcode's init segment shows (`TranscodeState.videoRangeType`).
     var isHDR: Bool
+    /// The server is expected to copy the picture as it is: the version's codec, dynamic range,
+    /// size and bitrate all fit what's asked, and nothing is burned in. Nil for downloads queued
+    /// before this was worked out.
+    var copiesPicture: Bool?
 
     /// Three-second pieces: the restart window is 24 / length pieces, so this one leaves the most
     /// room, and seeks in the finished file land on a keyframe at most three seconds away.
@@ -142,8 +146,23 @@ nonisolated struct TranscodeRequest: Codable, Equatable, Sendable {
         burnedSubtitleName = burned.map { $0.title ?? $0.displayTitle ?? $0.language ?? "Subtitles" }
         segmentLength = Self.segmentLength
         runtimeTicks = source.runTimeTicks
-        frameRate = source.videoStream?.realFrameRate ?? source.videoStream?.averageFrameRate
         isHDR = Self.isHDR(source.videoStream)
+        copiesPicture = burned == nil && Self.fitsAsItIs(source.videoStream, maxWidth: maxWidth, maxHeight: maxHeight,
+                                                          bitrate: videoBitrate, sourceBitrate: sourceVideo)
+    }
+
+    /// Whether the server can copy `video` into the transcode as it is, by the device profile
+    /// (`deviceProfile`): HEVC in SDR, HDR10 or HLG, or H.264 in SDR, within the size, at no more
+    /// than the bitrate asked for.
+    static func fitsAsItIs(_ video: MediaStream?, maxWidth: Int, maxHeight: Int, bitrate: Int, sourceBitrate: Int?) -> Bool {
+        guard let video, let width = video.width, let height = video.height, let sourceBitrate else { return false }
+        let range = video.videoRangeType?.uppercased() ?? "SDR"
+        let codecFits = switch video.codec?.lowercased() {
+        case "hevc", "h265": ["SDR", "HDR10", "HLG"].contains(range)
+        case "h264", "avc": range == "SDR"
+        default: false
+        }
+        return codecFits && width <= maxWidth && height <= maxHeight && sourceBitrate <= bitrate
     }
 
     /// What the server is asked to stay under: the video's bitrate plus the audio's, which it
@@ -157,8 +176,9 @@ nonisolated struct TranscodeRequest: Codable, Equatable, Sendable {
         runtimeSeconds.map { Int64(Double(maxStreamingBitrate) * $0 / 8) }
     }
 
-    /// "Transcoded 720p", for the version line.
-    var label: String { "Transcoded \(quality.label)" }
+    /// "Transcoded 720p", for the version line; "Transcoded 720p SDR" for an HDR source the
+    /// server is to encode again.
+    var label: String { "Transcoded \(quality.label)\(isHDR && copiesPicture == false ? " SDR" : "")" }
 
     /// "Transcoded 720p · about 1.2 GB".
     var summary: String {
@@ -224,10 +244,11 @@ nonisolated struct TranscodeRequest: Codable, Equatable, Sendable {
     // MARK: Asking the server
 
     /// What the server is told this download plays: one HLS profile in fragmented MP4, HEVC
-    /// where the server's administrator lets it encode HEVC (it keeps HDR10 and HLG) and H.264
-    /// otherwise (SDR, tone-mapped by the server), the size and bitrate caps, the audio copied
-    /// when it can be, and picture-based subtitles burned in when asked for. Text subtitles are
-    /// fetched as files of their own.
+    /// where the server's administrator lets it encode HEVC and H.264 otherwise, the size and
+    /// bitrate caps, the audio copied when it can be, and picture-based subtitles burned in when
+    /// asked for. HEVC in HDR10 or HLG is allowed so a picture that fits is copied as it is, HDR
+    /// and all; one encoded again comes out SDR (`isHDR`). Text subtitles are fetched as files of
+    /// their own.
     var deviceProfile: DeviceProfile {
         let size = [
             DeviceProfile.ProfileCondition(Condition: "LessThanEqual", Property: "Height", Value: String(maxHeight), IsRequired: true),
@@ -276,7 +297,17 @@ nonisolated struct TranscodeRequest: Codable, Equatable, Sendable {
 extension TranscodeState {
     /// What a piece is expected to weigh, from the bitrates the server settled on.
     var expectedSegmentBytes: Int64 {
-        Int64(Double((videoBitrate ?? request.videoBitrate) + (audioBitrate ?? request.audioBitrate)) * segmentDuration / 8)
+        Int64(Double((videoBitrate ?? request.videoBitrate) + (audioBitrate ?? request.audioBitrate)) * pieceLength / 8)
+    }
+
+    /// The version line: "Transcoded 1080p", with the dynamic range the transcode came in once
+    /// its init segment says, where that's HDR or the source's was ("Transcoded 1080p SDR",
+    /// "Transcoded 2160p HDR10"); until then what the request expects.
+    nonisolated var label: String {
+        guard let videoRangeType else { return request.label }
+        let base = "Transcoded \(request.quality.label)"
+        if videoRangeType != "SDR" { return "\(base) \(videoRangeType)" }
+        return request.isHDR ? "\(base) SDR" : base
     }
 
     /// The stream the server makes, from its playlist: the codec of `CODECS`' first entry
@@ -310,6 +341,10 @@ extension TranscodeState {
             video.width = variantSize?.width ?? video.width
             video.height = variantSize?.height ?? video.height
             video.bitRate = videoBitrate ?? request.videoBitrate
+            if let videoRangeType {
+                video.videoRangeType = videoRangeType
+                video.videoRange = videoRangeType == "SDR" ? "SDR" : "HDR"
+            }
             streams.append(video)
         }
         let audio = request.audioStreamIndex.flatMap { index in original.audioStreams.first { $0.index == index } }

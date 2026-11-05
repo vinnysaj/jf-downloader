@@ -186,7 +186,7 @@ struct DownloadsView: View {
                     .disabled(!unfinished.contains { $0.status == .active })
                     .accessibilityIdentifier("downloads.pauseAll")
                 Button("Resume All", systemImage: "play") { downloads.resumeAll() }
-                    .disabled(!unfinished.contains { $0.status != .active })
+                    .disabled(!unfinished.contains { $0.status == .paused })
                     .accessibilityIdentifier("downloads.resumeAll")
             } label: {
                 Label("More", systemImage: "ellipsis")
@@ -232,7 +232,7 @@ private struct JobRow: View {
                 if let subtitle = job.subtitle {
                     Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
                 }
-                Text(job.versionName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(job.versionLabel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Group {
                     JobProgress(job: job)
                     JobStatusLine(job: job)
@@ -307,7 +307,7 @@ private struct DownloadedRow: View {
                     Text(job.isEpisode ? [job.item?.episodeCode, job.title].compactMap(\.self).joined(separator: " · ") : job.title)
                         .font(.body.weight(.medium))
                         .lineLimit(2)
-                    Text([job.versionName, DownloadManager.bytes(job.storedBytes)].joined(separator: " · "))
+                    Text([job.versionLabel, DownloadManager.bytes(job.storedBytes)].joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

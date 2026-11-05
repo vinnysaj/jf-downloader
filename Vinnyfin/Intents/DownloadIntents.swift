@@ -81,14 +81,14 @@ struct PauseAllDownloadsIntent: AppIntent {
 
 struct ResumeAllDownloadsIntent: AppIntent {
     static let title: LocalizedStringResource = "Resume Downloads"
-    static let description = IntentDescription("Resumes every paused download and retries the ones that stopped.")
+    static let description = IntentDescription("Resumes every paused download. Downloads that stopped wait for Retry in vinnyfin.")
     static let supportedModes: IntentModes = .background
 
     @Dependency private var downloads: DownloadManager
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let count = downloads.jobs.count { $0.status == .paused || $0.status == .failed }
+        let count = downloads.jobs.count { $0.status == .paused }
         downloads.resumeAll()
         return .result(dialog: IntentDialog("\(IntentSummaries.resumed(count))"))
     }

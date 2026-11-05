@@ -270,9 +270,33 @@ struct DownloadsSnapshotTests {
         #expect(snapshot.readyCount == 2)
         #expect(snapshot.current?.title.playLink == URL(string: "vinnyfin://play/first?type=Episode&name=Episode%20first"))
         #expect(snapshot.summary
-            == "Episode first is downloading, 45% done, with 1 more after it. 1 download is paused or stopped. 2 downloads are ready to watch offline.")
+            == "Episode first is downloading, 45% done, with 1 more after it. 1 download is paused. 2 downloads are ready to watch offline.")
         #expect(snapshot.line == "Episode first 45% · 1 more")
         #expect(snapshot.isRunning)
+        #expect(snapshot.pausedCount == 1)
+        #expect(snapshot.stoppedCount == 0)
+    }
+
+    /// Resuming continues what's paused; a download that stopped on a failure waits for Retry in
+    /// the app, which the control and Siri say rather than calling it paused.
+    @Test func tellsStoppedDownloadsFromPausedOnes() throws {
+        let jobs = [job("paused", .paused, minutesIn: 0, done: 100), job("failed", .failed, minutesIn: 1, done: 100)]
+        let snapshot = DownloadsSnapshot(jobs: jobs, receivedBytes: [:], downloadingJobId: nil, isHeldForPlayback: false,
+                                         isNetworkReachable: true, isWatched: { _ in false })
+        #expect(snapshot.pausedCount == 1)
+        #expect(snapshot.stoppedCount == 1)
+        #expect(snapshot.summary == "1 download is paused. 1 download stopped, and waits for Retry in vinnyfin. Nothing new is ready to watch offline.")
+        #expect(snapshot.line == "Downloads paused")
+        let stopped = DownloadsSnapshot(jobs: [jobs[1]], receivedBytes: [:], downloadingJobId: nil, isHeldForPlayback: false,
+                                        isNetworkReachable: true, isWatched: { _ in false })
+        #expect(stopped.line == "Downloads stopped")
+        #expect(!stopped.isRunning)
+        // One an earlier version wrote counts everything that isn't active as paused.
+        var earlier = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any] ?? [:]
+        earlier["pausedCount"] = nil
+        let decoded = try JSONDecoder().decode(DownloadsSnapshot.self, from: JSONSerialization.data(withJSONObject: earlier))
+        #expect(decoded.pausedCount == nil)
+        #expect(decoded.stoppedCount == 0)
     }
 
     /// A download whose bytes arrive says so, though it isn't the file in hand: one queued ahead

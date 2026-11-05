@@ -47,6 +47,7 @@ extension DownloadsSnapshot {
         }
         unfinishedCount = unfinished.count
         activeCount = unfinished.count { $0.status == .active }
+        pausedCount = unfinished.count { $0.status == .paused }
         var seen = Set<String>()
         let finished = jobs.filter { $0.status == .completed && !isWatched($0) }
             .sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
@@ -146,7 +147,9 @@ final class WidgetDownloads: DownloadsRunning {
         }
         do {
             let saved = try await Self.write(snapshot, pictures: pictures, to: folder)
-            let controlChanged = written.map { $0.isRunning != saved.isRunning || $0.unfinishedCount != saved.unfinishedCount } ?? true
+            let controlChanged = written.map {
+                $0.isRunning != saved.isRunning || $0.unfinishedCount != saved.unfinishedCount || $0.pausedCount != saved.pausedCount
+            } ?? true
             written = snapshot
             writtenAt = .now
             WidgetCenter.shared.reloadTimelines(ofKind: DownloadsSnapshot.widgetKind)

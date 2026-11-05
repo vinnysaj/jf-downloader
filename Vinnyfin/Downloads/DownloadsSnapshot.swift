@@ -68,6 +68,12 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
     var unfinishedCount = 0
     /// Downloads that aren't paused or failed.
     var activeCount = 0
+    /// Paused downloads, which resuming continues; the rest that aren't active stopped, and wait
+    /// for Retry in the app. Nil in a snapshot an earlier version of the app wrote.
+    var pausedCount: Int?
+
+    /// Downloads that stopped on a failure.
+    var stoppedCount: Int { unfinishedCount - activeCount - (pausedCount ?? unfinishedCount - activeCount) }
     /// Finished downloads not yet watched, newest first, the first few.
     var ready: [Title] = []
     var readyCount = 0
@@ -119,9 +125,13 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
         } else if unfinishedCount == 0 {
             sentences.append("Nothing is downloading.")
         }
-        let paused = unfinishedCount - activeCount
+        let paused = unfinishedCount - activeCount - stoppedCount
         if paused > 0 {
-            sentences.append(paused == 1 ? "1 download is paused or stopped." : "\(paused) downloads are paused or stopped.")
+            sentences.append(paused == 1 ? "1 download is paused." : "\(paused) downloads are paused.")
+        }
+        if stoppedCount > 0 {
+            sentences.append(stoppedCount == 1 ? "1 download stopped, and waits for Retry in vinnyfin."
+                : "\(stoppedCount) downloads stopped, and wait for Retry in vinnyfin.")
         }
         switch readyCount {
         case 0: sentences.append("Nothing new is ready to watch offline.")
@@ -137,7 +147,8 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
             let progress = current.progress.map { " \($0)" } ?? ""
             return activeCount > 1 ? "\(current.title.title)\(progress) · \(activeCount - 1) more" : "\(current.title.title)\(progress)"
         }
-        if unfinishedCount > 0 { return "Downloads paused" }
+        if unfinishedCount > stoppedCount { return "Downloads paused" }
+        if stoppedCount > 0 { return "Downloads stopped" }
         return readyCount > 0 ? "\(readyCount) ready to watch" : "No downloads"
     }
 
@@ -146,7 +157,7 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
     func differsInMoreThanProgress(from old: DownloadsSnapshot) -> Bool {
         func shape(_ snapshot: DownloadsSnapshot) -> [String] {
             snapshot.downloads.map { "\($0.id) \($0.state.rawValue)" } + snapshot.ready.map(\.id)
-                + ["\(snapshot.unfinishedCount) \(snapshot.activeCount) \(snapshot.readyCount)"]
+                + ["\(snapshot.unfinishedCount) \(snapshot.activeCount) \(snapshot.pausedCount ?? -1) \(snapshot.readyCount)"]
         }
         return shape(self) != shape(old)
     }
