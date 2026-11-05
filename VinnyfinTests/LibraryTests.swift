@@ -275,6 +275,16 @@ struct DownloadsSnapshotTests {
         #expect(snapshot.isRunning)
     }
 
+    /// A download whose bytes arrive says so, though it isn't the file in hand: one queued ahead
+    /// off screen, or finishing its transfers under way after another moved ahead of it.
+    @Test func saysDownloadingWhileBytesArrive() {
+        let jobs = [job("first", .active, minutesIn: 2, done: 450), job("second", .active, minutesIn: 1, done: 100)]
+        let snapshot = DownloadsSnapshot(jobs: jobs, receivedBytes: [:], downloadingJobId: jobs[0].id, transferring: [jobs[1].id],
+                                         isHeldForPlayback: false, isNetworkReachable: true,
+                                         waits: [jobs[1].id: DownloadWait.wifi.status], isWatched: { _ in false })
+        #expect(snapshot.downloads.map(\.state) == [.downloading, .downloading])
+    }
+
     @Test func saysWhyDownloadsWait() {
         let jobs = [job("a", .active, minutesIn: 0, total: nil)]
         let held = DownloadsSnapshot(jobs: jobs, receivedBytes: [:], downloadingJobId: nil, isHeldForPlayback: true,

@@ -382,6 +382,7 @@ final class DownloadManager {
         followAppState()
         followPower()
         followRules()
+        followSignIns()
 
         for task in await session.allTasks {
             guard let download = task as? URLSessionDownloadTask,
@@ -710,6 +711,19 @@ final class DownloadManager {
             }
             guard !Task.isCancelled else { return }
             self?.problem = "vinnyfin can't tell when this \(Device.name) is plugged in, so Only While Charging may hold downloads back."
+        }
+    }
+
+    /// Looks at the queue again, and for missing extras, whenever someone signs in: both need
+    /// the server, so downloads queued while nobody was (a sign-in that ran out, say) wait for it.
+    private func followSignIns() {
+        let accounts = accounts
+        Task { [weak self] in
+            for await account in Observations({ accounts.client == nil ? nil : accounts.account }) where account != nil {
+                guard let self else { return }
+                self.pump()
+                self.fetchExtrasSoon()
+            }
         }
     }
 

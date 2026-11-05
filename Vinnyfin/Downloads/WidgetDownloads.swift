@@ -13,7 +13,7 @@ extension DownloadsSnapshot {
     /// The downloads as they stand now.
     init(_ downloads: DownloadManager, history: WatchHistory) {
         self.init(jobs: downloads.jobs, receivedBytes: downloads.receivedBytes, downloadingJobId: downloads.downloadingJobId,
-                  isHeldForPlayback: downloads.isPausedForPlayback, isNetworkReachable: downloads.isNetworkReachable,
+                  transferring: downloads.transferringJobIds, isHeldForPlayback: downloads.isPausedForPlayback, isNetworkReachable: downloads.isNetworkReachable,
                   waits: downloads.waits.mapValues(\.status), notes: downloads.transcodes.notes(for: downloads.jobs),
                   isWatched: { $0.watchState(local: history.entry(for: $0.itemId)).isWatched })
     }
@@ -21,10 +21,11 @@ extension DownloadsSnapshot {
     /// The unfinished downloads in the order they download, the paused and failed ones after
     /// them, and the finished ones not yet watched, one per title. `waits` says what holds
     /// queued downloads back, in the words of their status lines, and `notes` what the server
-    /// is doing for transcoded ones.
-    init(jobs: [DownloadJob], receivedBytes: [UUID: Int64], downloadingJobId: UUID?, isHeldForPlayback: Bool,
-         isNetworkReachable: Bool, waits: [UUID: String] = [:], notes: [UUID: String] = [:], isWatched: (DownloadJob) -> Bool,
-         now: Date = .now) {
+    /// is doing for transcoded ones. A download whose bytes are arriving (`transferring`) says
+    /// it's downloading, the file in hand or not, as its status line does.
+    init(jobs: [DownloadJob], receivedBytes: [UUID: Int64], downloadingJobId: UUID?, transferring: Set<UUID> = [],
+         isHeldForPlayback: Bool, isNetworkReachable: Bool, waits: [UUID: String] = [:], notes: [UUID: String] = [:],
+         isWatched: (DownloadJob) -> Bool, now: Date = .now) {
         self.init()
         let unfinished = jobs.filter { $0.status != .completed }
         let queue = DownloadJob.queue(jobs)
@@ -36,7 +37,8 @@ extension DownloadsSnapshot {
             case .paused: .paused
             case .failed: .failed
             case .active, .completed:
-                isHeldForPlayback ? .held : !isNetworkReachable ? .waitingForNetwork : wait != nil ? .waiting
+                transferring.contains(job.id) ? .downloading
+                    : isHeldForPlayback ? .held : !isNetworkReachable ? .waitingForNetwork : wait != nil ? .waiting
                     : job.id == downloadingJobId ? .downloading : .queued
             }
             let received = receivedBytes[job.id] ?? job.bytesOnDisk
