@@ -24,6 +24,10 @@ struct RootView: View {
     #endif
     /// A title a link asked to open, for Home to show.
     @State private var linkedItem: JellyfinItem?
+    #if os(iOS)
+    /// The full-screen player is up, until it has finished going away.
+    @State private var playerCovers = false
+    #endif
 
     private var session: ServerSession? { accounts.session }
 
@@ -55,9 +59,16 @@ struct RootView: View {
             #endif
         }
         #else
-        .fullScreenCover(item: $player.presented) { model in
+        .fullScreenCover(item: $player.presented) {
+            #if os(iOS)
+            playerCovers = false
+            #endif
+        } content: { model in
             PlayerView(model: model) { Task { await player.dismiss() } }
                 .environment(\.session, session)
+                #if os(iOS)
+                .onAppear { playerCovers = true }
+                #endif
         }
         #endif
         .alert("Something Went Wrong", isPresented: Binding(get: { messages.current != nil }, set: { if !$0 { messages.current = nil } })) {
@@ -113,11 +124,12 @@ struct RootView: View {
 
     #if os(iOS) || os(macOS)
     /// The remote's screen. On iPhone and iPad it waits for the player that handed its playback
-    /// over to close: a sheet presented over the full-screen player keeps it from closing.
+    /// over to be gone: a sheet presented over the full-screen player keeps it from closing, and
+    /// one presented while it goes takes on its dark appearance on a light sheet.
     private var showsRemoteScreen: Binding<Bool> {
         Binding {
             #if os(iOS)
-            remote.showsScreen && player.presented == nil
+            remote.showsScreen && !playerCovers
             #else
             remote.showsScreen
             #endif

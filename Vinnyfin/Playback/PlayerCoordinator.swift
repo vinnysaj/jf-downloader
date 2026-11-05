@@ -168,9 +168,10 @@ final class PlayerCoordinator {
         return model
     }
 
-    /// Asks the server for the watch state of what was played. A title it can't be asked about
-    /// keeps the state its cards show until they load again.
-    private func endPlayback(of titleIds: Set<String>) async {
+    /// Asks the server for the watch state of what was played, here or on a device this one was
+    /// the remote for. A title it can't be asked about keeps the state its cards show until they
+    /// load again.
+    func endPlayback(of titleIds: Set<String>) async {
         var userData: [String: UserItemData] = [:]
         if let client = accounts.client, let account = accounts.account {
             let userId = account.userId

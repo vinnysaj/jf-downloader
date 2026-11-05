@@ -52,7 +52,15 @@ final class RemoteControl {
     private(set) var target: Target?
     /// The device's session as last seen.
     private(set) var session: RemoteSession?
-    private(set) var phase = RemotePhase.lost("")
+    private(set) var phase = RemotePhase.lost("") {
+        didSet {
+            switch (oldValue, phase) {
+            case (.lost, _): break
+            case (_, .lost): playbackEnded()
+            default: break
+            }
+        }
+    }
     /// When `session` was seen, which the position counts on from while it plays.
     private(set) var seenAt = Date()
     /// Why the last command didn't get through.
@@ -192,23 +200,26 @@ final class RemoteControl {
 
     /// Stops the playback there and stops being its remote.
     func stopPlayback() {
-        command(.stop)
-        disconnect()
+        disconnect(after: command(.stop))
     }
 
     /// Stops the playback there and plays it here from the same second.
     func playHere() {
         guard let session, let item = session.nowPlayingItem else { return }
         let start = position(at: .now)
-        command(.stop)
+        let stop = command(.stop)
         player.open(PlaybackRequest(source: .item(id: item.id, mediaSourceId: session.playState.mediaSourceId), title: item.name,
                                     startingPoint: .init(position: start, audioStreamIndex: session.playState.audioStreamIndex,
                                                          subtitleStreamIndex: session.playState.subtitleStreamIndex)))
-        disconnect()
+        disconnect(after: stop)
     }
 
     /// Stops following the device, which plays on.
     func disconnect() {
+        disconnect(after: nil)
+    }
+
+    private func disconnect(after command: Task<Void, Never>?) {
         followTask?.cancel()
         followTask = nil
         socket.followsSessions = false
@@ -218,12 +229,15 @@ final class RemoteControl {
         session = nil
         error = nil
         showsScreen = false
+        playbackEnded(after: command)
     }
 
-    private func command(_ command: PlaystateCommand, seekTo seconds: Double? = nil, expecting change: (inout RemoteSession) -> Void = { _ in }) {
-        guard let client = accounts.client, let target else { return }
+    @discardableResult
+    private func command(_ command: PlaystateCommand, seekTo seconds: Double? = nil,
+                         expecting change: (inout RemoteSession) -> Void = { _ in }) -> Task<Void, Never>? {
+        guard let client = accounts.client, let target else { return nil }
         expect(change)
-        Task {
+        return Task {
             do {
                 try await client.send(command, toSession: target.sessionId, seekTo: seconds)
                 error = nil
@@ -321,7 +335,26 @@ final class RemoteControl {
     private func update(_ found: RemoteSession) {
         session = found
         seenAt = .now
+        if let item = found.nowPlayingItem {
+            playedTitleIds.insert(item.id)
+            if let seriesId = item.seriesId { playedTitleIds.insert(seriesId) }
+        }
         if let target { phase = phase.next(session: found, targetName: target.name, now: .now) }
+    }
+
+    /// The titles the device played while this followed it, and the shows of its episodes.
+    @ObservationIgnored private var playedTitleIds: Set<String> = []
+
+    /// Has the app's lists and pages load the watch state of what played there, as when a player
+    /// here closes: once the device stopped, or once `command` got to it.
+    private func playbackEnded(after command: Task<Void, Never>? = nil) {
+        let played = playedTitleIds
+        playedTitleIds = []
+        guard !played.isEmpty else { return }
+        Task {
+            await command?.value
+            await player.endPlayback(of: played)
+        }
     }
 }
 

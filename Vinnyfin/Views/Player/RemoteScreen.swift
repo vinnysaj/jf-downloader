@@ -8,8 +8,6 @@ struct RemoteScreen: View {
     @Environment(\.session) private var session
     @Environment(\.dismiss) private var dismiss
     @State private var scrubPosition: Double?
-    /// When the position shown was worked out.
-    @State private var now = Date.now
 
     var body: some View {
         NavigationStack {
@@ -96,36 +94,36 @@ struct RemoteScreen: View {
         }
     }
 
+    /// The player's timeline bar, rather than a Slider: in this sheet a Slider's drag never ends,
+    /// so it never seeks.
     private var timeline: some View {
-        let duration = max(remote.duration, 1)
-        let position = scrubPosition ?? remote.position(at: now)
-        return VStack(spacing: 4) {
-            Slider(value: Binding(get: { min(position, duration) }, set: { scrubPosition = $0 }), in: 0...duration) { editing in
-                if editing {
-                    // Held from the touch: a slider whose value moves under the finger stops tracking it.
-                    scrubPosition = scrubPosition ?? min(position, duration)
-                } else if let scrubPosition {
-                    remote.seek(to: scrubPosition)
-                    self.scrubPosition = nil
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            let duration = max(remote.duration, 1)
+            let time = remote.position(at: context.date)
+            let position = scrubPosition ?? time
+            VStack(spacing: 4) {
+                TimelineBar(time: time, duration: duration, color: .primary, height: scrubPosition == nil ? 6 : 10,
+                            position: $scrubPosition) { remote.seek(to: $0) }
+                    .frame(height: 28)
+                    .disabled(remote.isStarting || remote.duration == 0)
+                    .accessibilityElement()
+                    .accessibilityLabel("Position")
+                    .accessibilityValue("\(Scrubber.format(position)) of \(Scrubber.format(remote.duration))")
+                    .accessibilityAdjustableAction { direction in
+                        switch direction {
+                        case .increment: remote.skip(by: RemoteCommand.skipInterval)
+                        case .decrement: remote.skip(by: -RemoteCommand.skipInterval)
+                        @unknown default: break
+                        }
+                    }
+                    .accessibilityIdentifier("remote.timeline")
+                HStack {
+                    Text(Scrubber.format(position))
+                    Spacer()
+                    Text("-" + Scrubber.format(max(0, remote.duration - position)))
                 }
-            }
-            .disabled(remote.isStarting || remote.duration == 0)
-            .accessibilityLabel("Position")
-            .accessibilityValue(Scrubber.format(position))
-            .accessibilityIdentifier("remote.timeline")
-            HStack {
-                Text(Scrubber.format(position))
-                Spacer()
-                Text("-" + Scrubber.format(max(0, remote.duration - position)))
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-        }
-        // The time moves on twice a second while no finger is on the slider.
-        .task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(0.5))
-                if scrubPosition == nil { now = .now }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
             }
         }
     }

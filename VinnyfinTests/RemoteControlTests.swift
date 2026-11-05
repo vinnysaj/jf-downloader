@@ -224,6 +224,8 @@ struct KnownDeviceTests {
     }
 }
 
+// Apple TV is played to, and is no other device's remote.
+#if os(iOS) || os(macOS)
 struct RemotePhaseTests {
     private let start = Date(timeIntervalSinceReferenceDate: 0)
 
@@ -264,6 +266,7 @@ struct RemotePhaseTests {
         #expect(RemotePhase.playing(lastSeen: start).next(session: nil, targetName: "Den", now: start) == .lost("Den isn't connected anymore."))
     }
 }
+#endif
 
 struct StreamIndexMapTests {
     private func stream(_ type: String, _ index: Int, language: String? = nil, external: Bool = false) -> MediaStream {
