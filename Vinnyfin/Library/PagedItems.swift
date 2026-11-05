@@ -150,6 +150,14 @@ final class PagedItems {
         }
     }
 
+    /// Puts in the watch state a playback left its titles in, where they're loaded.
+    func update(from ended: EndedPlayback) {
+        for (page, items) in pages {
+            let updated = ended.applied(to: items)
+            if updated != items { pages[page] = updated }
+        }
+    }
+
     /// Stops loading: the list is being replaced.
     func cancel() {
         isCancelled = true

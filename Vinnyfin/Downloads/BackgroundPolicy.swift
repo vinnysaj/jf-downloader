@@ -3,6 +3,18 @@ import Foundation
 import UIKit
 
 #if os(iOS)
+extension DownloadWait {
+    /// When downloads waiting for this carry on, for the Live Activity's last words.
+    var carriesOn: String {
+        switch self {
+        case .wifi: "They carry on over Wi-Fi"
+        case .lowDataMode: "They carry on once Low Data Mode is off"
+        case .power: "They carry on once your \(Device.name) is charging"
+        case .space: "They need more space: open vinnyfin"
+        }
+    }
+}
+
 /// What a continued-processing task shows while downloads go on in the background: bytes done
 /// over bytes queued, across every download that was active while the task ran, counted so
 /// the bytes done never go back.
@@ -40,11 +52,13 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
         totalUnitCount = max(total, completedUnitCount)
     }
 
-    /// How the task ends: once nothing is left to download, or as a playback holds the
-    /// downloads, when its progress would stand still. Nil while it has work.
-    func ending(jobs: [DownloadJob], isPausedForPlayback: Bool) -> Ending? {
+    /// How the task ends: once nothing is left to download, or as a playback, the rules or room
+    /// hold back what's left, when its progress would stand still. Nil while it has work.
+    func ending(jobs: [DownloadJob], isPausedForPlayback: Bool, waits: [UUID: DownloadWait]) -> Ending? {
         if isPausedForPlayback { return .heldForPlayback }
-        guard DownloadJob.queue(jobs).isEmpty else { return nil }
+        let queue = DownloadJob.queue(jobs)
+        if let first = queue.first, let wait = waits[first], queue.allSatisfy({ waits[$0] != nil }) { return .waiting(wait) }
+        guard queue.isEmpty else { return nil }
         let mine = jobs.filter { counted[$0.id] != nil }
         let failed = mine.count { $0.status == .failed }
         if failed > 0 { return .failed(count: failed) }
@@ -60,14 +74,25 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
         /// Every download it covered was removed.
         case cancelled
         case heldForPlayback
+        /// What's left waits for what the rules or room hold it back for, the first in the
+        /// queue for this.
+        case waiting(DownloadWait)
 
         /// Only downloads that all came through count as the task succeeding.
         var isSuccess: Bool {
             if case .finished = self { true } else { false }
         }
 
+        /// The downloads go on once what holds them lets go, under a task of their own.
+        var carriesOnLater: Bool {
+            switch self {
+            case .heldForPlayback, .waiting: true
+            case .finished, .paused, .failed, .cancelled: false
+            }
+        }
+
         /// The Live Activity's last words.
-        var text: (title: String, subtitle: String) {
+        @MainActor var text: (title: String, subtitle: String) {
             switch self {
             case .finished(let count):
                 (count == 1 ? "Download finished" : "Downloads finished", "Ready to watch offline in vinnyfin")
@@ -79,36 +104,40 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
                 ("Downloads cancelled", "Nothing is left to download")
             case .heldForPlayback:
                 ("Downloads paused while you watch", "They carry on once you're done")
+            case .waiting(let wait):
+                ("Downloads waiting", wait.carriesOn)
             }
         }
     }
 
-    /// Whether a task should start: the app is in front (the system asks for that), someone
-    /// started downloads that aren't done, and nothing holds them.
-    static func shouldStart(jobs: [DownloadJob], userStartedJobIds: Set<UUID>, isInFront: Bool, isPausedForPlayback: Bool) -> Bool {
-        isInFront && !isPausedForPlayback && !userStartedJobIds.isDisjoint(with: DownloadJob.queue(jobs))
+    /// Whether a task should start: the app is in front (the system asks for that), and someone
+    /// started downloads that aren't done and that neither a playback, the rules nor room hold.
+    static func shouldStart(jobs: [DownloadJob], userStartedJobIds: Set<UUID>, isInFront: Bool, isPausedForPlayback: Bool,
+                            waits: [UUID: DownloadWait]) -> Bool {
+        isInFront && !isPausedForPlayback && DownloadJob.queue(jobs).contains { userStartedJobIds.contains($0) && waits[$0] == nil }
     }
 
-    /// The Live Activity's words while downloading: what's downloading and how much is left.
-    static func text(jobs: [DownloadJob], receivedBytes: [UUID: Int64], isNetworkReachable: Bool) -> (title: String, subtitle: String) {
-        let queue = DownloadJob.queue(jobs).compactMap { id in jobs.first { $0.id == id } }
-        guard let first = queue.first else { return ("Downloading", "Finishing up") }
+    /// The Live Activity's words while downloading: what's downloading and how much is left, and
+    /// that Keep Downloads Running keeps the app running too while it plays.
+    @MainActor static func text(jobs: [DownloadJob], receivedBytes: [UUID: Int64], isNetworkReachable: Bool,
+                     waits: [UUID: DownloadWait], isKeptRunning: Bool) -> (title: String, subtitle: String) {
+        let text = downloadingText(jobs: jobs, receivedBytes: receivedBytes, isNetworkReachable: isNetworkReachable, waits: waits)
+        return isKeptRunning ? (text.title, "\(text.subtitle) · Kept running") : text
+    }
+
+    @MainActor private static func downloadingText(jobs: [DownloadJob], receivedBytes: [UUID: Int64], isNetworkReachable: Bool,
+                                                   waits: [UUID: DownloadWait]) -> (title: String, subtitle: String) {
+        let queue = DownloadJob.queued(jobs)
+        guard let first = queue.first(where: { waits[$0.id] == nil }) ?? queue.first else { return ("Downloading", "Finishing up") }
         let title = queue.count == 1 ? "Downloading \(first.shortName)" : "Downloading \(first.shortName) and \(queue.count - 1) more"
         guard isNetworkReachable else { return (title, "Waiting for a network connection") }
+        if let wait = waits[first.id] { return (title, wait.status) }
         let sizes = queue.map(\.displayTotalBytes)
         guard !sizes.contains(nil) else { return (title, "Starting") }
         let left = queue.reduce(Int64(0)) { total, job in
             total + max(0, (job.displayTotalBytes ?? 0) - (receivedBytes[job.id] ?? job.completed.byteCount))
         }
         return (title, "\(left.formatted(.byteCount(style: .file))) left")
-    }
-}
-
-nonisolated extension DownloadJob {
-    /// A short name for the system's UI: "Show S01E02" for an episode, else the title.
-    var shortName: String {
-        guard isEpisode, let series = item?.seriesName else { return title }
-        return [series, item?.episodeCode].compactMap(\.self).joined(separator: " ")
     }
 }
 #endif

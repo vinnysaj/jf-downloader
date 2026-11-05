@@ -111,6 +111,10 @@ struct SeriesView: View {
         #endif
         .task(id: series.id) { await load() }
         .task(id: seasonId) { await loadEpisodes() }
+        .onChange(of: player.endedPlayback) {
+            similar = player.endedPlayback.applied(to: similar)
+            Task { await reloadWatchState() }
+        }
     }
 
     // MARK: Actions
@@ -154,6 +158,9 @@ struct SeriesView: View {
             .focused($focusedAction, equals: .watched)
             #endif
         FavoriteButton(item: shown) { detail = $0 }
+        if let nextUp {
+            PlayElsewhereButton(subject: .title(nextUp, mediaSourceId: nil))
+        }
     }
 
     private func playLabel(for episode: JellyfinItem) -> String {
@@ -334,11 +341,34 @@ struct SeriesView: View {
         episodeWindow = FocusWindow()
         #endif
         do {
-            episodes = try await session.client.episodes(seriesId: series.id, seasonId: seasonId, userId: session.userId,
-                                                         fields: "Overview,PrimaryImageAspectRatio")
+            episodes = try await seasonEpisodes(seasonId, session: session)
         } catch {
             if !error.isCancellation { loadError = "Couldn't load the episodes: \(error.localizedDescription)" }
         }
+    }
+
+    /// What a playback that ended changed: the show's watched state, where it goes on, and the
+    /// season's episodes, kept on screen and selected as they are while they load.
+    private func reloadWatchState() async {
+        guard let session else { return }
+        do {
+            async let detail = session.client.item(id: series.id, userId: session.userId)
+            async let nextUp = session.client.nextUp(userId: session.userId, seriesId: series.id, limit: 1)
+            if let seasonId {
+                let loaded = try await seasonEpisodes(seasonId, session: session)
+                if seasonId == self.seasonId { episodes = loaded }
+            }
+            self.detail = try await detail
+            self.nextUp = try await nextUp.items.first
+        } catch {
+            guard !error.isCancellation else { return }
+            loadError = "Couldn't load the show: \(error.localizedDescription)"
+        }
+    }
+
+    private func seasonEpisodes(_ seasonId: String, session: ServerSession) async throws -> [JellyfinItem] {
+        try await session.client.episodes(seriesId: series.id, seasonId: seasonId, userId: session.userId,
+                                          fields: "Overview,PrimaryImageAspectRatio")
     }
 }
 

@@ -20,10 +20,10 @@ struct PlayerView: View {
     let onClose: () -> Void
 
     @Environment(\.scenePhase) private var scenePhase
-    #if os(visionOS)
     @Environment(PlayerCoordinator.self) private var coordinator
-    #endif
     @State private var controlsVisible = true
+    /// Play On and SharePlay are up. Here rather than with the controls, which come and go under them.
+    @State private var showsPlayElsewhere = false
     @State private var hideTask: Task<Void, Never>?
     @State private var scrubPosition: Double?
     @State private var fillsScreen = false
@@ -103,13 +103,14 @@ struct PlayerView: View {
                 PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
                                bottomBarTop: $bottomBarTop, topBarBottom: $topBarBottom,
                                onClose: onClose, onInteraction: {}, pictureInPicture: pictureInPictureAction,
-                               isBelowFold: true)
+                               playElsewhere: playElsewhereAction, isBelowFold: true)
                     .padding(.top, fold.maxY)
                     .ignoresSafeArea(edges: .top)
             } else if controlsVisible {
                 PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
                                bottomBarTop: $bottomBarTop, topBarBottom: $topBarBottom,
-                               onClose: onClose, onInteraction: scheduleHide, pictureInPicture: pictureInPictureAction)
+                               onClose: onClose, onInteraction: scheduleHide, pictureInPicture: pictureInPictureAction,
+                               playElsewhere: playElsewhereAction)
                     .transition(.opacity)
             }
             #endif
@@ -229,6 +230,17 @@ struct PlayerView: View {
         .onChange(of: model.notice) { _, notice in
             if let notice { AccessibilityNotification.Announcement(notice).post() }
         }
+        // Another device asked this one to stop.
+        .onChange(of: coordinator.stopRequest) { _, request in
+            guard request == model.id else { return }
+            coordinator.stopRequest = nil
+            onClose()
+        }
+        #if !os(tvOS)
+        .sheet(isPresented: $showsPlayElsewhere) {
+            PlayElsewhereSheet(subject: .playback(model), onHandedOver: onClose)
+        }
+        #endif
 
         .task {
             #if !os(tvOS)
@@ -265,7 +277,7 @@ struct PlayerView: View {
     private var controlsOrnament: some View {
         PlayerControls(model: model, scrubPosition: $scrubPosition, fillsScreen: $fillsScreen, panel: $panel,
                        bottomBarTop: $bottomBarTop, topBarBottom: $topBarBottom,
-                       onClose: onClose, onInteraction: scheduleHide, pictureInPicture: nil)
+                       onClose: onClose, onInteraction: scheduleHide, pictureInPicture: nil, playElsewhere: playElsewhereAction)
             .padding(.top, 24)
     }
     #endif
@@ -314,6 +326,15 @@ struct PlayerView: View {
         pictureInPicture.isPossible ? { pictureInPicture.toggle() } : nil
         #else
         nil
+        #endif
+    }
+
+    /// For a server title. On Apple TV, SharePlay starts from a title's page.
+    private var playElsewhereAction: (() -> Void)? {
+        #if os(tvOS)
+        nil
+        #else
+        model.item != nil ? { showsPlayElsewhere = true } : nil
         #endif
     }
 

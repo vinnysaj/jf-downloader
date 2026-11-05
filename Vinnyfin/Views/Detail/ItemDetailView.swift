@@ -36,7 +36,8 @@ struct ItemDetailView: View {
     @State private var detail: JellyfinItem?
     @State private var similar: [JellyfinItem] = []
     @State private var loadError: String?
-    /// A version the user picked; nil lets playback and downloads choose by quality.
+    /// A version the user picked, for plays and downloads from this page; nil lets them choose by
+    /// quality. It isn't kept: every other playback starts with the version the quality allows.
     @State private var pickedSourceId: String?
     #if os(tvOS)
     @FocusState private var playFocused: Bool
@@ -83,6 +84,11 @@ struct ItemDetailView: View {
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
         .handoffPage(shown)
         .task(id: item.id) { await load() }
+        // A playback that ended moved where the title resumes, or finished it.
+        .onChange(of: player.endedPlayback) {
+            similar = player.endedPlayback.applied(to: similar)
+            Task { await loadDetail() }
+        }
         #if os(tvOS)
         // Focus starts on Play, also for a page opened from a link at launch, while focus is
         // still in the sidebar. Coming back to the page leaves focus where it was.
@@ -122,6 +128,7 @@ struct ItemDetailView: View {
         #endif
         WatchedButton(item: shown) { detail = $0 }
         FavoriteButton(item: shown) { detail = $0 }
+        PlayElsewhereButton(subject: .title(shown, mediaSourceId: pickedSourceId))
     }
 
     private var versions: some View {
@@ -132,7 +139,7 @@ struct ItemDetailView: View {
             }
             .padding()
             .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 16))
-            Text("Plays and downloads use the version picked here. Without a pick, they choose the one closest to your quality settings.")
+            Text("Plays and downloads from this page use the version picked here. Everywhere else, and once you leave the page, they start with the one closest to your quality settings.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -141,6 +148,18 @@ struct ItemDetailView: View {
     }
 
     private func load() async {
+        await loadDetail()
+        guard let session else { return }
+        do {
+            similar = try await session.client.similar(to: item.titleId, userId: session.userId)
+        } catch {
+            guard !error.isCancellation else { return }
+            similar = []
+            loadError = loadError ?? "Couldn't load titles like this one: \(error.localizedDescription)"
+        }
+    }
+
+    private func loadDetail() async {
         guard let session else { return }
         do {
             detail = try await session.client.item(id: item.id, userId: session.userId)
@@ -148,13 +167,6 @@ struct ItemDetailView: View {
         } catch {
             guard !error.isCancellation else { return }
             loadError = "Couldn't load the details: \(error.localizedDescription)"
-        }
-        do {
-            similar = try await session.client.similar(to: item.titleId, userId: session.userId)
-        } catch {
-            guard !error.isCancellation else { return }
-            similar = []
-            loadError = loadError ?? "Couldn't load titles like this one: \(error.localizedDescription)"
         }
     }
 }

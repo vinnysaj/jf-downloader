@@ -41,6 +41,8 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var primaryImageAspectRatio: Double?
     var userData: UserItemData?
     var mediaSources: [MediaSource]?
+    /// How many versions the item has, when a list was asked for it.
+    var mediaSourceCount: Int?
     var people: [Person]?
     var chapters: [Chapter]?
 
@@ -59,7 +61,7 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
         case parentLogoImageTag = "ParentLogoImageTag", parentThumbItemId = "ParentThumbItemId"
         case parentThumbImageTag = "ParentThumbImageTag", seriesPrimaryImageTag = "SeriesPrimaryImageTag"
         case primaryImageAspectRatio = "PrimaryImageAspectRatio", userData = "UserData"
-        case mediaSources = "MediaSources", people = "People", chapters = "Chapters"
+        case mediaSources = "MediaSources", mediaSourceCount = "MediaSourceCount", people = "People", chapters = "Chapters"
     }
 
     init(id: String, name: String, type: String) {
@@ -149,6 +151,46 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     }
 
     var lastPlayedDate: Date? { userData?.lastPlayedDate.flatMap(JellyfinDate.parse) }
+}
+
+// MARK: Versions
+
+/// A movie or an episode can come in several versions, each an item of its own. Library lists
+/// show only the item the versions belong to, whose own version the server lists first; it
+/// keeps a position for each version, marks them all watched when one is finished, and lists
+/// the version partway through and played last ahead of the item's own. Resume and Next Up
+/// name the version itself. Gelato's streams are versions too, and it orders them the same way.
+/// The app gives the item the position of a version it plays (`UserDataUpdate.init(positionOf:)`),
+/// which makes the item the one played last; another client's playback leaves it on the version.
+nonisolated extension JellyfinItem {
+    /// The version the server lists ahead of the item's own: the one partway through and played
+    /// last. Nil when the item's own version leads, or when the item is a version listing itself.
+    var versionPlayedLast: MediaSource? {
+        guard let sources = mediaSources, let first = sources.first, first.id != id,
+              sources.contains(where: { $0.id == id }) else { return nil }
+        return first
+    }
+
+    /// The item as it plays and shows: its own version first and the rest in the server's
+    /// order, and the position of the version played last, whose user data `playedLast` is.
+    /// That version stays ahead of the rest: where it stands among them in the server's own
+    /// order shows in no listing while it holds the position.
+    func withOwnVersionFirst(positionFrom playedLast: UserItemData) -> JellyfinItem {
+        var item = self
+        if let sources = mediaSources {
+            item.mediaSources = sources.filter { $0.id == id } + sources.filter { $0.id != id }
+        }
+        var data = userData ?? UserItemData()
+        data.playbackPositionTicks = playedLast.playbackPositionTicks
+        data.playedPercentage = playedLast.playedPercentage
+        item.userData = data
+        return item
+    }
+
+    /// The item in `listed` that this one is, or is a version of.
+    func listedItem(among listed: [JellyfinItem]) -> JellyfinItem? {
+        listed.first { $0.id == id } ?? listed.first { $0.mediaSources?.contains { $0.id == id } == true }
+    }
 }
 
 nonisolated struct UserItemData: Codable, Hashable, Sendable {

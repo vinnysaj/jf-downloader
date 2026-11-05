@@ -65,6 +65,7 @@ struct LibraryGridView: View {
     let list: BrowseList
 
     @Environment(\.session) private var session
+    @Environment(PlayerCoordinator.self) private var player
     /// The list's query as the menu has changed it; nil for a list that isn't a query.
     @State private var query: JellyfinClient.ItemQuery?
     @State private var items: PagedItems?
@@ -147,6 +148,7 @@ struct LibraryGridView: View {
         }
         #endif
         .task(id: source) { await load(startingOver: true) }
+        .onChange(of: player.endedPlayback) { items?.update(from: player.endedPlayback) }
         .task { await loadFilters() }
         .refreshable { await load(startingOver: false) }
     }

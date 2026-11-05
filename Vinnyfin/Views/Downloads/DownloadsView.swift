@@ -6,12 +6,15 @@ import UniformTypeIdentifiers
 /// video files from elsewhere. Works with or without a connection.
 struct DownloadsView: View {
     @Environment(DownloadManager.self) private var downloads
+    @Environment(DownloadNotifications.self) private var downloadNotifications
     @Environment(SmartDownloads.self) private var smartDownloads
     @Environment(LocalLibrary.self) private var localLibrary
     @Environment(WatchHistory.self) private var history
     @Environment(PlayerCoordinator.self) private var player
+    @Environment(AppSettings.self) private var settings
     #if os(iOS) || os(visionOS)
     @Environment(BackgroundDownloads.self) private var backgroundDownloads
+    @Environment(KeepAwakeAudio.self) private var keepAwake
     #endif
     @Environment(\.openURL) private var openURL
     @State private var importing = false
@@ -39,11 +42,24 @@ struct DownloadsView: View {
             List {
                 problems
                 #if os(iOS) || os(visionOS)
+                KeepAwakeLine()
                 BackgroundNotices(hasActiveDownloads: unfinished.contains { $0.status == .active })
                 #endif
+                spaceNotice
                 if !unfinished.isEmpty {
-                    Section("Downloading") {
-                        ForEach(unfinished) { job in JobRow(job: job) }
+                    Section {
+                        ForEach(unfinished) { job in JobRow(job: job, isFirst: job.id == unfinished.first?.id) }
+                            .onMove { from, to in
+                                var order = unfinished.map(\.id)
+                                order.move(fromOffsets: from, toOffset: to)
+                                downloads.reorderUnfinished(order)
+                            }
+                    } header: {
+                        Text("Downloading")
+                    } footer: {
+                        if unfinished.count > 1 {
+                            Text("Downloads go one at a time, in this order. Drag one to move it, or choose Download Next.")
+                        }
                     }
                 }
                 if !smartDownloads.rules.isEmpty {
@@ -97,11 +113,13 @@ struct DownloadsView: View {
         var messages: [(String, () -> Void)?] = [
             downloads.problem.map { ($0, { downloads.problem = nil }) },
             smartDownloads.problem.map { ($0, { smartDownloads.problem = nil }) },
+            downloadNotifications.problem.map { ($0, { downloadNotifications.problem = nil }) },
             history.problem.map { ($0, { history.problem = nil }) },
             localLibrary.problem.map { ($0, { localLibrary.problem = nil }) },
         ]
         #if os(iOS) || os(visionOS)
         messages.append(backgroundDownloads.problem.map { ($0, { backgroundDownloads.problem = nil }) })
+        messages.append(keepAwake.problem.map { ($0, { keepAwake.problem = nil }) })
         #endif
         return messages.compactMap(\.self)
     }
@@ -118,10 +136,33 @@ struct DownloadsView: View {
         }
     }
 
+    /// What to do when downloads wait for room.
+    @ViewBuilder private var spaceNotice: some View {
+        if downloads.waits.values.contains(where: { if case .space = $0 { true } else { false } }) {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Not enough space for downloads", systemImage: "externaldrive.badge.exclamationmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text("Downloads wait until there's room. \(StorageBudget.advice(hasLimit: settings.downloadStorageLimit > 0)) \(StorageUsage.deletionPolicy)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+                .accessibilityIdentifier("notice.space")
+            }
+        }
+    }
+
     @ViewBuilder private var storageSummary: some View {
-        LabeledContent("Downloads Use", value: DownloadManager.bytes(downloads.storageUsed))
+        StorageUsage()
         if let free = downloads.availableCapacity() {
             LabeledContent("Free on This \(Device.name)", value: DownloadManager.bytes(free))
+        }
+        if let freed = downloads.lastFreed {
+            Text("To make room, \(freed.date.formatted(.relative(presentation: .named))) vinnyfin deleted \(ListFormatter.localizedString(byJoining: freed.titles)), watched since \(freed.titles.count == 1 ? "it was" : "they were") downloaded (\(DownloadManager.bytes(freed.bytes))).")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -135,17 +176,16 @@ struct DownloadsView: View {
                 Button("Show in \(FinishedFiles.browser)", systemImage: "folder") {
                     openURL(FinishedFiles.browserURL(for: downloads.finishedFolder))
                 }
-                Button("Pause All", systemImage: "pause") {
-                    for job in unfinished where job.status == .active { downloads.pause(job.id) }
-                }
-                .disabled(!unfinished.contains { $0.status == .active })
-                Button("Resume All", systemImage: "play") {
-                    for job in unfinished where job.status != .active { downloads.resume(job.id) }
-                }
-                .disabled(!unfinished.contains { $0.status != .active })
+                Button("Pause All", systemImage: "pause") { downloads.pauseAll() }
+                    .disabled(!unfinished.contains { $0.status == .active })
+                    .accessibilityIdentifier("downloads.pauseAll")
+                Button("Resume All", systemImage: "play") { downloads.resumeAll() }
+                    .disabled(!unfinished.contains { $0.status != .active })
+                    .accessibilityIdentifier("downloads.resumeAll")
             } label: {
                 Label("More", systemImage: "ellipsis")
             }
+            .accessibilityIdentifier("downloads.more")
         }
     }
 
@@ -168,7 +208,14 @@ struct DownloadsView: View {
 /// A download that hasn't finished, with its progress and controls.
 private struct JobRow: View {
     let job: DownloadJob
+    /// First in the list, so first to download.
+    let isFirst: Bool
     @Environment(DownloadManager.self) private var downloads
+
+    /// The network or Only While Charging holds it back, which Download Now lifts.
+    private var mayDownloadNow: Bool {
+        job.status == .active && downloads.waits[job.id]?.isRule == true
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -197,6 +244,9 @@ private struct JobRow: View {
             switch job.status {
             case .active:
                 Button("Pause", systemImage: "pause") { downloads.pause(job.id) }.tint(.orange)
+                if mayDownloadNow {
+                    Button("Download Now", systemImage: "arrow.down.to.line") { downloads.downloadNow(job.id) }.tint(.blue)
+                }
             case .paused:
                 Button("Resume", systemImage: "play") { downloads.resume(job.id) }.tint(.green)
             case .failed:
@@ -206,6 +256,12 @@ private struct JobRow: View {
             }
         }
         .contextMenu {
+            if mayDownloadNow {
+                Button("Download Now", systemImage: "arrow.down.to.line") { downloads.downloadNow(job.id) }
+            }
+            if !isFirst {
+                Button("Download Next", systemImage: "text.line.first.and.arrowtriangle.forward") { downloads.downloadNext(job.id) }
+            }
             switch job.status {
             case .active:
                 Button("Pause", systemImage: "pause") { downloads.pause(job.id) }
@@ -331,6 +387,51 @@ private struct SmartRuleRow: View {
 }
 
 #if os(iOS) || os(visionOS)
+/// Keep Downloads Running while it's on its way, with a way to stop it.
+private struct KeepAwakeLine: View {
+    @Environment(KeepAwakeAudio.self) private var keepAwake
+    @Environment(DownloadManager.self) private var downloads
+    @Environment(AppSettings.self) private var settings
+
+    private var title: String {
+        if !keepAwake.plan.isPlaying { return "Keeps vinnyfin running again once you're done watching" }
+        if DownloadJob.queue(downloads.jobs).isEmpty { return "Downloads are done, and vinnyfin keeps running until you stop it" }
+        return settings.keepPlayingAfterDownloads ? "Keeping vinnyfin running until you stop it" : "Keeping vinnyfin running until downloads finish"
+    }
+
+    var body: some View {
+        if keepAwake.plan.isStarted {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(title, systemImage: "waveform")
+                        .font(.subheadline.weight(.semibold))
+                        .accessibilityIdentifier("keepAwake.status")
+                    if case .failed(let failure) = keepAwake.sound {
+                        Text("Couldn't use your sound, so it plays silence instead. \(failure.message)")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("keepAwake.soundProblem")
+                    } else if keepAwake.isMuted, keepAwake.sound.file != nil {
+                        Text("Your sound is silent while the headphones it played on are disconnected.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 20) {
+                        Button("Stop") { keepAwake.stop() }
+                            .accessibilityIdentifier("keepAwake.stop")
+                        if keepAwake.isMuted, keepAwake.sound.file != nil {
+                            Button("Play Sound Here") { keepAwake.unmute() }
+                        }
+                    }
+                    .font(.footnote.weight(.medium))
+                    .buttonStyle(.borderless)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+}
+
 /// What holds downloads back outside the app, with what to do about it.
 private struct BackgroundNotices: View {
     let hasActiveDownloads: Bool
@@ -366,6 +467,31 @@ private struct BackgroundNotices: View {
     }
 }
 #endif
+
+/// How much room downloads take, against the storage limit when there is one.
+struct StorageUsage: View {
+    @Environment(DownloadManager.self) private var downloads
+    @Environment(AppSettings.self) private var settings
+
+    static let deletionPolicy = "Downloads you've watched are deleted to make room by themselves; unwatched and partly watched ones never are."
+
+    var body: some View {
+        let used = downloads.storageUsed
+        let limit = DownloadRules(settings).storageLimit
+        VStack(alignment: .leading, spacing: 6) {
+            LabeledContent("Downloads Use") {
+                Text(limit.map { "\(DownloadManager.bytes(used)) of \(DownloadManager.bytes($0))" } ?? DownloadManager.bytes(used))
+                    .monospacedDigit()
+            }
+            if let limit {
+                ProgressView(value: Double(min(used, limit)), total: Double(limit))
+                    .tint(used >= limit ? .orange : .accentColor)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("storage.usage")
+    }
+}
 
 /// Artwork saved with a download, shown from disk so it works offline.
 struct OfflineArtwork: View {

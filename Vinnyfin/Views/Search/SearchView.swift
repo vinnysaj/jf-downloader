@@ -9,6 +9,7 @@ struct SearchView: View {
     #endif
 
     @Environment(\.session) private var session
+    @Environment(PlayerCoordinator.self) private var player
     @State private var text = ""
     /// The search field has the cursor.
     @State private var fieldIsActive = false
@@ -31,7 +32,7 @@ struct SearchView: View {
                               items: episodes, cardWidth: Metrics.landscapeWidth) { item in
                             NavigationLink(value: item) { LandscapeCard(item: item) }
                                 .buttonStyle(.artwork)
-                                .contextMenu { ItemContextMenu(item: item) }
+                                .contextMenu { ItemContextMenu(item: item, onChange: replace) }
                         }
                     }
                 }
@@ -58,7 +59,21 @@ struct SearchView: View {
             #endif
             .itemDestinations()
             .task(id: text) { await search() }
+            .onChange(of: player.endedPlayback) {
+                let ended = player.endedPlayback
+                movies = ended.applied(to: movies)
+                shows = ended.applied(to: shows)
+                episodes = ended.applied(to: episodes)
+            }
         }
+    }
+
+    /// Swaps in a result whose watch state changed.
+    private func replace(_ item: JellyfinItem) {
+        let swap = { (result: JellyfinItem) in result.id == item.id ? item : result }
+        movies = movies.map(swap)
+        shows = shows.map(swap)
+        episodes = episodes.map(swap)
     }
 
     @ViewBuilder private func results(_ list: BrowseList, _ items: [JellyfinItem]) -> some View {
@@ -66,7 +81,7 @@ struct SearchView: View {
             Shelf(title: list.title, seeAll: list, items: items, cardWidth: Metrics.posterWidth) { item in
                 NavigationLink(value: item) { PosterCard(item: item) }
                     .buttonStyle(.artwork)
-                    .contextMenu { ItemContextMenu(item: item) }
+                    .contextMenu { ItemContextMenu(item: item, onChange: replace) }
             }
         }
     }

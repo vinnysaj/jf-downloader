@@ -4,6 +4,9 @@ import AppKit
 #else
 import UIKit
 #endif
+#if os(visionOS)
+import GroupActivities
+#endif
 
 @main
 struct VinnyfinApp: App {
@@ -81,6 +84,8 @@ extension View {
             .environment(app.history)
             .environment(app.messages)
             .environment(app.player)
+            .environment(app.socket)
+            .environment(app.sharePlay)
         #else
         environment(app.accounts)
             .environment(app.knownServers)
@@ -88,12 +93,19 @@ extension View {
             .environment(app.history)
             .environment(app.messages)
             .environment(app.player)
+            .environment(app.socket)
+            .environment(app.sharePlay)
             .environment(app.downloads)
+            .environment(app.downloadNotifications)
             .environment(app.smartDownloads)
             .environment(app.localLibrary)
             #if os(iOS) || os(visionOS)
             .environment(app.backgroundDownloads)
+            .environment(app.keepAwake)
             .environment(app.diagnostics)
+            #endif
+            #if os(iOS) || os(macOS)
+            .environment(app.remote)
             #endif
         #endif
     }
@@ -111,15 +123,25 @@ final class AppDelegate: NSObject {
     #if os(tvOS)
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history)
     #else
-    private(set) lazy var downloads = DownloadManager(accounts: accounts)
+    private(set) lazy var downloadNotifications = DownloadNotifications(settings: settings)
+    private(set) lazy var downloads = DownloadManager(accounts: accounts, settings: settings, history: history,
+                                                      notifications: downloadNotifications)
     private(set) lazy var smartDownloads = SmartDownloads(accounts: accounts, downloads: downloads, settings: settings, history: history)
     let localLibrary = LocalLibrary()
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history,
                                                      downloads: downloads, smartDownloads: smartDownloads, localLibrary: localLibrary)
     #endif
     #if os(iOS) || os(visionOS)
-    private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads)
+    private(set) lazy var keepAwake = KeepAwakeAudio(downloads: downloads, settings: settings, accounts: accounts)
+    private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads,
+                                                                    keepAwake: keepAwake)
     let diagnostics = AppDiagnostics()
+    #endif
+    /// Jellyfin's remote control: other devices play to this one, and this one to them.
+    let socket = SessionSocket()
+    private(set) lazy var sharePlay = SharePlay(accounts: accounts, player: player)
+    #if os(iOS) || os(macOS)
+    private(set) lazy var remote = RemoteControl(accounts: accounts, socket: socket, player: player)
     #endif
 
     private func launched() {
@@ -128,7 +150,14 @@ final class AppDelegate: NSObject {
         Task { await cloudSync.run() }
         let knownServers = knownServers
         Task { await knownServers.followSignIns() }
+        let player = player
+        player.sharePlay = sharePlay
+        socket.onCommand = { command in player.perform(command) }
+        // From launch, so a session started on FaceTime before the app opened is joined.
+        let sharePlay = sharePlay
+        Task { await sharePlay.run() }
         #if !os(tvOS)
+        downloadNotifications.start()
         let downloads = downloads
         Task { await downloads.run() }
         Task { await downloads.trackProgress() }
@@ -137,6 +166,8 @@ final class AppDelegate: NSObject {
         backgroundDownloads.registerLaunchHandlers()
         let backgroundDownloads = backgroundDownloads
         Task { await backgroundDownloads.run() }
+        let keepAwake = keepAwake
+        Task { await keepAwake.run() }
         let diagnostics = diagnostics
         Task { await diagnostics.run() }
         #endif
@@ -220,6 +251,8 @@ struct PlayerWindow: View {
         // Shaped like the picture, which then fills it edge to edge, at any size it's pulled to.
         .aspectRatio(pictureAspectRatio, contentMode: .fit)
         .frame(minWidth: 640, idealWidth: 1280, maxWidth: 3200)
+        // Watching together, the Spatial Personas gather around this window.
+        .groupActivityAssociation(.primary(PlayerWindow.id))
         #endif
         .navigationTitle(model?.title ?? request?.title ?? "vinnyfin")
         .onAppear {

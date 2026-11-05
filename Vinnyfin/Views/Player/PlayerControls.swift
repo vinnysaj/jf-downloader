@@ -19,7 +19,10 @@ struct PlayerControls: View {
     let onInteraction: () -> Void
     /// Nil when Picture in Picture isn't possible right now.
     let pictureInPicture: (() -> Void)?
+    /// Opens Play On and SharePlay; nil when the playback is only this device's, or on Apple TV.
+    let playElsewhere: (() -> Void)?
     var isBelowFold = false
+    @Environment(SharePlay.self) private var sharePlay
     #if os(tvOS)
     /// The controls the remote moves between. Moving counts as using them, so they stay up.
     private enum Control: Hashable {
@@ -138,6 +141,19 @@ struct PlayerControls: View {
             .padding(.top, 6)
             Spacer()
             FormatBadge(model: model).padding(.top, 6)
+            if let playElsewhere {
+                Button {
+                    playElsewhere()
+                    onInteraction()
+                } label: {
+                    Image(systemName: PlayElsewhereSheet.symbol(sharePlay)).font(.headline).frame(width: 22, height: 22)
+                }
+                .buttonStyle(.platformGlass)
+                .buttonBorderShape(.circle)
+                .controlSize(.large)
+                .accessibilityLabel(PlayElsewhereSheet.title)
+                .accessibilityIdentifier("player.playElsewhere")
+            }
             #if os(iOS) || os(macOS)
             RoutePicker()
             if let pictureInPicture {
@@ -360,32 +376,8 @@ struct Scrubber: View {
         let duration = max(model.duration, 1)
         let time = position ?? model.clock.time
         VStack(spacing: 6) {
-            GeometryReader { geometry in
-                let width = geometry.size.width
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.25))
-                    Capsule().fill(.white.opacity(0.4))
-                        .frame(width: width * min(1, max(0, model.clock.buffered / duration)))
-                    Capsule().fill(.white)
-                        .frame(width: width * min(1, max(0, time / duration)))
-                }
-                .frame(height: barHeight)
-                .frame(maxHeight: .infinity)
-                #if !os(tvOS)
-                .contentShape(.rect)
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            position = min(duration, max(0, value.location.x / width * duration))
-                            onInteraction()
-                        }
-                        .onEnded { _ in
-                            if let position { model.seek(to: position) }
-                            self.position = nil
-                        }
-                )
-                #endif
-            }
+            TimelineBar(time: model.clock.time, buffered: model.clock.buffered, duration: duration, color: .white,
+                        height: barHeight, position: $position, onDrag: onInteraction) { model.seek(to: $0) }
             #if os(visionOS)
             // Tall enough to look at and pinch, and lit under the eyes as a slider is.
             .frame(height: 44)
@@ -458,5 +450,47 @@ struct Scrubber: View {
         let minutes = (total / 60) % 60
         let secs = total % 60
         return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, secs) : String(format: "%d:%02d", minutes, secs)
+    }
+}
+
+/// A timeline's bar: how far along and how much is buffered, with, but on Apple TV, a handle to
+/// drag. `position` follows the drag, and `onSeek` gets where it let go.
+struct TimelineBar: View {
+    let time: Double
+    var buffered: Double = 0
+    let duration: Double
+    let color: Color
+    let height: CGFloat
+    @Binding var position: Double?
+    var onDrag: () -> Void = {}
+    let onSeek: (Double) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(color.opacity(0.25))
+                Capsule().fill(color.opacity(0.4))
+                    .frame(width: width * min(1, max(0, buffered / duration)))
+                Capsule().fill(color)
+                    .frame(width: width * min(1, max(0, (position ?? time) / duration)))
+            }
+            .frame(height: height)
+            .frame(maxHeight: .infinity)
+            #if !os(tvOS)
+            .contentShape(.rect)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        position = min(duration, max(0, value.location.x / width * duration))
+                        onDrag()
+                    }
+                    .onEnded { _ in
+                        if let position { onSeek(position) }
+                        self.position = nil
+                    }
+            )
+            #endif
+        }
     }
 }

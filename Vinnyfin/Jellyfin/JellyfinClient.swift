@@ -39,6 +39,12 @@ nonisolated extension Error {
 nonisolated struct JellyfinClient: Sendable {
     static let clientName = "vinnyfin"
 
+    /// The app's name to the server, with the platform's, as Jellyfin's own apps give theirs:
+    /// "vinnyfin tvOS". Other devices tell vinnyfin on Apple TV apart by it.
+    static func clientName(for platform: Device.Platform) -> String {
+        "\(clientName) \(platform.rawValue)"
+    }
+
     let serverURL: URL
     let deviceId: String
     /// What the server's device list calls this device.
@@ -205,29 +211,83 @@ nonisolated struct JellyfinClient: Sendable {
         }
     }
 
-    /// The item with its media sources. Behind Gelato this is also the call that makes the
-    /// server look up the item's streams, so it can take a few seconds.
+    /// The item with its versions, its own first, and the position of the version played last.
+    /// Behind Gelato this is also the call that makes the server look up the item's streams, so
+    /// it can take a few seconds.
     func item(id: String, userId: String) async throws -> JellyfinItem {
-        try await get("Items/\(id)", query: ["userId": userId, "fields": Self.detailFields])
+        try await withOwnVersionFirst(get("Items/\(id)", query: ["userId": userId, "fields": Self.detailFields]), userId: userId)
     }
 
+    /// What's partway through, each as the item library lists show, at the position reached last.
     func resumeItems(userId: String, startIndex: Int = 0, limit: Int = 20) async throws -> ItemsPage {
-        try await get("UserItems/Resume", query: [
+        try await listedItems(in: get("UserItems/Resume", query: [
             "userId": userId, "startIndex": String(startIndex), "limit": String(limit), "mediaTypes": "Video",
-            "fields": Self.listFields, "enableUserData": "true", "imageTypeLimit": "1",
+            "fields": Self.listFields + ",MediaSourceCount", "enableUserData": "true", "imageTypeLimit": "1",
             "enableImageTypes": "Primary,Backdrop,Thumb,Logo",
-        ])
+        ]), userId: userId)
     }
 
-    /// The next episode to watch of every show in progress, or of one show.
+    /// The next episode to watch of every show in progress, or of one show, each as the item
+    /// library lists show, at the position reached last.
     func nextUp(userId: String, seriesId: String? = nil, startIndex: Int = 0, limit: Int = 20) async throws -> ItemsPage {
         var query = [
-            "userId": userId, "startIndex": String(startIndex), "limit": String(limit), "fields": Self.listFields,
-            "enableUserData": "true", "imageTypeLimit": "1", "enableImageTypes": "Primary,Backdrop,Thumb,Logo",
-            "enableResumable": "true", "disableFirstEpisode": "false",
+            "userId": userId, "startIndex": String(startIndex), "limit": String(limit),
+            "fields": Self.listFields + ",MediaSourceCount", "enableUserData": "true", "imageTypeLimit": "1",
+            "enableImageTypes": "Primary,Backdrop,Thumb,Logo", "enableResumable": "true", "disableFirstEpisode": "false",
         ]
         if let seriesId { query["seriesId"] = seriesId }
-        return try await get("Shows/NextUp", query: query)
+        return try await listedItems(in: get("Shows/NextUp", query: query), userId: userId)
+    }
+
+    // MARK: Versions
+
+    /// The item with its own version first and the position of the version played last, when
+    /// the server lists another version ahead of the item's own (see `JellyfinItem.versionPlayedLast`).
+    private func withOwnVersionFirst(_ item: JellyfinItem, userId: String) async throws -> JellyfinItem {
+        guard let playedLast = item.versionPlayedLast else { return item }
+        return item.withOwnVersionFirst(positionFrom: try await userData(itemId: playedLast.id, userId: userId))
+    }
+
+    /// The page with each item that has versions replaced by the item library lists show for it,
+    /// at the position of its version played last. Resume names the version partway through, and
+    /// Next Up can name the version of the next episode matching the one played, either of which
+    /// can be an alternate version: an item of its own, whose page and playback are that version's.
+    private func listedItems(in page: ItemsPage, userId: String) async throws -> ItemsPage {
+        let versioned = page.items.filter { ($0.mediaSourceCount ?? 0) > 1 }
+        guard !versioned.isEmpty else { return page }
+        let types = Array(Set(versioned.map(\.type)))
+        var listed = try await self.listed(ids: versioned.map(\.id), types: types, userId: userId)
+        let alternates = versioned.filter { item in !listed.contains { $0.id == item.id } }
+        if !alternates.isEmpty {
+            // An alternate version lists every version of its item, the item's own among them.
+            let versionIds = try await withThrowingTaskGroup(of: [String].self) { group in
+                for alternate in alternates {
+                    group.addTask {
+                        let detail: JellyfinItem = try await get("Items/\(alternate.id)", query: ["userId": userId, "fields": "MediaSources"])
+                        return detail.mediaSources?.map(\.id) ?? []
+                    }
+                }
+                return try await group.reduce(into: Set<String>()) { $0.formUnion($1) }
+            }
+            let known = Set(listed.map(\.id))
+            listed += try await self.listed(ids: versionIds.subtracting(known).sorted(), types: types, userId: userId)
+        }
+        let shown = try await withThrowingTaskGroup(of: JellyfinItem.self) { group in
+            for item in listed {
+                group.addTask { try await withOwnVersionFirst(item, userId: userId) }
+            }
+            return try await group.reduce(into: [JellyfinItem]()) { $0.append($1) }
+        }
+        return ItemsPage(items: page.items.map { $0.listedItem(among: shown) ?? $0 }, totalRecordCount: page.totalRecordCount)
+    }
+
+    /// Those of `ids` that library lists show, with their versions.
+    private func listed(ids: [String], types: [String], userId: String) async throws -> [JellyfinItem] {
+        guard !ids.isEmpty else { return [] }
+        var query = ItemQuery(types: types)
+        query.ids = ids
+        query.fields = Self.listFields + ",MediaSources"
+        return try await items(userId: userId, query).items
     }
 
     func similar(to itemId: String, userId: String, limit: Int = 16) async throws -> [JellyfinItem] {
@@ -271,6 +331,15 @@ nonisolated struct JellyfinClient: Sendable {
         return page.items.dropFirst().first { $0.parentIndexNumber != 0 }
     }
 
+    /// The episode before `episodeId` in the show's order, if there is one.
+    func episode(before episodeId: String, seriesId: String, userId: String) async throws -> JellyfinItem? {
+        let page: ItemsPage = try await get("Shows/\(seriesId)/Episodes", query: [
+            "userId": userId, "adjacentTo": episodeId, "enableUserData": "true", "fields": Self.listFields,
+        ])
+        guard let index = page.items.firstIndex(where: { $0.id == episodeId }), index > 0 else { return nil }
+        return page.items[index - 1]
+    }
+
     /// Every kind of segment; `MediaSegment.skipTitle` picks the ones worth skipping. Jellyfin's
     /// type filter wants the parameter repeated, and answers a comma-separated list with a 400.
     func mediaSegments(itemId: String) async throws -> [MediaSegment] {
@@ -288,15 +357,21 @@ nonisolated struct JellyfinClient: Sendable {
         try await send("UserFavoriteItems/\(itemId)", method: favorite ? "POST" : "DELETE", query: ["userId": userId])
     }
 
-    /// Writes a position and played state recorded while the server couldn't be reached.
-    func updateUserData(itemId: String, userId: String, positionTicks: Int64, played: Bool, lastPlayed: Date) async throws {
-        struct Body: Encodable {
-            let PlaybackPositionTicks: Int64
-            let Played: Bool
-            let LastPlayedDate: String
-        }
-        let body = Body(PlaybackPositionTicks: positionTicks, Played: played, LastPlayedDate: JellyfinDate.format(lastPlayed))
-        try await send("UserItems/\(itemId)/UserData", method: "POST", query: ["userId": userId], body: body)
+    /// Writes what `update` gives of an item's user data. It goes through none of the rules a
+    /// playback report does, such as clearing a position in the first few percent.
+    func updateUserData(itemId: String, userId: String, _ update: UserDataUpdate) async throws {
+        try await send("UserItems/\(itemId)/UserData", method: "POST", query: ["userId": userId], body: update)
+    }
+
+    func userData(itemId: String, userId: String) async throws -> UserItemData {
+        try await get("UserItems/\(itemId)/UserData", query: ["userId": userId])
+    }
+
+    /// Gives an item the position the server keeps for its version `versionId`, which was just
+    /// reported (see `UserDataUpdate.init(positionOf:)`).
+    func givePosition(ofVersion versionId: String, toItem itemId: String, userId: String) async throws {
+        let version = try await userData(itemId: versionId, userId: userId)
+        try await updateUserData(itemId: itemId, userId: userId, UserDataUpdate(positionOf: version))
     }
 
     // MARK: Playback
@@ -321,6 +396,52 @@ nonisolated struct JellyfinClient: Sendable {
     /// Ends the server's transcode for a play session.
     func stopTranscoding(playSessionId: String) async throws {
         try await send("Videos/ActiveEncodings", method: "DELETE", query: ["deviceId": deviceId, "playSessionId": playSessionId])
+    }
+
+    // MARK: Remote control
+
+    /// Says what this session plays and obeys. With the socket open, other devices can then
+    /// play here and control what plays.
+    func reportCapabilities(_ capabilities: ClientCapabilities) async throws {
+        try await send("Sessions/Capabilities/Full", method: "POST", body: capabilities)
+    }
+
+    /// The sessions the user can play to and control: those whose apps hold a socket open.
+    func controllableSessions(userId: String) async throws -> [RemoteSession] {
+        try await get("Sessions", query: ["controllableByUserId": userId])
+    }
+
+    /// Asks a session to play an item now, from `start` seconds, in a version and with streams
+    /// when given; -1 for the subtitles turns them off.
+    func play(itemId: String, onSession sessionId: String, start: Double, mediaSourceId: String?,
+              audioStreamIndex: Int?, subtitleStreamIndex: Int?) async throws {
+        var query = ["playCommand": "PlayNow", "itemIds": itemId, "startPositionTicks": String(Int64(max(0, start) * 10_000_000))]
+        if let mediaSourceId { query["mediaSourceId"] = mediaSourceId }
+        if let audioStreamIndex { query["audioStreamIndex"] = String(audioStreamIndex) }
+        if let subtitleStreamIndex { query["subtitleStreamIndex"] = String(subtitleStreamIndex) }
+        try await send("Sessions/\(sessionId)/Playing", method: "POST", query: query)
+    }
+
+    func send(_ command: PlaystateCommand, toSession sessionId: String, seekTo seconds: Double? = nil) async throws {
+        var query: [String: String] = [:]
+        if let seconds { query["seekPositionTicks"] = String(Int64(max(0, seconds) * 10_000_000)) }
+        try await send("Sessions/\(sessionId)/Playing/\(command.rawValue)", method: "POST", query: query)
+    }
+
+    func send(_ command: GeneralCommand, toSession sessionId: String) async throws {
+        try await send("Sessions/\(sessionId)/Command", method: "POST", body: command)
+    }
+
+    /// The server's socket, signed in as this client, over which it sends commands and updates.
+    var socketRequest: URLRequest {
+        var url = serverURL.appending(path: "socket")
+        if var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.scheme = serverURL.scheme?.lowercased() == "https" ? "wss" : "ws"
+            url = components.url ?? url
+        }
+        var request = URLRequest(url: url)
+        request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
+        return request
     }
 
     // MARK: URLs
@@ -362,7 +483,7 @@ nonisolated struct JellyfinClient: Sendable {
 
     var authorizationHeader: String {
         var fields = [
-            "Client": Self.clientName,
+            "Client": Self.clientName(for: .current),
             "Device": deviceName,
             "DeviceId": deviceId,
             "Version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
@@ -447,6 +568,31 @@ nonisolated struct PlaybackReport: Encodable, Sendable {
     var CanSeek = true
     var AudioStreamIndex: Int?
     var SubtitleStreamIndex: Int?
+}
+
+/// A change to an item's user data. The server writes what's given and leaves the rest as it is.
+nonisolated struct UserDataUpdate: Encodable, Sendable {
+    let PlaybackPositionTicks: Int64
+    var Played: Bool?
+    var LastPlayedDate: String?
+
+    init(positionTicks: Int64, played: Bool?, lastPlayed: Date?) {
+        PlaybackPositionTicks = positionTicks
+        Played = played
+        LastPlayedDate = lastPlayed.map(JellyfinDate.format)
+    }
+
+    /// An item's share of what the server keeps for one of its versions, just reported: that
+    /// version's position, and a play just after the version's, so the server takes the item for
+    /// the version played last. Every list and every other client then shows the item's own
+    /// position, and the server lists the item's own version first and names the item itself in
+    /// Resume and Next Up. The watched state isn't given: finishing a version already marks every
+    /// version watched and clears their positions, and the item then gets no position.
+    init(positionOf version: UserItemData) {
+        // A second on, as the date is given to the second and the version's has a fraction.
+        self.init(positionTicks: version.playbackPositionTicks ?? 0, played: nil,
+                  lastPlayed: version.lastPlayedDate.flatMap(JellyfinDate.parse)?.addingTimeInterval(1))
+    }
 }
 
 nonisolated struct PlaybackInfoRequest: Encodable, Sendable {

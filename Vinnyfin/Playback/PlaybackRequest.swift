@@ -11,24 +11,39 @@ nonisolated struct PlaybackRequest: Codable, Hashable, Identifiable, Sendable {
         case file(bookmark: Data, name: String)
     }
 
+    /// Where, and with which of the server's streams, another device asked this one to start, in
+    /// place of the resume position and the language settings.
+    struct StartingPoint: Codable, Hashable, Sendable {
+        var position: Double
+        var audioStreamIndex: Int?
+        /// -1 turns the subtitles off; nil leaves them to the subtitle setting.
+        var subtitleStreamIndex: Int?
+        /// The title's resume position wins when it's later, as for a playback another of the
+        /// person's devices handed off: it may have been watched further somewhere since.
+        var yieldsToLaterResume = false
+    }
+
     var id = UUID()
     let source: Source
     /// Shown while the player gets ready.
     var title: String
     var startFromBeginning = false
-    /// Where another of the person's devices had got to, for a playback continued from it.
-    var continuingFrom: Double?
+    var startingPoint: StartingPoint?
 
+    /// `continuingFrom` is where another of the person's devices had got to, for a playback it
+    /// handed off.
     static func item(_ item: JellyfinItem, mediaSourceId: String? = nil, fromBeginning: Bool = false,
-                     continuingFrom: Double? = nil) -> PlaybackRequest {
-        PlaybackRequest(source: .item(id: item.id, mediaSourceId: mediaSourceId), title: item.name,
-                        startFromBeginning: fromBeginning, continuingFrom: continuingFrom)
+                     continuingFrom position: Double? = nil) -> PlaybackRequest {
+        PlaybackRequest(source: .item(id: item.id, mediaSourceId: mediaSourceId), title: item.name, startFromBeginning: fromBeginning,
+                        startingPoint: position.map { StartingPoint(position: $0, yieldsToLaterResume: true) })
     }
 
-    /// Where to resume: at `resume`, or where another device had got to when that's later.
+    /// Where to start, given where the title resumes: there, unless another device asked for
+    /// somewhere else.
     func start(resuming resume: Double?) -> Double? {
-        guard let continuingFrom else { return resume }
-        return max(continuingFrom, resume ?? 0)
+        guard let startingPoint else { return resume }
+        guard startingPoint.yieldsToLaterResume else { return startingPoint.position }
+        return max(startingPoint.position, resume ?? 0)
     }
 
     /// Bookmarks a file the user picked. The caller holds access to it while this runs.
@@ -199,7 +214,6 @@ struct PlaybackResolver {
             let serverDate = item?.lastPlayedDate ?? .distantPast
             if local.updatedAt > serverDate { start = local.played ? nil : (local.position > 0 ? local.position : nil) }
         }
-        start = request.start(resuming: start)
         let reporting = accounts.client.map { _ in
             ResolvedPlayback.Reporting(itemId: itemId, mediaSourceId: item?.mediaSources?.first?.id,
                                        playSessionId: Self.newPlaySessionId(), playMethod: "DirectPlay")
@@ -211,7 +225,7 @@ struct PlaybackResolver {
             subtitle: item.flatMap(Self.subtitle),
             item: item,
             mediaSource: item?.mediaSources?.first,
-            startPosition: request.startFromBeginning ? nil : Self.resumable(start, length: length),
+            startPosition: request.start(resuming: request.startFromBeginning ? nil : Self.resumable(start, length: length)),
             duration: length,
             externalSubtitles: Self.sidecarSubtitles(for: copy.url),
             historyKey: itemId,
@@ -233,19 +247,21 @@ struct PlaybackResolver {
             quality: settings.streamingQuality, allowTranscoding: settings.allowTranscoding
         ) else { throw PlaybackError.noVersions }
 
+        // Where the version played last got to, whichever version plays now.
         var start = request.startFromBeginning ? nil : item.resumeSeconds
         if !request.startFromBeginning, let local = history.entry(for: itemId), local.needsSync, !local.played {
             start = local.position > 0 ? local.position : start
         }
-        start = request.start(resuming: start)
 
-        let resume = Self.resumable(start, length: plan.source.runtimeSeconds ?? item.runtimeSeconds)
+        let asked = request.startingPoint
+        let resume = request.start(resuming: Self.resumable(start, length: plan.source.runtimeSeconds ?? item.runtimeSeconds))
         switch plan {
         case .direct(let source):
             return try direct(item: item, source: source, start: resume)
         case .transcode(let source, let quality):
-            let audioIndex = Self.preferredAudioIndex(in: source, language: settings.audioLanguage)
-            let subtitleIndex = Self.preferredSubtitleIndex(in: source, audioIndex: audioIndex, settings: settings)
+            let audioIndex = asked?.audioStreamIndex ?? Self.preferredAudioIndex(in: source, language: settings.audioLanguage)
+            let subtitleIndex = asked?.subtitleStreamIndex.map { $0 < 0 ? nil : $0 }
+                ?? Self.preferredSubtitleIndex(in: source, audioIndex: audioIndex, settings: settings)
             return try await transcode(item: item, source: source, quality: quality, audioIndex: audioIndex,
                                        subtitleIndex: subtitleIndex, start: resume)
         }
@@ -319,7 +335,7 @@ struct PlaybackResolver {
     }
 
     /// A resume position, unless it's at or past the end of this version, which happens when the
-    /// position was left in a longer one: the server keeps one position per title.
+    /// position was reached in a longer one: a title resumes where its version played last got to.
     static func resumable(_ start: Double?, length: Double?) -> Double? {
         guard let start, start > 0 else { return nil }
         guard let length, length > 0 else { return start }

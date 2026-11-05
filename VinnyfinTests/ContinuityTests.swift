@@ -136,15 +136,22 @@ struct HandoffTests {
         let plain = PlaybackRequest.item(Samples.movie)
         #expect(plain.start(resuming: 300) == 300)
         #expect(plain.start(resuming: nil) == nil)
+        // A device that plays what another one asks starts where it asked, wherever the title resumes.
+        let asked = PlaybackRequest(source: .item(id: Samples.movie.id, mediaSourceId: nil), title: "",
+                                    startingPoint: .init(position: 600))
+        #expect(asked.start(resuming: 900) == 600)
     }
 }
 
 struct SettingsSyncTests {
     @Test func settingsThatSuitOneDeviceStayOnIt() {
-        for key in ["settings.streamingQuality", "settings.downloadQuality", "settings.smartDownloadCount", "settings.matchContent"] {
+        for key in ["settings.streamingQuality", "settings.smartDownloadCount", "settings.downloadStorageLimit",
+                    "settings.downloadOverCellular", "settings.downloadOnlyWhileCharging", "settings.keepDownloadsRunning",
+                    "settings.keepPlayingAfterDownloads", "settings.matchContent"] {
             #expect(!AppSettings.syncs(key), "\(key)")
         }
-        for key in ["settings.appearance", "settings.allowTranscoding", "settings.adaptiveQuality", "settings.deleteWatchedEpisodes",
+        for key in ["settings.appearance", "settings.allowTranscoding", "settings.adaptiveQuality", "settings.downloadQuality",
+                    "settings.deleteWatchedEpisodes", "settings.keepDownloadsRunningSound", "settings.downloadNotifications",
                     "settings.autoplayNextEpisode", "settings.showSkipIntro", "settings.audioLanguage", "settings.subtitleLanguage",
                     "settings.subtitleMode", "settings.subtitleScale"] {
             #expect(AppSettings.syncs(key), "\(key)")
@@ -177,7 +184,9 @@ struct SettingsSyncTests {
         settings.subtitleMode = .always
         settings.streamingQuality = .fullHD
         settings.smartDownloadCount = 3
-        #expect(cloud.writes == ["settings.appearance", "settings.subtitleMode"])
+        settings.downloadStorageLimit = 50
+        settings.downloadQuality = .hd
+        #expect(cloud.writes == ["settings.appearance", "settings.subtitleMode", "settings.downloadQuality"])
         #expect(cloud.values["settings.appearance"] as? String == "dark")
     }
 

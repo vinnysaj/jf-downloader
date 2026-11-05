@@ -3,9 +3,15 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(AccountStore.self) private var accounts
+    @Environment(SessionSocket.self) private var socket
     @Environment(\.dismiss) private var dismiss
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
+    @Environment(DownloadNotifications.self) private var downloadNotifications
+    @Environment(\.openURL) private var openURL
+    #endif
+    #if os(iOS) || os(visionOS)
+    @Environment(KeepAwakeAudio.self) private var keepAwake
     #endif
     @State private var confirmingSignOut = false
 
@@ -80,6 +86,12 @@ struct SettingsView: View {
                     Text("Downloads are always the original file: the version closest to this quality. Watched episodes are deleted once they're watched here or on any of your devices.")
                     #endif
                 }
+                whenToDownload
+                #if os(iOS) || os(visionOS)
+                keepRunning
+                #endif
+                storage
+                notifications
                 #endif
                 Section("About") {
                     LabeledContent("Version", value: Self.version)
@@ -107,10 +119,12 @@ struct SettingsView: View {
 
     @ViewBuilder private var account: some View {
         if let account = accounts.account {
-            Section("Server") {
+            Section {
                 LabeledContent("Server", value: account.serverName ?? account.serverURL.host() ?? "Jellyfin")
                 LabeledContent("Address", value: account.serverURL.absoluteString)
                 LabeledContent("Signed In As", value: account.userName)
+                LabeledContent("Remote Control", value: socket.state.label)
+                    .accessibilityIdentifier("settings.remoteControl")
                 Button("Sign Out", role: .destructive) { confirmingSignOut = true }
                     .accessibilityIdentifier("settings.signOut")
                     .confirmationDialog("Sign out of \(account.serverName ?? "the server")?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
@@ -129,9 +143,105 @@ struct SettingsView: View {
                         Text("Unfinished downloads are cancelled. Finished downloads stay and still play.")
                         #endif
                     }
+            } header: {
+                Text("Server")
+            } footer: {
+                Text("While vinnyfin is open, your other devices and Jellyfin apps can play to this \(Device.name), as \(Device.ownName), and control what plays.")
             }
         }
     }
+
+    #if !os(tvOS)
+    @ViewBuilder private var whenToDownload: some View {
+        @Bindable var settings = settings
+        Section {
+            Toggle(Self.cellularLabel, isOn: $settings.downloadOverCellular)
+                .accessibilityIdentifier("settings.downloadOverCellular")
+            Toggle("Only While Charging", isOn: $settings.downloadOnlyWhileCharging)
+                .accessibilityIdentifier("settings.onlyWhileCharging")
+        } header: {
+            Text("When to Download")
+        } footer: {
+            Text("Downloads also wait while Low Data Mode is on. vinnyfin starts waiting downloads when the system next lets it, so they can begin a while after you plug in. Download Now on a waiting download starts it anyway.")
+        }
+    }
+
+    #if os(iOS) || os(visionOS)
+    @ViewBuilder private var keepRunning: some View {
+        @Bindable var settings = settings
+        Section {
+            Toggle("Keep Downloads Running", isOn: $settings.keepDownloadsRunning)
+                .accessibilityIdentifier("settings.keepDownloadsRunning")
+                .onChange(of: settings.keepDownloadsRunning) { _, isOn in
+                    if isOn { keepAwake.switchedOn() }
+                }
+            if settings.keepDownloadsRunning {
+                LabeledContent("Sound") {
+                    TextField("Sound", text: $settings.keepDownloadsRunningSound, prompt: Text("Optional Web Address"))
+                        .multilineTextAlignment(.trailing)
+                        .keyboardType(.URL)
+                        .textContentType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.keepDownloadsRunningSound")
+                }
+                KeepAwakeSoundStatus()
+                Toggle("Keep Playing After Downloads Finish", isOn: $settings.keepPlayingAfterDownloads)
+                    .accessibilityIdentifier("settings.keepPlayingAfterDownloads")
+            }
+        } footer: {
+            Text("Plays audio in the background so \(UIDevice.current.systemName) keeps vinnyfin running until downloads finish. It uses more battery. Sound is the web address of an audio file to play on a loop, such as white noise.")
+        }
+    }
+    #endif
+
+    @ViewBuilder private var storage: some View {
+        @Bindable var settings = settings
+        Section {
+            SettingPicker("Storage Limit", selection: $settings.downloadStorageLimit) {
+                ForEach(AppSettings.storageLimitChoices, id: \.self) { gigabytes in
+                    Text(gigabytes == 0 ? "No Limit" : DownloadManager.bytes(Int64(gigabytes) * 1_000_000_000)).tag(gigabytes)
+                }
+            }
+            .accessibilityIdentifier("settings.storageLimit")
+            StorageUsage()
+        } header: {
+            Text("Storage")
+        } footer: {
+            Text("When a download needs room, under the limit or on this \(Device.name), the downloads you watched longest ago are deleted to make it. Unwatched and partly watched downloads are never deleted; if there's still no room, the download waits.")
+        }
+    }
+
+    @ViewBuilder private var notifications: some View {
+        @Bindable var settings = settings
+        Section {
+            Toggle("Download Notifications", isOn: $settings.downloadNotifications)
+                .accessibilityIdentifier("settings.downloadNotifications")
+                .onChange(of: settings.downloadNotifications) { _, isOn in
+                    if isOn { downloadNotifications.requestAuthorizationIfNeeded() }
+                }
+            if settings.downloadNotifications, downloadNotifications.isDenied {
+                #if os(macOS)
+                Text("Notifications are off for vinnyfin in System Settings › Notifications.")
+                    .foregroundStyle(.secondary)
+                #else
+                Button("Turn On Notifications in Settings") {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                }
+                #endif
+            }
+        } footer: {
+            Text("Tells you when downloads are ready to watch offline, a show's episodes together, and when one needs you: it failed, there's no room for it, or your server has been out of reach for a while.")
+        }
+        .task { await downloadNotifications.refreshAuthorization() }
+    }
+
+    #if os(iOS)
+    private static let cellularLabel: LocalizedStringKey = "Download Over Cellular"
+    #else
+    private static let cellularLabel: LocalizedStringKey = "Download Over Personal Hotspot"
+    #endif
+    #endif
 
     static var version: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
@@ -146,6 +256,36 @@ extension AccountStore {
     func signOut(cancelling downloads: DownloadManager) async {
         downloads.removeUnfinished()
         await signOut()
+    }
+}
+#endif
+
+#if os(iOS) || os(visionOS)
+/// How Keep Downloads Running's sound is getting on: fetching, ready, or why it can't be used.
+private struct KeepAwakeSoundStatus: View {
+    @Environment(KeepAwakeAudio.self) private var keepAwake
+
+    var body: some View {
+        switch keepAwake.sound {
+        case .silence:
+            EmptyView()
+        case .fetching:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Fetching the sound…")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        case .ready:
+            Label("The sound is ready", systemImage: "checkmark.circle")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        case .failed(let failure):
+            Label("\(failure.message) Downloads keep running in silence until it's fixed.", systemImage: "exclamationmark.triangle")
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .accessibilityIdentifier("settings.keepDownloadsRunningSound.problem")
+        }
     }
 }
 #endif

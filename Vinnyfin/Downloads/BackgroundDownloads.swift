@@ -11,19 +11,28 @@ import UIKit
 /// a suspended one waits for the system to wake it, which it does once every transfer in the
 /// session is done.
 ///
-/// - On iPhone and iPad, downloads someone starts from the foreground (Download, Resume, Retry
-///   or Start Over, or setting up a smart download) run under a continued-processing task: the
-///   system keeps the app running in the background and shows the task's progress, bytes done
-///   over bytes queued, as a Live Activity the person can stop. One runs at a time. It ends
-///   once nothing is left to download, or as a playback holds the downloads (its progress
-///   would stand still), and another starts after the hold while the app is in front and work
-///   someone started remains. Stopped by the person or the system, it ends and the session
-///   carries on alone, until someone starts a download again. Swiping the app away ends it too.
+/// - On iPhone and iPad, downloads someone starts from the foreground (Download, Resume, Retry,
+///   Start Over, Download Next or Download Now, or setting up a smart download) run under a
+///   continued-processing task: the system keeps the app running in the background and shows
+///   the task's progress, bytes done over bytes queued, as a Live Activity the person can stop.
+///   One runs at a time, and only for downloads that may go on now: the rules (Download Over
+///   Cellular, Low Data Mode, Only While Charging) and room still hold back those someone
+///   started, unless they chose Download Now. It ends once nothing is left to download, or as
+///   a playback, the rules or room hold back the rest (its progress would stand still), and
+///   another starts once they let go while the app is in front and work someone started
+///   remains. Stopped by the person or the system, it ends and the session carries on alone,
+///   until someone starts a download again. Swiping the app away ends it too.
 /// - Leaving the foreground with downloads unfinished books a catch-up processing task: the
-///   system launches the app when the device is idle and online, and it keeps the queue moving
-///   until the queue is done or the time is up, booking another until it's done.
+///   system launches the app when the device is idle and online and, for Only While Charging,
+///   on power (`DownloadManager.catchUpRequiresExternalPower`). That's how downloads waiting
+///   for power start once the device is plugged in, with the app suspended: the app keeps the
+///   queue moving until the queue is done or waits, or the time is up, and books another
+///   until it's done.
 /// - The app refresh wake, no more often than every `refreshInterval`, refreshes smart
 ///   downloads and then keeps the queue moving the same way.
+///
+/// Beside all of these, the person can keep the app running with audio, Keep Downloads Running
+/// in Settings (`KeepAwakeAudio`); the Live Activity says so while it plays.
 ///
 /// With Background App Refresh off (Low Power Mode turns it off), the system may not launch the
 /// app for any of these, or for finished transfers; `notices` tells the user that, and why the
@@ -52,6 +61,8 @@ final class BackgroundDownloads {
 
     @ObservationIgnored private let downloads: DownloadManager
     @ObservationIgnored private let smartDownloads: SmartDownloads
+    /// Whether the keep-alive plays too, for the Live Activity to say so on iPhone and iPad.
+    @ObservationIgnored private let keepAwake: KeepAwakeAudio
     @ObservationIgnored private var appObservations: [NotificationCenter.ObservationToken] = []
     #if os(iOS)
     /// The continued-processing task submitted, until it ends.
@@ -62,9 +73,10 @@ final class BackgroundDownloads {
     @ObservationIgnored private var shownText: (title: String, subtitle: String)?
     #endif
 
-    init(downloads: DownloadManager, smartDownloads: SmartDownloads) {
+    init(downloads: DownloadManager, smartDownloads: SmartDownloads, keepAwake: KeepAwakeAudio) {
         self.downloads = downloads
         self.smartDownloads = smartDownloads
+        self.keepAwake = keepAwake
     }
 
     // MARK: Launch
@@ -134,6 +146,7 @@ final class BackgroundDownloads {
     private func bookCatchUp() async {
         let request = BGProcessingTaskRequest(identifier: Self.catchUpIdentifier)
         request.requiresNetworkConnectivity = true
+        request.requiresExternalPower = downloads.catchUpRequiresExternalPower
         await submit(request, for: "catching up on downloads")
     }
 
@@ -145,9 +158,9 @@ final class BackgroundDownloads {
         await downloads.keepMoving()
     }
 
-    /// The system launched the app to catch up: keeps the queue moving until it's done or the
-    /// time is up. The next catch-up is booked first, in case this one runs out of time, and
-    /// called off once the queue is done.
+    /// The system launched the app to catch up: keeps the queue moving until it's done or waits,
+    /// or the time is up. The next catch-up is booked first, in case this one runs out of time,
+    /// and called off once the queue is done.
     private func catchUp() async {
         await bookCatchUp()
         await downloads.keepMoving()
@@ -235,20 +248,30 @@ final class BackgroundDownloads {
         let isInFront: Bool
         let isPausedForPlayback: Bool
         let isNetworkReachable: Bool
+        let waits: [UUID: DownloadWait]
+        let isKeptRunning: Bool
 
-        @MainActor init(_ downloads: DownloadManager) {
+        @MainActor init(_ downloads: DownloadManager, keepAwake: KeepAwakeAudio) {
             jobs = downloads.jobs
             receivedBytes = downloads.receivedBytes
             userStartedJobIds = downloads.userStartedJobIds
             isInFront = downloads.isInFront
             isPausedForPlayback = downloads.isPausedForPlayback
             isNetworkReachable = downloads.isNetworkReachable
+            waits = downloads.waits
+            isKeptRunning = keepAwake.isRunning
+        }
+
+        @MainActor var text: (title: String, subtitle: String) {
+            ContinuedProgress.text(jobs: jobs, receivedBytes: receivedBytes, isNetworkReachable: isNetworkReachable, waits: waits,
+                                   isKeptRunning: isKeptRunning)
         }
     }
 
     private func followDownloads() async {
         let downloads = downloads
-        for await state in Observations({ DownloadsState(downloads) }) {
+        let keepAwake = keepAwake
+        for await state in Observations({ DownloadsState(downloads, keepAwake: keepAwake) }) {
             update(state)
         }
     }
@@ -258,20 +281,20 @@ final class BackgroundDownloads {
             continuedProgress.update(jobs: state.jobs, receivedBytes: state.receivedBytes)
             task.progress.totalUnitCount = continuedProgress.totalUnitCount
             task.progress.completedUnitCount = continuedProgress.completedUnitCount
-            if let ending = continuedProgress.ending(jobs: state.jobs, isPausedForPlayback: state.isPausedForPlayback) {
+            if let ending = continuedProgress.ending(jobs: state.jobs, isPausedForPlayback: state.isPausedForPlayback, waits: state.waits) {
                 end(task, ending)
             } else {
-                show(ContinuedProgress.text(jobs: state.jobs, receivedBytes: state.receivedBytes, isNetworkReachable: state.isNetworkReachable), on: task)
+                show(state.text, on: task)
             }
         } else if let identifier = continuedIdentifier {
-            // Submitted but not started: called off if the work goes first.
-            if state.isPausedForPlayback || DownloadJob.queue(state.jobs).isEmpty {
+            // Submitted but not started: called off if the work goes first, or can't go on.
+            if state.isPausedForPlayback || DownloadJob.queue(state.jobs).allSatisfy({ state.waits[$0] != nil }) {
                 Self.log.info("Calling off \(identifier, privacy: .public) before it started")
                 BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
                 continuedIdentifier = nil
             }
-        } else if ContinuedProgress.shouldStart(jobs: state.jobs, userStartedJobIds: state.userStartedJobIds,
-                                                isInFront: state.isInFront, isPausedForPlayback: state.isPausedForPlayback) {
+        } else if ContinuedProgress.shouldStart(jobs: state.jobs, userStartedJobIds: state.userStartedJobIds, isInFront: state.isInFront,
+                                                isPausedForPlayback: state.isPausedForPlayback, waits: state.waits) {
             submitContinuedTask(state)
         }
     }
@@ -288,7 +311,7 @@ final class BackgroundDownloads {
         }
         continuedIdentifier = identifier
         continuedProgress = ContinuedProgress()
-        let text = ContinuedProgress.text(jobs: state.jobs, receivedBytes: state.receivedBytes, isNetworkReachable: state.isNetworkReachable)
+        let text = state.text
         Task { await submitContinuedRequest(identifier, text: text) }
     }
 
@@ -323,7 +346,7 @@ final class BackgroundDownloads {
         }
         continuedTask = task
         shownText = (task.title, task.subtitle)
-        update(DownloadsState(downloads))
+        update(DownloadsState(downloads, keepAwake: keepAwake))
     }
 
     /// The person stopped it from its Live Activity, or the system needed the resources back.
@@ -345,8 +368,9 @@ final class BackgroundDownloads {
         continuedTask = nil
         continuedIdentifier = nil
         shownText = nil
-        // After a playback, the work someone started carries on under a new task.
-        if ending != .heldForPlayback { downloads.forgetUserStartedJobs() }
+        // After a playback, or once the rules or room let go, the work someone started carries
+        // on under a new task.
+        if !ending.carriesOnLater { downloads.forgetUserStartedJobs() }
     }
 
     private func show(_ text: (title: String, subtitle: String), on task: BGContinuedProcessingTask) {

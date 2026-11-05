@@ -76,6 +76,7 @@
 				Jellyfin/JellyfinClient.swift,
 				Jellyfin/JellyfinModels.swift,
 				Jellyfin/ServerSession.swift,
+				Jellyfin/SessionModels.swift,
 			);
 			target = C406F95571791F6DE04B8B0B /* TopShelf */;
 		};
@@ -668,13 +669,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "AppIcon TV";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
+				CODE_SIGN_ENTITLEMENTS = Vinnyfin/Vinnyfin.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvsimulator*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Vinnyfin/Vinnyfin-macOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=xros*]" = "Vinnyfin/Vinnyfin-visionOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=xrsimulator*]" = "Vinnyfin/Vinnyfin-visionOS.entitlements";
 				DEVELOPMENT_TEAM = T5XCUP79BU;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
@@ -704,13 +702,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "AppIcon TV";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
+				CODE_SIGN_ENTITLEMENTS = Vinnyfin/Vinnyfin.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvsimulator*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Vinnyfin/Vinnyfin-iOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Vinnyfin/Vinnyfin-macOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=xros*]" = "Vinnyfin/Vinnyfin-visionOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=xrsimulator*]" = "Vinnyfin/Vinnyfin-visionOS.entitlements";
 				DEVELOPMENT_TEAM = T5XCUP79BU;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;

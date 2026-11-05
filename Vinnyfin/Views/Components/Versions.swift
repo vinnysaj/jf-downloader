@@ -95,6 +95,9 @@ struct JobStatusLine: View {
             if downloads.isPausedForPlayback {
                 Label("Paused while you watch", systemImage: "play.rectangle")
                     .foregroundStyle(.secondary)
+            } else if let wait = downloads.waits[job.id] {
+                Label(wait.status, systemImage: wait.systemImage)
+                    .foregroundStyle(.orange)
             } else if !downloads.isNetworkReachable {
                 Label("Waiting for a network connection", systemImage: "wifi.slash")
                     .foregroundStyle(.orange)
