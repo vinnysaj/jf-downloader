@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The player's choice panels. While one is open the controls stay up.
 enum PlayerPanel: Identifiable {
-    case audio, subtitles, speed
+    case audio, subtitles, speed, chapters
 
     var id: Self { self }
 
@@ -11,6 +11,7 @@ enum PlayerPanel: Identifiable {
         case .audio: "Audio"
         case .subtitles: "Subtitles"
         case .speed: "Speed"
+        case .chapters: "Chapters"
         }
     }
 
@@ -19,11 +20,12 @@ enum PlayerPanel: Identifiable {
         case .audio: "speaker.wave.2"
         case .subtitles: "captions.bubble"
         case .speed: "gauge.with.dots.needle.67percent"
+        case .chapters: "list.bullet.rectangle"
         }
     }
 }
 
-/// A list of audio tracks, subtitle tracks or speeds, with the current one checked.
+/// A list of audio tracks, subtitle tracks, speeds or chapters, with the current one checked.
 struct TrackPanel: View {
     let model: PlayerModel
     let panel: PlayerPanel
@@ -34,6 +36,8 @@ struct TrackPanel: View {
         let title: String
         let detail: String?
         let isSelected: Bool
+        /// A chapter's picture.
+        var image: URL?
         let choose: () -> Void
     }
 
@@ -64,6 +68,12 @@ struct TrackPanel: View {
                 Row(id: "speed.\(rate)", title: rate == 1 ? "Normal" : "\(rate.formatted())×", detail: nil,
                     isSelected: model.rate == rate) { model.setRate(rate) }
             }
+        case .chapters:
+            let playing = ChapterMark.current(in: model.chapters, at: model.clock.time)
+            return model.chapters.map { chapter in
+                Row(id: "chapter.\(chapter.index)", title: chapter.name, detail: Scrubber.format(chapter.start),
+                    isSelected: chapter == playing, image: chapter.image) { model.seek(to: chapter.start) }
+            }
         }
     }
 
@@ -87,10 +97,14 @@ struct TrackPanel: View {
                             row.choose()
                             onClose()
                         } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            HStack(alignment: row.image == nil ? .firstTextBaseline : .center, spacing: 10) {
                                 Image(systemName: "checkmark")
                                     .fontWeight(.semibold)
                                     .opacity(row.isSelected ? 1 : 0)
+                                if let image = row.image {
+                                    Artwork(url: image, aspectRatio: 16.0 / 9.0, cornerRadius: 6, placeholder: "photo")
+                                        .frame(width: Self.imageWidth)
+                                }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(row.title)
                                     if let detail = row.detail {
@@ -133,6 +147,14 @@ struct TrackPanel: View {
         560
         #else
         320
+        #endif
+    }
+
+    private static var imageWidth: CGFloat {
+        #if os(tvOS)
+        180
+        #else
+        88
         #endif
     }
 }

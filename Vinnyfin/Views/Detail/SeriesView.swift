@@ -1,7 +1,9 @@
+import AppIntents
 import SwiftUI
 
-/// A show: play the next episode, keep it downloaded, and its episodes one season at a time.
-/// Select turns the episodes into checkboxes for downloading several at once.
+/// A show: play the next episode, download a season or all of it, keep it downloaded, and its
+/// episodes one season at a time. Select turns the episodes into checkboxes for downloading
+/// several at once.
 struct SeriesView: View {
     let series: JellyfinItem
     var initialSeasonId: String?
@@ -11,6 +13,8 @@ struct SeriesView: View {
     @Environment(AppSettings.self) private var settings
     #if !os(tvOS)
     @Environment(SmartDownloads.self) private var smartDownloads
+    @Environment(DownloadManager.self) private var downloads
+    @Environment(AppMessages.self) private var messages
     #endif
     @State private var detail: JellyfinItem?
     @State private var seasons: [JellyfinItem] = []
@@ -109,6 +113,8 @@ struct SeriesView: View {
             if nextUp != nil, focusedEpisode == nil { focusedAction = .play }
         }
         #endif
+        // Siri knows which show the page is about: "continue watching this".
+        .appEntityIdentifier(EntityIdentifier.title(series))
         .task(id: series.id) { await load() }
         .task(id: seasonId) { await loadEpisodes() }
         .onChange(of: player.endedPlayback) {
@@ -169,34 +175,49 @@ struct SeriesView: View {
     }
 
     #if !os(tvOS)
+    /// Downloads now, of the season shown or the whole show, through the batch sheet's choice of
+    /// versions and its size; and the ways to keep the show downloaded.
     private var smartDownloadMenu: some View {
         let rule = smartDownloads.rule(for: series.id)
-        return Menu {
-            Section("Keep Downloaded From the Next Episode") {
-                ForEach([3, 5, 10, 20], id: \.self) { count in
-                    Button {
-                        smartDownloads.setRule(seriesId: series.id, seriesName: series.name, episodesAhead: count)
-                    } label: {
-                        if rule?.episodesAhead == count { Label("Next \(count) Episodes", systemImage: "checkmark") } else { Text("Next \(count) Episodes") }
+        return SmartDownloadMenu(seriesId: series.id, seriesName: series.name) {
+            Section("Download Now") {
+                if let season = seasons.first(where: { $0.id == seasonId }) {
+                    let missing = notDownloaded(episodes ?? [])
+                    Button(missing.isEmpty && episodes != nil ? "\(season.name) Is Downloaded" : "Download \(season.name)",
+                           systemImage: "arrow.down.circle") {
+                        batch = Batch(episodes: missing)
                     }
+                    .disabled(missing.isEmpty)
+                    .accessibilityIdentifier("series.downloadSeason")
                 }
-                Button {
-                    smartDownloads.setRule(seriesId: series.id, seriesName: series.name, episodesAhead: nil)
-                } label: {
-                    if rule != nil, rule?.episodesAhead == nil { Label("Every Remaining Episode", systemImage: "checkmark") } else { Text("Every Remaining Episode") }
+                Button("Download Every Episode", systemImage: "square.stack.3d.down.forward") {
+                    Task { await downloadEveryEpisode() }
                 }
-            }
-            if rule != nil {
-                Button("Stop Smart Downloads", systemImage: "xmark", role: .destructive) {
-                    smartDownloads.removeRule(seriesId: series.id)
-                }
+                .accessibilityIdentifier("series.downloadSeries")
             }
         } label: {
-            Label(rule == nil ? "Smart Download" : "Smart Download On", systemImage: rule == nil ? "sparkles" : "sparkles.rectangle.stack.fill")
+            Label(rule == nil ? "Download" : "Smart Download On", systemImage: rule == nil ? "arrow.down.circle" : "sparkles.rectangle.stack.fill")
         }
         .buttonStyle(.platformGlass)
         .controlSize(.large)
         .accessibilityIdentifier("series.smartDownload")
+    }
+
+    /// The episodes without a download in any state.
+    private func notDownloaded(_ episodes: [JellyfinItem]) -> [JellyfinItem] {
+        episodes.filter { downloads.jobs(forItem: $0.id).isEmpty }
+    }
+
+    /// Every episode of every season, specials left out, that isn't downloaded or on its way.
+    private func downloadEveryEpisode() async {
+        guard let session else { return }
+        do {
+            let all = try await session.client.episodes(seriesId: series.id, seasonId: nil, userId: session.userId,
+                                                        fields: "PrimaryImageAspectRatio")
+            batch = Batch(episodes: notDownloaded(all.filter { $0.parentIndexNumber != 0 }))
+        } catch {
+            messages.show("Couldn't load the episodes of \(series.name): \(error.localizedDescription)")
+        }
     }
 
     @ToolbarContentBuilder private var selectionToolbar: some ToolbarContent {

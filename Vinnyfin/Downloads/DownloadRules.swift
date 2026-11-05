@@ -171,6 +171,10 @@ nonisolated enum WatchState: Equatable, Sendable {
     case unwatched
     case inProgress
     case watched(at: Date)
+
+    var isWatched: Bool {
+        if case .watched = self { true } else { false }
+    }
 }
 
 nonisolated extension DownloadJob {
@@ -219,10 +223,12 @@ nonisolated enum StorageBudget {
     /// Walks the queue in order, each download that fits keeping its room. One that doesn't
     /// takes room from `deletable` (oldest watched first) if that's enough, and otherwise
     /// waits, deleting nothing and keeping no room, so a smaller one behind it can still go.
-    /// `used` is what downloads take up now, finished files and partial ones; `available` is
-    /// the device's free space, nil when it can't say. A download whose size neither the
-    /// listing nor the server has given yet isn't held back.
-    static func plan(queue: [DownloadJob], used: Int64, available: Int64?, limit: Int64?, deletable: [Deletable]) -> Outcome {
+    /// `bytesSoFar` is what each queued download already has (`DownloadJob.bytesSoFar`), its
+    /// partial file's bytes when it's missing; `used` is what downloads take up now, finished
+    /// files and partial ones; `available` is the device's free space, nil when it can't say.
+    /// A download whose size neither the listing nor the server has given yet isn't held back.
+    static func plan(queue: [DownloadJob], bytesSoFar: [UUID: Int64], used: Int64, available: Int64?, limit: Int64?,
+                     deletable: [Deletable]) -> Outcome {
         // Room that's unlimited stays so: deleting a file makes as much room under the limit as
         // on the device, so the shortfall goes down by its size either way.
         var limitRoom = limit.map { $0 - used } ?? .max
@@ -236,7 +242,7 @@ nonisolated enum StorageBudget {
         }
         for job in queue {
             guard let total = job.displayTotalBytes else { continue }
-            let need = max(0, total - job.completed.byteCount)
+            let need = max(0, total - (bytesSoFar[job.id] ?? job.completed.byteCount))
             if shortfall(need) <= deletableBytes {
                 while shortfall(need) > 0, let next = candidates.popFirst() {
                     outcome.deletions.append(next.id)

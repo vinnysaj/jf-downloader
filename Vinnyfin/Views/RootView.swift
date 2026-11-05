@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 
 struct RootView: View {
@@ -6,6 +7,7 @@ struct RootView: View {
     @Environment(AppMessages.self) private var messages
     @Environment(WatchHistory.self) private var history
     @Environment(AppSettings.self) private var settings
+    @Environment(IncomingLinks.self) private var links
     @Environment(SessionSocket.self) private var socket
     @Environment(SharePlay.self) private var sharePlay
     @Environment(\.scenePhase) private var scenePhase
@@ -21,7 +23,7 @@ struct RootView: View {
     #if !os(tvOS)
     @Environment(SmartDownloads.self) private var smartDownloads
     @Environment(DownloadManager.self) private var downloads
-    @Environment(DownloadNotifications.self) private var downloadNotifications
+    @Environment(SpotlightTitles.self) private var spotlight
     /// A title handed off from a sign-in this device doesn't have, until it has it.
     @State private var handoff: Handoff?
     @State private var showingHandoffMismatch = false
@@ -104,14 +106,20 @@ struct RootView: View {
             await socket.run(client: client)
         }
         .onOpenURL { url in open(url) }
-        #if !os(tvOS)
-        // A tapped notification opens its title as a link would, launching the app or not.
-        .onChange(of: downloadNotifications.openedLink, initial: true) { _, link in
-            guard let link else { return }
-            downloadNotifications.openedLink = nil
-            open(link)
+        // A tapped notification, Siri, Shortcuts, Spotlight and Handoff open titles as a link would.
+        .onChange(of: links.pending, initial: true) { _, incoming in
+            guard let incoming else { return }
+            links.pending = nil
+            follow(incoming)
         }
-        .onContinueUserActivity(Handoff.activityType, perform: continueHandoff)
+        #if !os(tvOS)
+        .onContinueUserActivity(Handoff.activityType) { activity in
+            guard let handoff = Handoff(activity) else {
+                messages.show("vinnyfin can't continue what your other device handed over. Updating vinnyfin on both may help.")
+                return
+            }
+            links.open(handoff)
+        }
         .alert(handoffMismatch.map(Handoff.title) ?? "", isPresented: $showingHandoffMismatch, presenting: handoff) { handoff in
             if let mismatch = handoffMismatch {
                 Button(handoff.signInTitle(for: mismatch)) { Task { await signIn(for: handoff) } }
@@ -141,13 +149,19 @@ struct RootView: View {
             guard scenePhase != .background else {
                 #if os(tvOS)
                 TopShelf.reload()
+                #elseif os(iOS)
+                UpNextWidgets.reload()
                 #endif
+                // What's being watched, which Siri's phrases name, may have changed while it was open.
+                VinnyfinShortcuts.updateAppShortcutParameters()
                 return
             }
             // What was watched offline goes to the server first, so smart downloads plan from it.
             if let session { await history.syncPending(using: session.client, userId: session.userId) }
             #if !os(tvOS)
+            async let spotlightRefresh: Void = spotlight.refreshWhileOpen()
             await smartDownloads.refreshWhileOpen()
+            await spotlightRefresh
             #endif
         }
     }
@@ -208,14 +222,21 @@ struct RootView: View {
         }
     }
 
+    private func follow(_ incoming: IncomingLinks.Incoming) {
+        switch incoming {
+        case .link(let url):
+            open(url)
+        #if !os(tvOS)
+        case .handoff(let handoff):
+            continueHandoff(handoff)
+        #endif
+        }
+    }
+
     #if !os(tvOS)
     /// Opens a title handed off from another of the person's devices, when this one is signed in
     /// where it's from; otherwise says where it's signed in, and offers to sign in there.
-    private func continueHandoff(_ activity: NSUserActivity) {
-        guard let handoff = Handoff(activity) else {
-            messages.show("vinnyfin can't continue what your other device handed over. Updating vinnyfin on both may help.")
-            return
-        }
+    private func continueHandoff(_ handoff: Handoff) {
         if handoff.mismatch(with: accounts.account) == nil {
             open(handoff.link)
         } else {

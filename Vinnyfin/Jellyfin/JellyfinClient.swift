@@ -57,7 +57,7 @@ nonisolated struct JellyfinClient: Sendable {
     /// leave out overviews, the bulk of a list's bytes.
     static let cardFields = ""
     /// Everything a detail screen shows.
-    static let detailFields = "Overview,Genres,People,Taglines,MediaSources,MediaStreams,Chapters,SortName,ChildCount,PrimaryImageAspectRatio"
+    static let detailFields = "Overview,Genres,People,Taglines,MediaSources,MediaStreams,Chapters,Trickplay,SortName,ChildCount,PrimaryImageAspectRatio"
 
     // MARK: Server and sign-in
 
@@ -470,6 +470,18 @@ nonisolated struct JellyfinClient: Sendable {
         var query: [String: String] = [:]
         if let token { query["ApiKey"] = token }
         return url(for: "Videos/\(itemId)/\(mediaSourceId)/Subtitles/\(streamIndex)/Stream.\(format)", query: query)
+    }
+
+    /// One sheet of a version's scrub previews at one width.
+    func trickplaySheetURL(itemId: String, mediaSourceId: String, width: Int, index: Int) -> URL {
+        var query = ["mediaSourceId": mediaSourceId]
+        if let token { query["ApiKey"] = token }
+        return url(for: "Videos/\(itemId)/Trickplay/\(width)/\(index).jpg", query: query)
+    }
+
+    /// The picture of a chapter's start.
+    func chapterImageURL(itemId: String, index: Int, tag: String, maxWidth: Int) -> URL {
+        url(for: "Items/\(itemId)/Images/Chapter/\(index)", query: ["tag": tag, "maxWidth": String(maxWidth), "quality": "90"])
     }
 
     /// A path the server handed out (a transcoding URL), made absolute.

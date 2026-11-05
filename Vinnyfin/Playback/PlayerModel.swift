@@ -121,8 +121,8 @@ final class PlayerModel: Identifiable {
     /// The server's titles played here, and the shows of the episodes among them, whose watch
     /// state the playback changed.
     @ObservationIgnored private(set) var playedTitleIds: Set<String> = []
-    /// The title whose next episode and segments were asked for.
-    @ObservationIgnored private var extrasRequestedFor: String?
+    /// The title whose next episode was asked for, and the version whose segments and chapters.
+    @ObservationIgnored private var extrasRequestedFor: ExtrasKey?
     /// The audio and subtitles chosen in the version this one stands in for.
     @ObservationIgnored private var carriedTracks: TrackSelection?
     @ObservationIgnored private var connectionWatch = ConnectionWatch()
@@ -159,6 +159,9 @@ final class PlayerModel: Identifiable {
     var isTranscoding: Bool { current?.isTranscode ?? false }
     var isPlaying: Bool { status == .playing || status == .buffering }
     var item: JellyfinItem? { current?.item }
+    /// The scrub previews, from the server for a stream and from the saved files for a download.
+    var trickplay: TrickplayTiles? { current?.trickplay }
+    var chapters: [ChapterMark] { current?.chapters ?? [] }
 
     /// The intro, recap, preview or credits being played, which the player offers to skip.
     func skippableSegment(at time: Double) -> MediaSegment? {
@@ -316,28 +319,86 @@ final class PlayerModel: Identifiable {
         Self.keepScreenAwake(true)
         startReporting()
         if resolved.isStream { watchConnection() }
-        if extrasRequestedFor != resolved.historyKey {
-            extrasRequestedFor = resolved.historyKey
-            Task { await loadExtras(for: resolved) }
+        let extras = ExtrasKey(title: resolved.historyKey, version: resolved.mediaSource?.versionItemId)
+        if extrasRequestedFor != extras {
+            let isNewTitle = extrasRequestedFor?.title != extras.title
+            // Another version's skip markers don't fit this one's timeline.
+            if !isNewTitle { segments = resolved.segments }
+            extrasRequestedFor = extras
+            Task { await loadExtras(for: resolved, includingNextEpisode: isNewTitle) }
         }
     }
 
-    /// The next episode and the skippable segments, which playback doesn't wait for.
-    private func loadExtras(for resolved: ResolvedPlayback) async {
+    private struct ExtrasKey: Equatable {
+        let title: String
+        let version: String?
+    }
+
+    /// Whether `resolved` is still the version playing.
+    private func isPlaying(_ resolved: ResolvedPlayback) -> Bool {
+        current?.historyKey == resolved.historyKey && current?.mediaSource?.id == resolved.mediaSource?.id
+    }
+
+    /// What playback doesn't wait for: the skippable segments of the version playing, its
+    /// chapters when it isn't the item's own version, and once for the title, the next episode.
+    /// A download falls back on its saved segments and on the next episode downloaded. What the
+    /// server can't give is logged, and for a stream, where the skip buttons, chapters or next
+    /// episode would be missed, the player says so once for the title.
+    private func loadExtras(for resolved: ResolvedPlayback, includingNextEpisode: Bool) async {
         guard let item = resolved.item else { return }
+        let version = resolved.mediaSource?.versionItemId ?? item.id
+        var missing: [String] = []
+        var lastError: (any Error)?
+        var foundNext = false
+        var nextFailed = false
         if let client = accounts.client, let account = accounts.account {
-            if let found = try? await client.mediaSegments(itemId: item.id), current?.historyKey == resolved.historyKey {
-                segments = found
+            do {
+                let found = try await client.mediaSegments(itemId: version)
+                if isPlaying(resolved) { segments = found }
+            } catch JellyfinError.http(let status, _) where status == 404 {
+                // The server keeps no segments for it.
+            } catch is CancellationError {
+                return
+            } catch {
+                Self.log.notice("Couldn't load the segments to skip: \(error.localizedDescription, privacy: .public)")
+                if resolved.segments.isEmpty { missing.append("the buttons to skip intros and credits") }
+                lastError = error
             }
-            if item.isEpisode, let seriesId = item.seriesId {
-                if let next = try? await client.episode(after: item.id, seriesId: seriesId, userId: account.userId) {
-                    if current?.historyKey == resolved.historyKey { nextEpisode = next }
+            if resolved.isStream, let source = resolved.mediaSource, version != item.id {
+                do {
+                    let detail = try await client.item(id: version, userId: account.userId)
+                    if isPlaying(resolved) { current?.chapters = PlaybackResolver.chapters(of: detail, playing: source, client: client) }
+                } catch JellyfinError.http(let status, _) where status == 404 {
+                    // A version that isn't an item of its own has no chapters.
+                } catch is CancellationError {
                     return
+                } catch {
+                    Self.log.notice("Couldn't load the version's chapters: \(error.localizedDescription, privacy: .public)")
+                    missing.append("the chapters")
+                    lastError = error
+                }
+            }
+            if includingNextEpisode, item.isEpisode, let seriesId = item.seriesId {
+                do {
+                    let next = try await client.episode(after: item.id, seriesId: seriesId, userId: account.userId)
+                    if current?.historyKey == resolved.historyKey { nextEpisode = next }
+                    foundNext = true
+                } catch is CancellationError {
+                    return
+                } catch {
+                    Self.log.notice("Couldn't find the next episode: \(error.localizedDescription, privacy: .public)")
+                    nextFailed = true
+                    lastError = error
                 }
             }
         }
-        if item.isEpisode, current?.historyKey == resolved.historyKey {
+        guard isPlaying(resolved), includingNextEpisode else { return }
+        if item.isEpisode, !foundNext {
             nextEpisode = downloadedEpisode(item)
+            if nextEpisode == nil, nextFailed { missing.append("the next episode") }
+        }
+        if resolved.isStream, !missing.isEmpty, let lastError {
+            show("Couldn't load \(missing.formatted(.list(type: .and))): \(lastError.localizedDescription)", for: 6)
         }
     }
 

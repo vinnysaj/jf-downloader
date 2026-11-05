@@ -62,6 +62,18 @@ struct HandoffTests {
         #expect(received.link.position == nil)
     }
 
+    #if !os(tvOS)
+    @Test func arrivesWithTheSignInItsFromInTheAppsOneInbox() {
+        let links = IncomingLinks()
+        let handoff = Handoff(link: AppLink(.play, Samples.episode, position: 90), signIn: Continuity.home)
+        links.open(handoff)
+        #expect(links.pending == .handoff(handoff))
+        // A link from anywhere else names no sign-in.
+        links.open(AppLink(.open, Samples.movie))
+        #expect(links.pending == .link(AppLink(.open, Samples.movie).url))
+    }
+    #endif
+
     @Test func turnsDownAnotherAppsActivityAndAnIncompleteOne() {
         let other = NSUserActivity(activityType: "com.example.reading")
         other.userInfo = Handoff(link: AppLink(.open, Samples.movie), signIn: Continuity.home).userInfo

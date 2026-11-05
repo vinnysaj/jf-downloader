@@ -211,6 +211,23 @@ struct SchedulingTests {
         #expect(DownloadJob.queue([first, second]).isEmpty)
     }
 
+    /// A paused download's bytes in resume data count with its partial file's; a finished
+    /// download's file is counted elsewhere, and a forgotten one's leftovers not at all.
+    @Test func countsTheBytesTransfersHoldWithThePartialFile() {
+        var paused = DownloadJob(item: Samples.movie, source: Samples.source)
+        paused.status = .paused
+        paused.completed = ByteRanges([0..<1])
+        var running = DownloadJob(item: Samples.movie, source: Samples.source)
+        running.completed = ByteRanges([0..<100])
+        var finished = DownloadJob(item: Samples.movie, source: Samples.source)
+        finished.status = .completed
+        finished.completed = ByteRanges([0..<300])
+        let held: [(jobId: UUID, bytes: Int64)] = [
+            (paused.id, 2_000), (paused.id, 1_500), (running.id, 50), (finished.id, 10), (UUID(), 999),
+        ]
+        #expect(DownloadJob.bytesSoFar([paused, running, finished], held: held) == [paused.id: 3_501, running.id: 150])
+    }
+
     /// 300 MB files in 100 MB chunks, the first confirmed by the server.
     private func twoFiles() -> (first: DownloadJob, second: DownloadJob) {
         let start = Date.now

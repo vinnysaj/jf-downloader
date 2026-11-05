@@ -8,6 +8,8 @@ import Foundation
 /// - `Library/Application Support/Downloads/` holds the job list and the partial files, out of
 ///   the Files app's sight and out of backups.
 /// - `…/Downloads/Artwork/` holds each downloaded item's pictures, for browsing offline.
+/// - `…/Downloads/Extras/<job>/` holds a download's scrub previews and chapter pictures; its
+///   subtitle files sit beside the finished file (`DownloadExtras`).
 /// - `…/Downloads/Staging/` holds bodies the session delegate moved out of the system's
 ///   temporary location, until they are written into their partial file.
 nonisolated struct DownloadStorage: Sendable {
@@ -20,7 +22,9 @@ nonisolated struct DownloadStorage: Sendable {
     var partials: URL { root.appending(path: "Partials", directoryHint: .isDirectory) }
     var staging: URL { root.appending(path: "Staging", directoryHint: .isDirectory) }
     var artwork: URL { root.appending(path: "Artwork", directoryHint: .isDirectory) }
-    /// Resume data of ranges cancelled for a playback, one file per range.
+    var extras: URL { root.appending(path: "Extras", directoryHint: .isDirectory) }
+    /// Resume points of ranges set aside, one file per range. A whole-file transfer's sits beside
+    /// its partial file (`resumeDataFile`).
     var held: URL { root.appending(path: "Held", directoryHint: .isDirectory) }
 
     static let standard = DownloadStorage(
@@ -39,7 +43,7 @@ nonisolated struct DownloadStorage: Sendable {
 
     func prepare() throws {
         let manager = FileManager.default
-        for directory in [finished, partials, staging, artwork, held] {
+        for directory in [finished, partials, staging, artwork, extras, held] {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         var excluded = URLResourceValues()
@@ -62,36 +66,48 @@ nonisolated struct DownloadStorage: Sendable {
         artwork.appending(path: "\(itemId)-\(kind.rawValue).jpg")
     }
 
-    /// Fetches the pictures an offline list and detail screen show: the item's own, and for an
-    /// episode its show's poster.
-    func saveArtwork(for item: JellyfinItem, client: JellyfinClient) async throws {
-        var wanted: [(id: String, kind: JellyfinClient.ImageKind, tag: String?, width: Int, file: URL)] = [
-            (item.id, .primary, item.primaryImageTag, 600, artworkFile(itemId: item.id, kind: .primary)),
-        ]
-        if let tag = item.backdropImageTags?.first {
-            wanted.append((item.id, .backdrop, tag, 1280, artworkFile(itemId: item.id, kind: .backdrop)))
-        } else if let parent = item.parentBackdropItemId, let tag = item.parentBackdropImageTags?.first {
-            wanted.append((parent, .backdrop, tag, 1280, artworkFile(itemId: item.id, kind: .backdrop)))
-        }
-        if let seriesId = item.seriesId {
-            wanted.append((seriesId, .primary, item.seriesPrimaryImageTag, 600, artworkFile(itemId: seriesId, kind: .primary)))
-        }
-        for image in wanted where !FileManager.default.fileExists(atPath: image.file.path) {
-            let url = client.imageURL(itemId: image.id, kind: image.kind, tag: image.tag, maxWidth: image.width)
-            let (downloaded, response) = try await URLSession.shared.download(from: url)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                // An item without that picture.
-                try FileManager.default.removeItem(at: downloaded)
-                continue
-            }
-            try FileManager.default.moveItem(at: downloaded, to: image.file)
+    func removeArtwork(for itemId: String) throws {
+        for kind in [JellyfinClient.ImageKind.primary, .backdrop, .logo] {
+            let file = artworkFile(itemId: itemId, kind: kind)
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         }
     }
 
-    func removeArtwork(for itemId: String) throws {
-        for kind in [JellyfinClient.ImageKind.primary, .backdrop] {
-            let file = artworkFile(itemId: itemId, kind: kind)
-            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+    // MARK: Extras
+
+    func extrasFolder(for jobId: UUID) -> URL {
+        extras.appending(path: jobId.uuidString, directoryHint: .isDirectory)
+    }
+
+    /// Puts a fetched extra in place, over an older copy.
+    func saveExtra(_ downloaded: URL, to file: URL) throws {
+        let manager = FileManager.default
+        try manager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if manager.fileExists(atPath: file.path) { try manager.removeItem(at: file) }
+        try manager.moveItem(at: downloaded, to: file)
+        #if !os(macOS)
+        // Subtitles beside a finished file are in Documents, which backups would otherwise take.
+        if file.path.hasPrefix(finished.path) {
+            var excluded = URLResourceValues()
+            excluded.isExcludedFromBackup = true
+            var saved = file
+            try saved.setResourceValues(excluded)
+        }
+        #endif
+    }
+
+    /// Deletes a job's folder of extras and the files given, its subtitles beside the file.
+    func removeExtras(for jobId: UUID, besideFile files: [URL]) throws {
+        let manager = FileManager.default
+        for file in files + [extrasFolder(for: jobId)] where manager.fileExists(atPath: file.path) {
+            try manager.removeItem(at: file)
+        }
+    }
+
+    /// What the files take on disk; ones that aren't there count as nothing.
+    func size(of files: [URL]) -> Int64 {
+        files.reduce(0) { total, file in
+            total + Int64((try? file.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0)
         }
     }
 
@@ -121,17 +137,32 @@ nonisolated struct DownloadStorage: Sendable {
         held.appending(path: tag.encoded.replacing(" ", with: "_") + ".resume")
     }
 
-    func loadHeld() throws -> [TransferTag: Data] {
-        var data: [TransferTag: Data] = [:]
+    func loadHeld() throws -> [TransferTag: ResumePoint] {
+        var points: [TransferTag: ResumePoint] = [:]
         for file in try FileManager.default.contentsOfDirectory(at: held, includingPropertiesForKeys: nil) {
             guard let tag = TransferTag(encoded: file.deletingPathExtension().lastPathComponent.replacing("_", with: " ")) else { continue }
-            data[tag] = try Data(contentsOf: file)
+            points[tag] = try ResumePoint(contentsOf: file)
         }
-        return data
+        return points
     }
 
-    func saveHeld(_ data: Data, for tag: TransferTag) throws {
-        try data.write(to: heldFile(for: tag), options: .atomic)
+    func saveHeld(_ point: ResumePoint, for tag: TransferTag) throws {
+        try point.write(to: heldFile(for: tag))
+    }
+
+    /// The resume points of whole-file transfers, by job.
+    func loadResumePoints() throws -> [UUID: ResumePoint] {
+        var points: [UUID: ResumePoint] = [:]
+        for file in try FileManager.default.contentsOfDirectory(at: partials, includingPropertiesForKeys: nil)
+        where file.pathExtension == "resume" {
+            guard let jobId = UUID(uuidString: file.deletingPathExtension().lastPathComponent) else { continue }
+            points[jobId] = try ResumePoint(contentsOf: file)
+        }
+        return points
+    }
+
+    func saveResumePoint(_ point: ResumePoint, for jobId: UUID) throws {
+        try point.write(to: resumeDataFile(for: jobId))
     }
 
     /// Removes the held resume data of the tags `matching` accepts.
@@ -239,6 +270,37 @@ nonisolated struct DownloadStorage: Sendable {
     func availableCapacity() -> Int64? {
         let values = try? finished.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         return values?.volumeAvailableCapacityForImportantUsage
+    }
+}
+
+/// A cancelled transfer's resume data, with how many bytes of its file it carries. Those bytes
+/// are in the session's files rather than the partial file until a transfer carries on from
+/// them, and they're the download's all the same: in its progress and in the room it takes.
+nonisolated struct ResumePoint: Codable, Equatable, Sendable {
+    let data: Data
+    let bytes: Int64
+
+    init(data: Data, bytes: Int64) {
+        self.data = data
+        self.bytes = bytes
+    }
+
+    /// A file of bare resume data, as builds that didn't count its bytes kept it, still carries
+    /// on, counting no bytes until its transfer reports: refusing it would start those
+    /// downloads over.
+    init(contentsOf file: URL) throws {
+        let contents = try Data(contentsOf: file)
+        do {
+            self = try PropertyListDecoder().decode(Self.self, from: contents)
+        } catch is DecodingError {
+            self.init(data: contents, bytes: 0)
+        }
+    }
+
+    func write(to file: URL) throws {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        try encoder.encode(self).write(to: file, options: .atomic)
     }
 }
 #endif

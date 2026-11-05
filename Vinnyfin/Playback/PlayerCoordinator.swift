@@ -180,8 +180,11 @@ final class PlayerCoordinator {
 
     /// Asks the server for the watch state of what was played, here or on a device this one was
     /// the remote for. A title it can't be asked about keeps the state its cards show until they
-    /// load again.
+    /// load again. The Up Next widgets ask the server for theirs again.
     func endPlayback(of titleIds: Set<String>) async {
+        #if os(iOS) || os(macOS)
+        if !titleIds.isEmpty { UpNextWidgets.reload() }
+        #endif
         var userData: [String: UserItemData] = [:]
         if let client = accounts.client, let account = accounts.account {
             let userId = account.userId

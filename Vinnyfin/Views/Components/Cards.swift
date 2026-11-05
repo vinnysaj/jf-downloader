@@ -134,25 +134,15 @@ struct LandscapeCard: View {
                     }
                 }
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.isEpisode ? (item.seriesName ?? item.name) : item.name)
+                Text(item.titleName)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(item.cardDetail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("card.\(item.name)")
-    }
-
-    private var detail: String {
-        if item.isEpisode {
-            return [item.episodeCode, item.name].compactMap(\.self).joined(separator: " · ")
-        }
-        if let resume = item.resumeSeconds, let total = item.runtimeSeconds, total > resume {
-            return "\(Duration.seconds(total - resume).formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))) left"
-        }
-        return item.premiereYearText ?? ""
     }
 }
 

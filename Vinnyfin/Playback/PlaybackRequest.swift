@@ -92,6 +92,8 @@ struct ResolvedPlayback {
     var isDownload = false
     /// The skippable stretches saved with a download.
     var segments: [MediaSegment] = []
+    var trickplay: TrickplayTiles?
+    var chapters: [ChapterMark] = []
     /// A security-scoped URL to stop accessing when playback ends.
     var scopedURL: URL?
 
@@ -129,14 +131,21 @@ struct PlaybackResolver {
     let accounts: AccountStore
     let settings: AppSettings
     let history: WatchHistory
-    /// A finished download of the item (and version, when given), with the item and its segments
-    /// as they were saved.
+    /// A finished download of the item (and version, when given), with the item, its segments
+    /// and its extras as they were saved.
     let downloadedCopy: (_ itemId: String, _ mediaSourceId: String?) -> DownloadedCopy?
 
+    /// A download and the extras saved with it, which play as the server's do for a stream.
     struct DownloadedCopy {
         let url: URL
         let item: JellyfinItem?
         let segments: [MediaSegment]
+        /// The server's subtitle files, by the stream index the item lists them under.
+        var subtitleFiles: [Int: URL] = [:]
+        /// The sheets of scrub previews at the player's width, by number.
+        var trickplaySheets: [Int: URL] = [:]
+        /// The chapters' pictures, by the chapter's place in the item's list.
+        var chapterImages: [Int: URL] = [:]
     }
 
     func resolve(_ request: PlaybackRequest) async throws -> ResolvedPlayback {
@@ -218,20 +227,29 @@ struct PlaybackResolver {
             ResolvedPlayback.Reporting(itemId: itemId, mediaSourceId: item?.mediaSources?.first?.id,
                                        playSessionId: Self.newPlaySessionId(), playMethod: "DirectPlay")
         }
-        let length = item?.mediaSources?.first?.runtimeSeconds ?? item?.runtimeSeconds
+        let source = item?.mediaSources?.first
+        let length = source?.runtimeSeconds ?? item?.runtimeSeconds
+        // The server's subtitle files as a stream has them, then any others someone put beside the file.
+        let saved = source.map { ExternalSubtitleTrack.of($0) { _, index, _ in copy.subtitleFiles[index] } } ?? []
+        let savedFiles = Set(copy.subtitleFiles.values.map(\.standardizedFileURL))
+        let others = Self.sidecarSubtitles(for: copy.url).filter { !savedFiles.contains($0.url.standardizedFileURL) }
         return ResolvedPlayback(
             url: copy.url,
             title: item?.titleWithYear ?? request.title,
             subtitle: item.flatMap(Self.subtitle),
             item: item,
-            mediaSource: item?.mediaSources?.first,
+            mediaSource: source,
             startPosition: request.start(resuming: request.startFromBeginning ? nil : Self.resumable(start, length: length)),
             duration: length,
-            externalSubtitles: Self.sidecarSubtitles(for: copy.url),
+            externalSubtitles: saved + others,
             historyKey: itemId,
             reporting: reporting,
             isDownload: true,
-            segments: copy.segments
+            segments: copy.segments,
+            trickplay: item.flatMap { item in
+                source.flatMap { TrickplayTiles.of(item, sourceId: $0.id) { _, index in copy.trickplaySheets[index] } }
+            },
+            chapters: item.map { ChapterMark.of($0) { index, _ in copy.chapterImages[index] } } ?? []
         )
     }
 
@@ -278,9 +296,13 @@ struct PlaybackResolver {
             mediaSource: source,
             startPosition: start,
             duration: source.runtimeSeconds ?? item.runtimeSeconds,
-            externalSubtitles: externalSubtitles(of: source, itemId: item.id, client: client),
+            externalSubtitles: ExternalSubtitleTrack.of(source) { _, index, format in
+                client.externalSubtitleURL(itemId: item.id, mediaSourceId: source.id, streamIndex: index, format: format)
+            },
             historyKey: item.id,
-            reporting: .init(itemId: item.id, mediaSourceId: source.id, playSessionId: Self.newPlaySessionId(), playMethod: "DirectPlay")
+            reporting: .init(itemId: item.id, mediaSourceId: source.id, playSessionId: Self.newPlaySessionId(), playMethod: "DirectPlay"),
+            trickplay: Self.trickplay(of: item, source: source, client: client),
+            chapters: Self.chapters(of: item, playing: source, client: client)
         )
     }
 
@@ -313,24 +335,26 @@ struct PlaybackResolver {
             historyKey: item.id,
             reporting: .init(itemId: item.id, mediaSourceId: source.id,
                              playSessionId: info.playSessionId ?? Self.newPlaySessionId(), playMethod: "Transcode"),
-            transcode: .init(quality: quality, audioIndex: audioIndex, subtitleIndex: subtitleIndex)
+            transcode: .init(quality: quality, audioIndex: audioIndex, subtitleIndex: subtitleIndex),
+            // A transcode keeps the version's timeline, so its previews and chapters fit it.
+            trickplay: Self.trickplay(of: item, source: source, client: client),
+            chapters: Self.chapters(of: item, playing: source, client: client)
         )
     }
 
-    /// Subtitle files the server keeps next to the media; embedded ones come with the stream.
-    private func externalSubtitles(of source: MediaSource, itemId: String, client: JellyfinClient) -> [ExternalSubtitleTrack] {
-        source.subtitleStreams.compactMap { stream in
-            guard stream.isExternal == true, let index = stream.index else { return nil }
-            let format = Self.subtitleFormat(for: stream.codec)
-            return ExternalSubtitleTrack(
-                url: client.externalSubtitleURL(itemId: itemId, mediaSourceId: source.id, streamIndex: index, format: format),
-                name: stream.title ?? stream.displayTitle,
-                language: stream.language,
-                isForced: stream.isForced ?? false,
-                isHearingImpaired: stream.isHearingImpaired ?? false,
-                isDefault: stream.isDefault ?? false,
-                formatHint: format
-            )
+    /// The version's scrub previews on the server.
+    private static func trickplay(of item: JellyfinItem, source: MediaSource, client: JellyfinClient) -> TrickplayTiles? {
+        TrickplayTiles.of(item, sourceId: source.id) { info, index in
+            client.trickplaySheetURL(itemId: item.id, mediaSourceId: source.id, width: info.width, index: index)
+        }
+    }
+
+    /// The chapters of the version playing, with their pictures on the server, when it's the
+    /// item's own. Another version's are its own item's, which the player asks for once it plays.
+    static func chapters(of item: JellyfinItem, playing source: MediaSource, client: JellyfinClient) -> [ChapterMark] {
+        guard source.versionItemId == item.id else { return [] }
+        return ChapterMark.of(item) { index, chapter in
+            chapter.imageTag.map { client.chapterImageURL(itemId: item.id, index: index, tag: $0, maxWidth: ChapterMark.imageWidth) }
         }
     }
 
@@ -342,7 +366,7 @@ struct PlaybackResolver {
         return start < length * WatchHistory.playedFraction ? start : nil
     }
 
-    static func subtitleFormat(for codec: String?) -> String {
+    nonisolated static func subtitleFormat(for codec: String?) -> String {
         switch codec?.lowercased() {
         case "subrip", "srt", nil: "srt"
         case "ass": "ass"

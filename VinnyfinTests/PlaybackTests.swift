@@ -202,9 +202,17 @@ struct SmartDownloadPlannerTests {
         #expect(SmartDownloadPlanner.episodesToDownload(list, nextUpId: nil, count: 4) == ["e5", "e6"])
     }
 
-    @Test func takesEveryRemainingEpisodeWithoutACount() {
+    @Test func takesEveryUnwatchedEpisodeWithoutACount() {
         #expect(SmartDownloadPlanner.episodesToDownload(episodes(played: 8, total: 10), nextUpId: nil, count: nil) == ["e9", "e10"])
         #expect(SmartDownloadPlanner.episodesToDownload(episodes(played: 10, total: 10), nextUpId: nil, count: nil).isEmpty)
+    }
+
+    @Test func takesSkippedAndNewEpisodesWhenKeepingEveryUnwatchedOne() {
+        // Episode 2 was skipped, 3 is being watched again, 5 is queued, and 7 just arrived on the server.
+        var list = episodes(played: 4, total: 6, queued: [5], inProgress: [3])
+        list[1] = SmartDownloadPlanner.Episode(id: "e2", played: false, inProgress: false, isQueued: false)
+        list.append(SmartDownloadPlanner.Episode(id: "e7", played: false, inProgress: false, isQueued: false))
+        #expect(SmartDownloadPlanner.episodesToDownload(list, nextUpId: "e5", count: nil) == ["e2", "e3", "e6", "e7"])
     }
 
     @Test func startsFromAnEpisodeBeingWatchedAgain() {

@@ -68,6 +68,14 @@ import OSLog
 /// resume data of ranges set aside, for a playback or a pause, or because their file is no
 /// longer in hand: a kill meanwhile loses none of it, and each range carries on from its bytes
 /// once its file is in the session again.
+///
+/// Each download's extras (`DownloadExtras`: subtitles, scrub previews, chapter pictures,
+/// segments, artwork, details) come through `probeSession`, one request at a time, oldest
+/// download first, whenever the process runs and nothing plays: they're small, and in the
+/// background session each would wait behind the file in hand for a connection and cost the
+/// daemon a task. A pass looks for what's missing as the app launches or is woken, as a
+/// download is queued or published, and as the network or a playback lets go; one cut off by
+/// a suspension carries on at the next. They count in the download's size and go with it.
 @Observable
 final class DownloadManager {
     static let sessionIdentifier = "net.vinnysaj.vinnyfin.transfers"
@@ -90,7 +98,8 @@ final class DownloadManager {
     private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "downloads")
 
     private(set) var jobs: [DownloadJob] = []
-    /// Bytes on disk plus bytes running transfers have received, by job. Refreshed by `trackProgress()`.
+    /// What each unfinished download has so far, on disk in its partial file and in the session's
+    /// files for its transfers, running or set aside (`bytesSoFar`). Refreshed by `trackProgress()`.
     private(set) var receivedBytes: [UUID: Int64] = [:]
     private(set) var bytesPerSecond: [UUID: Double] = [:]
     /// The network the device is on.
@@ -135,7 +144,11 @@ final class DownloadManager {
         let task: URLSessionDownloadTask
         /// The networks its request lets it use.
         let access: NetworkAccess
+        /// What it has received as its progress events count it: none before the first, even
+        /// carrying on from resume data, which tells a cut from a connection that never got going.
         var received: Int64
+        /// The bytes of the file its resume data held.
+        var carried: Int64 = 0
         /// The bytes its last progress event reported. Nil for a transfer adopted after a
         /// relaunch until its first event: what the task says it has received at adoption isn't
         /// on the same count, and can be more than that first event.
@@ -152,6 +165,9 @@ final class DownloadManager {
         var isUnderWay: Bool { task.response != nil || task.countOfBytesReceived > 0 }
         /// Taking it back would lose bytes: it's under way, or carries on from some.
         var carriesBytes: Bool { resumed || isUnderWay }
+        /// The bytes of the file it holds in the session's files: as it last reported them, which
+        /// count those it carried on from, and before its first report at least those.
+        var bytes: Int64 { reported == nil ? max(received, carried) : received }
     }
 
     /// After a relaunch, how long transfers that were handed to the session but that it no
@@ -165,8 +181,8 @@ final class DownloadManager {
     @ObservationIgnored private let storage: DownloadStorage
     @ObservationIgnored private let delegate: TransferDelegate
     @ObservationIgnored private let session: URLSession
-    /// For probes, which are a byte each: in the background session they would wait behind the
-    /// file in hand for one of its connections, minutes on a slow link.
+    /// For probes, which are a byte each, and extras, which are small: in the background session
+    /// they would wait behind the file in hand for one of its connections, minutes on a slow link.
     @ObservationIgnored private let probeSession: URLSession
     @ObservationIgnored private var running: [Int: RunningTransfer] = [:]
     /// Probes under way through `probeSession`, by job, and the identifier their reports carry.
@@ -197,12 +213,26 @@ final class DownloadManager {
     @ObservationIgnored private var players: [UUID: Bool] = [:]
     /// The app is off screen, so the session holds the next files' chunks as well.
     @ObservationIgnored private var isQueuingAhead = false
-    /// Ranges cancelled to set them aside whose resume data hasn't come yet; they stay claimed.
-    /// A range dropped meanwhile (its job removed or restarted) leaves, and its resume data with it.
-    @ObservationIgnored private var awaitingResumeData: Set<TransferTag> = []
-    /// Resume data of ranges set aside, to carry on from once their file is in the session
+    /// Transfers cancelled to set them aside whose resume data hasn't come yet, with the bytes
+    /// each had; they stay claimed. One dropped meanwhile (its job removed or restarted) leaves,
+    /// and its resume data with it.
+    @ObservationIgnored private var awaitingResumeData: [TransferTag: Int64] = [:]
+    /// Resume points of ranges set aside, to carry on from once their file is in the session
     /// again. Kept on disk too, so a kill meanwhile loses none of it. Their ranges stay claimed.
-    @ObservationIgnored private var heldResumeData: [TransferTag: Data] = [:]
+    @ObservationIgnored private var heldResumeData: [TransferTag: ResumePoint] = [:]
+    /// Resume points of whole-file transfers cancelled partway, by job, to carry on from when
+    /// the job's file goes to the session again. Kept on disk too.
+    @ObservationIgnored private var wholeFileResumeData: [UUID: ResumePoint] = [:]
+    /// A pass over the downloads' extras is under way.
+    private var isFetchingExtras = false
+    @ObservationIgnored private var extrasPass: Task<Void, Never>?
+    /// Something asked for a pass while one ran, so another follows.
+    @ObservationIgnored private var extrasPassWanted = false
+    /// Downloads this pass found with all their extras.
+    @ObservationIgnored private var extrasDone: Set<UUID> = []
+    /// Downloads whose extras failed, how often in a row, and when to try again.
+    @ObservationIgnored private var extrasFailures: [UUID: (count: Int, retryAt: Date)] = [:]
+    @ObservationIgnored private var extrasRetry: Task<Void, Never>?
     /// How many bytes more than there's room for each queued download needs, as last checked.
     @ObservationIgnored private var spaceShortfalls: [UUID: Int64] = [:]
     @ObservationIgnored private var spaceCheckedAt = Date.distantPast
@@ -230,6 +260,7 @@ final class DownloadManager {
         do {
             awaitingReports = Set(try storage.loadHandedOut())
             heldResumeData = try storage.loadHeld()
+            wholeFileResumeData = try storage.loadResumePoints()
         } catch {
             problem = "Couldn't read what the last run left with the system: \(error.localizedDescription). Some of it may download again."
         }
@@ -314,6 +345,7 @@ final class DownloadManager {
         // held for a playback the last run ended during.
         if isPausedForPlayback { holdTransfers() }
         pump()
+        fetchExtrasSoon()
 
         for await event in delegate.events {
             switch event {
@@ -358,16 +390,19 @@ final class DownloadManager {
         }
     }
 
-    /// Hands the session what's next, then returns once the queue has settled (every active
-    /// download done or waiting for what the rules or room hold it back for, or held for a
-    /// playback) or the caller's task is cancelled, for a background task to keep the app
-    /// running that long. Meanwhile the session's events and `trackProgress` keep the queue moving.
+    /// Hands the session what's next and looks for missing extras, then returns once the queue
+    /// has settled (every active download done or waiting for what the rules or room hold it
+    /// back for, and the extras pass over, or held for a playback) or the caller's task is
+    /// cancelled, for a background task to keep the app running that long. Meanwhile the
+    /// session's events and `trackProgress` keep the queue moving.
     func keepMoving() async {
         pump()
+        fetchExtrasSoon()
         let settled = Observations { [weak self] in
             guard let self else { return true }
             return self.hasAdoptedTransfers
-                && (self.isPausedForPlayback || DownloadJob.queue(self.jobs).allSatisfy { self.waits[$0] != nil })
+                && (self.isPausedForPlayback
+                    || (DownloadJob.queue(self.jobs).allSatisfy { self.waits[$0] != nil } && !self.isFetchingExtras))
         }
         for await isSettled in settled where isSettled || Task.isCancelled { return }
     }
@@ -405,28 +440,7 @@ final class DownloadManager {
         isSpaceCheckDue = true
         save()
         pump()
-        if let client = accounts.client {
-            let storage = storage
-            Task { [weak self] in
-                do {
-                    try await storage.saveArtwork(for: item, client: client)
-                } catch {
-                    Self.log.notice("Couldn't save artwork for \(item.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                }
-                self?.artworkRevision += 1
-            }
-            // The intro and credits, so the skip buttons work offline too.
-            Task { [weak self] in
-                do {
-                    let segments = try await client.mediaSegments(itemId: item.id)
-                    guard let self, let index = self.index(of: job.id) else { return }
-                    self.jobs[index].segments = segments
-                    self.save()
-                } catch {
-                    Self.log.notice("Couldn't save segments for \(item.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
+        fetchExtrasSoon()
     }
 
     func pause(_ id: UUID) {
@@ -602,6 +616,7 @@ final class DownloadManager {
                 self.isOnPower = isOnPower
                 Self.log.info("On power: \(isOnPower.map { $0 ? "yes" : "no" } ?? "unknown", privacy: .public)")
                 self.pump()
+                self.fetchExtrasSoon()
             }
             guard !Task.isCancelled else { return }
             self?.problem = "vinnyfin can't tell when this \(Device.name) is plugged in, so Only While Charging may hold downloads back."
@@ -650,7 +665,7 @@ final class DownloadManager {
         for (identifier, transfer) in Self.cancellationOrder(transfers) {
             cancelledByUs.insert(identifier)
             running[identifier] = nil
-            awaitingResumeData.insert(transfer.tag)
+            awaitingResumeData[transfer.tag] = transfer.bytes
             transfer.task.cancel(byProducingResumeData: { [weak self] data in
                 Task { @MainActor in self?.setAside(data, for: transfer.tag) }
             })
@@ -667,21 +682,23 @@ final class DownloadManager {
     /// The range stayed claimed until now, so it wasn't planned again meanwhile; with no data
     /// (it hadn't started), it's planned afresh.
     private func setAside(_ data: Data?, for tag: TransferTag) {
-        guard awaitingResumeData.remove(tag) != nil else { return }
+        guard let bytes = awaitingResumeData.removeValue(forKey: tag) else { return }
         if let data {
+            let point = ResumePoint(data: data, bytes: bytes)
             if tag.range == nil {
-                keepResumeData(data, of: tag.jobId)
+                keepResumeData(point, of: tag.jobId)
             } else {
-                keepHeld(data, for: tag)
+                keepHeld(point, for: tag)
             }
         }
         pump()
+        fetchExtrasSoon()
     }
 
-    private func keepHeld(_ data: Data, for tag: TransferTag) {
-        heldResumeData[tag] = data
+    private func keepHeld(_ point: ResumePoint, for tag: TransferTag) {
+        heldResumeData[tag] = point
         do {
-            try storage.saveHeld(data, for: tag)
+            try storage.saveHeld(point, for: tag)
         } catch {
             problem = "Couldn't keep a held download's progress: \(error.localizedDescription)"
         }
@@ -715,20 +732,24 @@ final class DownloadManager {
         pump()
     }
 
+    /// Stops and forgets a job, with its extras, and the item's artwork once no other job of it
+    /// is left. `deletingFile` deletes the finished file and the subtitles beside it too.
     func remove(_ id: UUID, deletingFile: Bool = false) {
-        guard forget(id, deletingFile: deletingFile) else { return }
+        guard let itemId = jobs.first(where: { $0.id == id })?.itemId, forget(id, deletingFile: deletingFile) else { return }
+        removeArtwork(ofItems: [itemId])
         save()
         pump()
     }
 
-    /// Stops a job and drops it from the list, deleting its file if asked. False when there's
-    /// no such job.
+    /// Stops a job and drops it from the list with its extras, deleting its file if asked.
+    /// False when there's no such job.
     @discardableResult
     private func forget(_ id: UUID, deletingFile: Bool) -> Bool {
         guard let index = index(of: id) else { return false }
+        let job = jobs[index]
         cancelTransfers(of: id)
         removePartial(of: id)
-        if deletingFile, let savedPath = jobs[index].savedPath {
+        if deletingFile, let savedPath = job.savedPath {
             let file = storage.finished.appending(path: savedPath)
             do {
                 if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
@@ -736,15 +757,10 @@ final class DownloadManager {
                 problem = "Couldn't delete \(file.lastPathComponent): \(error.localizedDescription)"
             }
         }
+        removeExtras(of: job, besideFile: deletingFile)
         jobs.remove(at: index)
         isSpaceCheckDue = true
         return true
-    }
-
-    func removeCompleted() {
-        jobs.removeAll { $0.status == .completed }
-        isSpaceCheckDue = true
-        save()
     }
 
     /// Stops and forgets every unfinished job, for signing out. Finished files stay.
@@ -752,6 +768,7 @@ final class DownloadManager {
         for job in jobs where job.status != .completed {
             cancelTransfers(of: job.id)
             removePartial(of: job.id)
+            removeExtras(of: job, besideFile: false)
         }
         jobs.removeAll { $0.status != .completed }
         isSpaceCheckDue = true
@@ -762,14 +779,18 @@ final class DownloadManager {
         job.savedPath.map { storage.finished.appending(path: $0) }
     }
 
-    /// A finished download of the item (of that version, when one is given) whose file is still there.
+    /// A finished download of the item (of that version, when one is given) whose file is still
+    /// there, with the extras it has saved.
     func playableFile(itemId: String, mediaSourceId: String?) -> PlaybackResolver.DownloadedCopy? {
         let candidates = jobs.filter {
             $0.itemId == itemId && $0.status == .completed && (mediaSourceId == nil || $0.mediaSourceId == mediaSourceId)
         }
         for job in candidates {
             if let url = savedFileURL(of: job), FileManager.default.fileExists(atPath: url.path) {
-                return PlaybackResolver.DownloadedCopy(url: url, item: job.item, segments: job.segments ?? [])
+                let saved = DownloadExtras.saved(for: job, storage: storage) { FileManager.default.fileExists(atPath: $0.path) }
+                return PlaybackResolver.DownloadedCopy(url: url, item: job.item, segments: job.segments ?? [],
+                                                       subtitleFiles: saved.subtitles, trickplaySheets: saved.trickplaySheets,
+                                                       chapterImages: saved.chapterImages)
             }
         }
         return nil
@@ -864,12 +885,26 @@ final class DownloadManager {
         (episode.parentIndexNumber ?? 0) * 10_000 + (episode.indexNumber ?? 0)
     }
 
-    /// Bytes downloads take up: finished files, and what unfinished ones have so far.
+    /// Bytes downloads take up: finished files with their extras, and what unfinished ones have
+    /// so far (`bytesSoFar`) with theirs.
     var storageUsed: Int64 {
-        jobs.reduce(0) { $0 + ($1.status == .completed ? $1.totalBytes ?? 0 : $1.completed.byteCount) }
+        storageUsed(bytesSoFar: bytesSoFar())
+    }
+
+    private func storageUsed(bytesSoFar: [UUID: Int64]) -> Int64 {
+        jobs.reduce(0) { $0 + ($1.status == .completed ? $1.storedBytes : (bytesSoFar[$1.id] ?? 0) + ($1.extrasBytes ?? 0)) }
     }
 
     func availableCapacity() -> Int64? { storage.availableCapacity() }
+
+    /// The room the downloads already queued don't need, for new ones: on the device, and under
+    /// the storage limit when there is one, whichever is less. Nil when neither can be told.
+    func spaceForNewDownloads() -> Int64? {
+        let bytesSoFar = bytesSoFar()
+        let queuedNeed = DownloadJob.queued(jobs).reduce(0) { $0 + max(0, ($1.displayTotalBytes ?? 0) - (bytesSoFar[$1.id] ?? 0)) }
+        let rooms = [storage.availableCapacity(), rules.storageLimit.map { $0 - storageUsed(bytesSoFar: bytesSoFar) }].compactMap(\.self)
+        return rooms.min().map { $0 - queuedNeed }
+    }
 
     /// Saved artwork for an item, for showing it offline.
     func artworkURL(itemId: String, kind: JellyfinClient.ImageKind) -> URL? {
@@ -910,7 +945,7 @@ final class DownloadManager {
         let finishing = Set(running.values.filter { $0.carriesBytes && $0.access.allows(network) }.map(\.tag.jobId))
         carryOnSetAside(in: inSession, finishing: finishing, client: client)
         let probing = probes.keys.map { TransferTag(jobId: $0, range: DownloadJob.probeRange) }
-        let claimed = running.values.map(\.tag) + awaitingReports + probing + heldResumeData.keys + awaitingResumeData
+        let claimed = running.values.map(\.tag) + awaitingReports + probing + heldResumeData.keys + awaitingResumeData.keys
         let plan = DownloadJob.plan(jobs, running: claimed, finishing: finishing, held: held, waitingForNetwork: waitingForNetwork,
                                     budget: Self.maxQueuedTransfers - running.count, queuingAhead: isQueuingAhead, now: now)
         for tag in plan {
@@ -952,12 +987,15 @@ final class DownloadManager {
         isSpaceCheckDue = false
         spaceCheckedAt = now
         let available = storage.availableCapacity()
-        var outcome = StorageBudget.plan(queue: queued, used: storageUsed, available: available, limit: rules.storageLimit, deletable: [])
+        let bytesSoFar = bytesSoFar()
+        let used = storageUsed(bytesSoFar: bytesSoFar)
+        var outcome = StorageBudget.plan(queue: queued, bytesSoFar: bytesSoFar, used: used, available: available,
+                                         limit: rules.storageLimit, deletable: [])
         if !outcome.shortfalls.isEmpty, players.isEmpty {
-            let deletable = watchedDownloads().map { StorageBudget.Deletable(id: $0.id, bytes: $0.totalBytes ?? 0) }
+            let deletable = watchedDownloads().map { StorageBudget.Deletable(id: $0.id, bytes: $0.storedBytes) }
             if !deletable.isEmpty {
-                outcome = StorageBudget.plan(queue: queued, used: storageUsed, available: available, limit: rules.storageLimit,
-                                             deletable: deletable)
+                outcome = StorageBudget.plan(queue: queued, bytesSoFar: bytesSoFar, used: used, available: available,
+                                             limit: rules.storageLimit, deletable: deletable)
                 makeRoom(deleting: outcome.deletions)
             }
         }
@@ -1005,7 +1043,7 @@ final class DownloadManager {
             (order[$0.key.jobId] ?? .max, $0.key.range?.lowerBound ?? 0) < (order[$1.key.jobId] ?? .max, $1.key.range?.lowerBound ?? 0)
         }
         var done: Set<TransferTag> = []
-        for (tag, data) in sorted {
+        for (tag, point) in sorted {
             guard let job = jobs.first(where: { $0.id == tag.jobId }), job.status != .completed,
                   let range = tag.range, !job.completed.covers(range), !running.values.contains(where: { tag.overlaps($0.tag) })
             else {
@@ -1015,7 +1053,7 @@ final class DownloadManager {
             guard job.status == .active, inSession.contains(job.id), isQueuingAhead || finishing.subtracting([job.id]).isEmpty,
                   !awaitingReports.contains(where: tag.overlaps), running.count < Self.maxQueuedTransfers
             else { continue }
-            start(tag, for: job, client: client, resumeData: data)
+            start(tag, for: job, client: client, resumeData: point)
             done.insert(tag)
         }
         if !done.isEmpty { Self.log.info("Carried on with or dropped \(done.count) ranges set aside") }
@@ -1025,8 +1063,11 @@ final class DownloadManager {
     /// Asks the server for a file's first byte through `probeSession`, at the job's retry time
     /// if it has one, and hands the answer to `handle` like a transfer's. A server that ignores
     /// Range answers with the whole file: the probe stops at the headers, and the file comes
-    /// through the background session in one request. A probe the app is suspended or killed
-    /// during fails, or is never sent, and goes again the next time the app runs.
+    /// through the background session in one request. The app asks for background time while
+    /// the probe is out, so one sent just before the app leaves the front, or while Siri, a
+    /// shortcut or a control runs it in the background, still hands its file to the background
+    /// session. A probe the app is suspended or killed during all the same fails, or is never
+    /// sent, and goes again the next time the app runs.
     private func probe(_ job: DownloadJob, client: JellyfinClient) {
         let tag = TransferTag(jobId: job.id, range: DownloadJob.probeRange)
         var request = URLRequest(url: client.streamURL(itemId: job.itemId, mediaSourceId: job.mediaSourceId))
@@ -1040,6 +1081,10 @@ final class DownloadManager {
         let task = Task { [weak self, probeSession] in
             if let retryAt, retryAt > .now { try? await Task.sleep(for: .seconds(retryAt.timeIntervalSinceNow)) }
             guard !Task.isCancelled else { return }
+            #if !os(macOS)
+            let backgroundTime = BackgroundTime(named: "Download probe")
+            defer { backgroundTime.end() }
+            #endif
             Self.log.debug("Probing [\(tag.encoded)] as \(identifier)")
             let finished = await Self.fetchProbe(request, tag: tag, identifier: identifier, into: staging, using: probeSession)
             guard let self else { return }
@@ -1096,10 +1141,11 @@ final class DownloadManager {
     /// transfer already received (only servers that send ETag or Last-Modified allow it). A new
     /// request carries the networks the rules give its job; one from resume data keeps those it
     /// was made with.
-    private func start(_ tag: TransferTag, for job: DownloadJob, client: JellyfinClient, resumeData: Data? = nil) {
+    private func start(_ tag: TransferTag, for job: DownloadJob, client: JellyfinClient, resumeData: ResumePoint? = nil) {
         let task: URLSessionDownloadTask
-        if let resumeData = resumeData ?? (tag.range == nil ? takeResumeData(of: job.id) : nil) {
-            task = session.downloadTask(withResumeData: resumeData)
+        let resumePoint = resumeData ?? (tag.range == nil ? takeResumeData(of: job.id) : nil)
+        if let resumePoint {
+            task = session.downloadTask(withResumeData: resumePoint.data)
         } else {
             var request = URLRequest(url: client.streamURL(itemId: job.itemId, mediaSourceId: job.mediaSourceId))
             // Byte offsets have to be offsets into the file itself, not into a compressed body.
@@ -1112,11 +1158,12 @@ final class DownloadManager {
         task.taskDescription = tag.encoded
         if let retryAt = job.retryAt, retryAt > .now { task.earliestBeginDate = retryAt }
         let access = NetworkAccess(task.originalRequest)
-        running[task.taskIdentifier] = RunningTransfer(tag: tag, task: task, access: access, received: 0, resumed: resumeData != nil)
+        running[task.taskIdentifier] = RunningTransfer(tag: tag, task: task, access: access, received: 0,
+                                                       carried: resumePoint?.bytes ?? 0, resumed: resumePoint != nil)
         task.resume()
         Self.log.debug("""
             Started task \(task.taskIdentifier) [\(tag.encoded)] on \(access.summary, privacy: .public)\
-            \(resumeData == nil ? "" : " from resume data")\(task.earliestBeginDate.map { " from \($0)" } ?? "")
+            \(resumePoint.map { " from resume data of \($0.bytes) bytes" } ?? "")\(task.earliestBeginDate.map { " from \($0)" } ?? "")
             """)
     }
 
@@ -1129,7 +1176,7 @@ final class DownloadManager {
             cancel(identifier, transfer)
         }
         awaitingReports = awaitingReports.filter { !isMatch($0) }
-        awaitingResumeData = awaitingResumeData.filter { !isMatch($0) }
+        awaitingResumeData = awaitingResumeData.filter { !isMatch($0.key) }
         if isMatch(TransferTag(jobId: jobId, range: DownloadJob.probeRange)) { probes.removeValue(forKey: jobId)?.task.cancel() }
         forgetHeld(Set(heldResumeData.keys.filter(isMatch)))
     }
@@ -1138,10 +1185,13 @@ final class DownloadManager {
         cancelledByUs.insert(identifier)
         running[identifier] = nil
         if transfer.tag.range == nil {
-            // All a whole-file transfer has is its resume data: paused, it carries on from there.
+            // All a whole-file transfer has is its resume data: stopped, it carries on from there
+            // when retried.
+            let bytes = transfer.bytes
             transfer.task.cancel(byProducingResumeData: { [weak self] data in
                 guard let data else { return }
-                Task { @MainActor in self?.keepResumeData(data, of: transfer.tag.jobId) }
+                let point = ResumePoint(data: data, bytes: bytes)
+                Task { @MainActor in self?.keepResumeData(point, of: transfer.tag.jobId) }
             })
         } else {
             transfer.task.cancel()
@@ -1215,10 +1265,11 @@ final class DownloadManager {
     private func replace(_ identifier: Int, resumeData: Data?) {
         guard let transfer = running.removeValue(forKey: identifier) else { return }
         if let resumeData, let job = jobs.first(where: { $0.id == transfer.tag.jobId }), job.status == .active {
+            let point = ResumePoint(data: resumeData, bytes: transfer.bytes)
             if let range = transfer.tag.range {
-                if !job.completed.covers(range) { keepHeld(resumeData, for: transfer.tag) }
+                if !job.completed.covers(range) { keepHeld(point, for: transfer.tag) }
             } else {
-                keepResumeData(resumeData, of: job.id)
+                keepResumeData(point, of: job.id)
             }
         }
         pump()
@@ -1233,6 +1284,7 @@ final class DownloadManager {
             \(conditions.isConstrained ? ", Low Data Mode" : "", privacy: .public)
             """)
         pump()
+        if conditions.isReachable { fetchExtrasSoon() }
     }
 
     // MARK: Finished transfers
@@ -1255,7 +1307,10 @@ final class DownloadManager {
 
         if let error = finished.error {
             discard(finished.stagedFile)
-            if tag.range == nil, let resumeData = finished.resumeData { keepResumeData(resumeData, of: tag.jobId) }
+            // A transfer from before a relaunch that the session didn't list counts no bytes until
+            // it carries on and reports.
+            let resumePoint = finished.resumeData.map { ResumePoint(data: $0, bytes: transfer?.bytes ?? 0) }
+            if tag.range == nil, let resumePoint { keepResumeData(resumePoint, of: tag.jobId) }
             guard jobs[index].status == .active else { return }
             if let reason = (error as? URLError)?.backgroundTaskCancelledReason, systemCancellation != reason {
                 Self.log.notice("The system cancelled transfers: \(String(describing: reason), privacy: .public)")
@@ -1271,8 +1326,8 @@ final class DownloadManager {
             // A range that can resume carries on from its bytes, as one set aside, instead of
             // being planned again, unless it has been already: after a relaunch, the wait for
             // reports is bounded.
-            if let range = tag.range, let resumeData = finished.resumeData, !jobs[index].completed.covers(range), !isClaimed(tag) {
-                keepHeld(resumeData, for: tag)
+            if let range = tag.range, let resumePoint, !jobs[index].completed.covers(range), !isClaimed(tag) {
+                keepHeld(resumePoint, for: tag)
             }
             return
         }
@@ -1360,10 +1415,15 @@ final class DownloadManager {
         cancelTransfers(of: jobs[index].id)
         do {
             jobs[index].savedPath = try storage.publish(jobs[index])
+            // Publishing deleted it on disk.
+            wholeFileResumeData[jobs[index].id] = nil
             jobs[index].status = .completed
             jobs[index].completedAt = .now
             jobs[index].lastError = nil
             jobs[index].retryAt = nil
+            // Its subtitles go beside it now.
+            extrasDone.remove(jobs[index].id)
+            fetchExtrasSoon()
             notifications.ready(jobs[index])
         } catch {
             jobs[index].status = .failed
@@ -1383,6 +1443,194 @@ final class DownloadManager {
     private func noteFileExtension(from response: ResponseInfo?, at index: Int) {
         guard jobs[index].fileExtension == nil, let response else { return }
         jobs[index].fileExtension = response.videoExtension
+    }
+
+    // MARK: Extras
+
+    /// After this many failures in a row, a download's extras wait for the next launch, and the
+    /// last failure shows as `problem`.
+    static let extrasAttempts = 3
+
+    /// Starts a pass over the downloads' extras, or another after the one under way.
+    private func fetchExtrasSoon() {
+        extrasPassWanted = true
+        guard extrasPass == nil else { return }
+        isFetchingExtras = true
+        extrasPass = Task { [weak self] in
+            while let self, self.extrasPassWanted {
+                self.extrasPassWanted = false
+                self.extrasDone = []
+                await self.fetchExtras()
+            }
+            self?.extrasPass = nil
+            self?.isFetchingExtras = false
+        }
+    }
+
+    /// Fetches what downloads that are under way or finished lack, oldest first, one request at
+    /// a time, while the server can be reached and nothing plays. A connection that fails ends
+    /// the pass, until the network or the next launch starts another; other failures hold that
+    /// download back for a while (`extrasFailures`).
+    private func fetchExtras() async {
+        while hasAdoptedTransfers, isNetworkReachable, !isPausedForPlayback, !Task.isCancelled,
+              let client = accounts.client, let userId = accounts.account?.userId
+        {
+            guard let next = nextExtrasStep(now: .now) else {
+                // Downloads held back by a failure go again once their wait is over.
+                let waits = extrasFailures.values.map(\.retryAt).filter { $0 != .distantFuture }
+                if let soonest = waits.min() { retryExtras(after: max(1, soonest.timeIntervalSinceNow)) }
+                return
+            }
+            let (job, step) = next
+            do {
+                try await fetch(step, for: job, client: client, userId: userId)
+                extrasFailures[job.id] = nil
+            } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+                if let code = (error as? URLError)?.code, Self.connectionFailures.contains(code) {
+                    Self.log.notice("Extras wait for the connection: \(error.localizedDescription, privacy: .public)")
+                    retryExtras(after: 60)
+                    return
+                }
+                extrasFailed(job, step, error)
+            }
+        }
+    }
+
+    private static let connectionFailures: Set<URLError.Code> = [
+        .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .timedOut,
+        .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed,
+    ]
+
+    /// The oldest download with something to fetch, and what. Records the size of those found
+    /// with everything.
+    private func nextExtrasStep(now: Date) -> (DownloadJob, DownloadExtras.Step)? {
+        let exists = { (file: URL) in FileManager.default.fileExists(atPath: file.path) }
+        let rules = rules
+        for job in jobs.sorted(by: { $0.createdAt < $1.createdAt })
+        where (job.status == .active || job.status == .completed) && !extrasDone.contains(job.id)
+            && (extrasFailures[job.id]?.retryAt ?? .distantPast) <= now
+            // A download's extras keep to its network and charging rules.
+            && rules.wait(for: job, network: network, isOnPower: isOnPower) == nil
+        {
+            if let step = DownloadExtras.nextStep(for: job, storage: storage, exists: exists, now: now) { return (job, step) }
+            extrasDone.insert(job.id)
+            let size = storage.size(of: DownloadExtras.files(for: job, storage: storage).filter(\.isOwn).map(\.local))
+            if job.extrasBytes != size, let index = index(of: job.id) {
+                jobs[index].extrasBytes = size
+                // They count against the storage limit.
+                isSpaceCheckDue = true
+                save()
+            }
+        }
+        return nil
+    }
+
+    private func fetch(_ step: DownloadExtras.Step, for job: DownloadJob, client: JellyfinClient, userId: String) async throws {
+        switch step {
+        case .lookUp:
+            let version = job.versionItemId
+            let detail: JellyfinItem
+            do {
+                detail = try await client.item(id: job.itemId, userId: userId)
+            } catch JellyfinError.http(let status, _) where status == 404 {
+                // Gone from the server: what was saved with the download is all there is.
+                Self.log.notice("\(job.title, privacy: .public) is gone from the server; keeping the details it was saved with")
+                update(job.id) { saved in
+                    saved.segments = saved.segments ?? []
+                    saved.extrasItemId = version
+                    saved.extrasCheckedAt = .now
+                }
+                return
+            }
+            var chapters = detail.chapters
+            if version != detail.id {
+                do {
+                    chapters = try await client.item(id: version, userId: userId).chapters
+                } catch JellyfinError.http(let status, _) where status == 404 {
+                    // A version that isn't an item of its own has no chapters.
+                    chapters = nil
+                }
+            }
+            let segments: [MediaSegment]
+            do {
+                segments = try await client.mediaSegments(itemId: version)
+            } catch JellyfinError.http(let status, _) where status == 404 {
+                // A server from before media segments, or a version without any.
+                segments = []
+            }
+            let source = detail.mediaSources?.first { $0.id == job.mediaSourceId } ?? job.item?.mediaSources?.first
+            update(job.id) { saved in
+                if let source { saved.item = DownloadJob.snapshot(of: detail, keeping: source) }
+                saved.item?.chapters = chapters
+                saved.segments = segments
+                saved.extrasItemId = version
+                saved.extrasCheckedAt = .now
+            }
+        case .file(let file):
+            var request = URLRequest(url: file.url(using: client))
+            rules.access(for: job).apply(to: &request)
+            let (downloaded, response) = try await probeSession.download(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else {
+                discard(downloaded)
+                // Its details may be out of date: the server can make previews or chapter pictures again.
+                if status == 404 { update(job.id) { $0.extrasCheckedAt = .distantPast } }
+                throw JellyfinError.http(status: status, body: "")
+            }
+            // Removed meanwhile: its extras would be left behind.
+            guard index(of: job.id) != nil else { return discard(downloaded) }
+            try storage.saveExtra(downloaded, to: file.local)
+            if case .artwork = file.remote { artworkRevision += 1 }
+        }
+    }
+
+    /// Changes a job that may have been removed while its extras were being fetched.
+    private func update(_ jobId: UUID, _ change: (inout DownloadJob) -> Void) {
+        guard let index = index(of: jobId) else { return }
+        change(&jobs[index])
+        save()
+    }
+
+    private func extrasFailed(_ job: DownloadJob, _ step: DownloadExtras.Step, _ error: any Error) {
+        let count = (extrasFailures[job.id]?.count ?? 0) + 1
+        Self.log.error("Extras of \(job.title, privacy: .public) failed (\(count)): \(String(describing: error), privacy: .public)")
+        guard count < Self.extrasAttempts else {
+            extrasFailures[job.id] = (count, .distantFuture)
+            let what = switch step {
+            case .lookUp: "details and intro and credits markers"
+            case .file(let file): file.description
+            }
+            problem = "Couldn't save the \(what) for \(job.title): \(error.localizedDescription) It plays without them until vinnyfin tries again, the next time it opens."
+            return
+        }
+        extrasFailures[job.id] = (count, .now.addingTimeInterval(30 * DownloadJob.backoff(attempt: count, cap: 8)))
+    }
+
+    /// Another pass once `seconds` have passed, while the app runs, in place of one waiting.
+    private func retryExtras(after seconds: TimeInterval) {
+        extrasRetry?.cancel()
+        extrasRetry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            self?.fetchExtrasSoon()
+        }
+    }
+
+    /// Deletes a job's previews and chapter pictures, and with `besideFile` its subtitles.
+    private func removeExtras(of job: DownloadJob, besideFile: Bool) {
+        extrasFailures[job.id] = nil
+        let subtitles = besideFile
+            ? DownloadExtras.files(for: job, storage: storage).compactMap { file -> URL? in
+                if case .subtitle = file.remote { return file.local }
+                return nil
+            }
+            : []
+        do {
+            try storage.removeExtras(for: job.id, besideFile: subtitles)
+        } catch {
+            problem = "Couldn't delete the subtitles and previews of \(job.title): \(error.localizedDescription)"
+        }
     }
 
     // MARK: Files
@@ -1417,7 +1665,9 @@ final class DownloadManager {
         }
     }
 
+    /// Deletes the job's partial file and its whole-file resume data.
     private func removePartial(of jobId: UUID) {
+        wholeFileResumeData[jobId] = nil
         do {
             try storage.removePartial(for: jobId)
         } catch {
@@ -1425,37 +1675,39 @@ final class DownloadManager {
         }
     }
 
-    private func keepResumeData(_ data: Data, of jobId: UUID) {
+    /// Keeps a whole-file transfer's resume point for an unfinished job; a finished or forgotten
+    /// one has no use for it.
+    private func keepResumeData(_ point: ResumePoint, of jobId: UUID) {
+        guard jobs.contains(where: { $0.id == jobId && $0.status != .completed }) else { return }
+        wholeFileResumeData[jobId] = point
         do {
-            try data.write(to: storage.resumeDataFile(for: jobId), options: .atomic)
+            try storage.saveResumePoint(point, for: jobId)
         } catch {
             problem = "Couldn't keep a download's resume data: \(error.localizedDescription)"
         }
     }
 
     /// Resume data is used once: a resumed transfer that fails again leaves new resume data.
-    private func takeResumeData(of jobId: UUID) -> Data? {
-        let file = storage.resumeDataFile(for: jobId)
-        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        defer { discard(file) }
-        do {
-            return try Data(contentsOf: file)
-        } catch {
-            problem = "Couldn't read a download's resume data, so it starts over: \(error.localizedDescription)"
-            return nil
-        }
+    private func takeResumeData(of jobId: UUID) -> ResumePoint? {
+        guard let point = wholeFileResumeData.removeValue(forKey: jobId) else { return nil }
+        discard(storage.resumeDataFile(for: jobId))
+        return point
     }
 
     // MARK: Progress
 
+    /// The bytes each unfinished download has so far: in its partial file, and in the session's
+    /// files for its transfers, running, awaiting their resume data or set aside with it.
+    private func bytesSoFar() -> [UUID: Int64] {
+        var held: [(jobId: UUID, bytes: Int64)] = running.values.map { ($0.tag.jobId, $0.bytes) }
+        held += awaitingResumeData.map { ($0.key.jobId, $0.value) }
+        held += heldResumeData.map { ($0.key.jobId, $0.value.bytes) }
+        held += wholeFileResumeData.map { ($0.key, $0.value.bytes) }
+        return DownloadJob.bytesSoFar(jobs, held: held)
+    }
+
     private func refreshLiveProgress() {
-        var bytes: [UUID: Int64] = [:]
-        for job in jobs where job.status != .completed {
-            bytes[job.id] = job.completed.byteCount
-        }
-        for transfer in running.values where bytes[transfer.tag.jobId] != nil {
-            bytes[transfer.tag.jobId, default: 0] += transfer.received
-        }
+        let bytes = bytesSoFar()
         let now = Date.now
         if let lastSample, now.timeIntervalSince(lastSample.date) > 5 {
             // The app was suspended: transfers carried on without reporting, so that time
@@ -1512,4 +1764,30 @@ final class DownloadManager {
         count.formatted(.byteCount(style: .file))
     }
 }
+
+#if !os(macOS)
+/// Time the system grants the app to finish something it started, in front or in the
+/// background, until `end()` or until the system takes it back.
+@MainActor
+private final class BackgroundTime {
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "downloads")
+    private let name: String
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+
+    init(named name: String) {
+        self.name = name
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            guard let self else { return }
+            Self.log.notice("Background time ran out for \(self.name, privacy: .public)")
+            self.end()
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+#endif
 #endif

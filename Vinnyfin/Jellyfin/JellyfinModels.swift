@@ -45,6 +45,8 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var mediaSourceCount: Int?
     var people: [Person]?
     var chapters: [Chapter]?
+    /// The scrub previews the server made, by version and then by width in pixels.
+    var trickplay: [String: [String: TrickplayInfo]]?
 
     enum CodingKeys: String, CodingKey {
         case id = "Id", name = "Name", type = "Type", sortName = "SortName", overview = "Overview"
@@ -62,6 +64,7 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
         case parentThumbImageTag = "ParentThumbImageTag", seriesPrimaryImageTag = "SeriesPrimaryImageTag"
         case primaryImageAspectRatio = "PrimaryImageAspectRatio", userData = "UserData"
         case mediaSources = "MediaSources", mediaSourceCount = "MediaSourceCount", people = "People", chapters = "Chapters"
+        case trickplay = "Trickplay"
     }
 
     init(id: String, name: String, type: String) {
@@ -146,6 +149,18 @@ nonisolated struct JellyfinItem: Codable, Identifiable, Hashable, Sendable {
     var titleId: String { isEpisode ? (seriesId ?? id) : id }
     var titleName: String { isEpisode ? (seriesName ?? name) : name }
 
+    /// What a landscape card says under the title's name: an episode's number and name, the time
+    /// left in a film partway through, or its year.
+    var cardDetail: String {
+        if isEpisode {
+            return [episodeCode, name].compactMap(\.self).joined(separator: " · ")
+        }
+        if let resume = resumeSeconds, let total = runtimeSeconds, total > resume {
+            return "\(Duration.seconds(total - resume).formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))) left"
+        }
+        return premiereYearText ?? ""
+    }
+
     var premiereYearText: String? {
         productionYear.map(String.init)
     }
@@ -193,6 +208,13 @@ nonisolated extension JellyfinItem {
     }
 }
 
+nonisolated extension MediaSource {
+    /// The item this version is: a local version's id is its item's, and an item's own version's
+    /// is the item's. Skip markers and chapters are the version's own, with timings that can
+    /// differ from another version's, so they're asked for by this id.
+    var versionItemId: String { id }
+}
+
 nonisolated struct UserItemData: Codable, Hashable, Sendable {
     var playbackPositionTicks: Int64?
     var playCount: Int?
@@ -224,10 +246,33 @@ nonisolated struct Person: Codable, Hashable, Sendable, Identifiable {
 nonisolated struct Chapter: Codable, Hashable, Sendable {
     var startPositionTicks: Int64
     var name: String?
+    /// Set when the server has a picture of the chapter's start.
+    var imageTag: String?
 
     enum CodingKeys: String, CodingKey {
-        case startPositionTicks = "StartPositionTicks", name = "Name"
+        case startPositionTicks = "StartPositionTicks", name = "Name", imageTag = "ImageTag"
     }
+
+    var start: Double { Double(startPositionTicks) / 10_000_000 }
+}
+
+/// One width of a version's scrub previews: a thumbnail every `interval` milliseconds, laid out
+/// left to right and top to bottom on sheets of `tileWidth` by `tileHeight`.
+nonisolated struct TrickplayInfo: Codable, Hashable, Sendable {
+    let width: Int
+    let height: Int
+    let tileWidth: Int
+    let tileHeight: Int
+    let thumbnailCount: Int
+    let interval: Int
+
+    enum CodingKeys: String, CodingKey {
+        case width = "Width", height = "Height", tileWidth = "TileWidth", tileHeight = "TileHeight"
+        case thumbnailCount = "ThumbnailCount", interval = "Interval"
+    }
+
+    var thumbnailsPerSheet: Int { max(1, tileWidth * tileHeight) }
+    var sheetCount: Int { (thumbnailCount + thumbnailsPerSheet - 1) / thumbnailsPerSheet }
 }
 
 /// The parts of Jellyfin's `MediaSourceInfo` this app reads: one version of an item.

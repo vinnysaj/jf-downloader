@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 #if os(macOS)
 import AppKit
@@ -83,6 +84,7 @@ extension View {
             .environment(app.settings)
             .environment(app.history)
             .environment(app.messages)
+            .environment(app.links)
             .environment(app.player)
             .environment(app.socket)
             .environment(app.sharePlay)
@@ -92,6 +94,7 @@ extension View {
             .environment(app.settings)
             .environment(app.history)
             .environment(app.messages)
+            .environment(app.links)
             .environment(app.player)
             .environment(app.socket)
             .environment(app.sharePlay)
@@ -99,12 +102,14 @@ extension View {
             .environment(app.downloadNotifications)
             .environment(app.smartDownloads)
             .environment(app.localLibrary)
+            .environment(app.spotlight)
             #if os(iOS) || os(visionOS)
             .environment(app.backgroundDownloads)
             .environment(app.keepAwake)
             .environment(app.diagnostics)
             #endif
             #if os(iOS) || os(macOS)
+            .environment(app.widgetDownloads)
             .environment(app.remote)
             #endif
         #endif
@@ -115,21 +120,27 @@ extension View {
 /// to hand over finished transfers or run a background task, when no window may be shown.
 final class AppDelegate: NSObject {
     let settings = AppSettings(cloud: NSUbiquitousKeyValueStore.default)
+    #if os(iOS) || os(macOS)
+    let accounts = AccountStore(movingSignInFrom: .standard)
+    #else
     let accounts = AccountStore()
+    #endif
     let history = WatchHistory()
     let messages = AppMessages()
+    let links = IncomingLinks()
     private(set) lazy var knownServers = KnownServers(accounts: accounts, cloud: NSUbiquitousKeyValueStore.default)
     private lazy var cloudSync = CloudSync(store: .default, settings: settings, servers: knownServers, messages: messages)
     #if os(tvOS)
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history)
     #else
-    private(set) lazy var downloadNotifications = DownloadNotifications(settings: settings)
+    private(set) lazy var downloadNotifications = DownloadNotifications(settings: settings, links: links)
     private(set) lazy var downloads = DownloadManager(accounts: accounts, settings: settings, history: history,
                                                       notifications: downloadNotifications)
     private(set) lazy var smartDownloads = SmartDownloads(accounts: accounts, downloads: downloads, settings: settings, history: history)
     let localLibrary = LocalLibrary()
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history,
                                                      downloads: downloads, smartDownloads: smartDownloads, localLibrary: localLibrary)
+    private(set) lazy var spotlight = SpotlightTitles(accounts: accounts, downloads: downloads)
     #endif
     #if os(iOS) || os(visionOS)
     private(set) lazy var keepAwake = KeepAwakeAudio(downloads: downloads, settings: settings, accounts: accounts)
@@ -142,10 +153,20 @@ final class AppDelegate: NSObject {
     private(set) lazy var sharePlay = SharePlay(accounts: accounts, player: player)
     #if os(iOS) || os(macOS)
     private(set) lazy var remote = RemoteControl(accounts: accounts, socket: socket, player: player)
+    private(set) lazy var widgetDownloads = WidgetDownloads(downloads: downloads, history: history)
     #endif
 
     private func launched() {
         ImageCache.configure()
+        #if os(iOS) || os(macOS)
+        if let problem = accounts.sharingProblem { messages.show(problem) }
+        #endif
+        // Siri, Shortcuts, Spotlight and the Downloads control act on these, also with the app in
+        // the background.
+        let accounts = accounts
+        let links = links
+        AppDependencyManager.shared.add(dependency: accounts)
+        AppDependencyManager.shared.add(dependency: links)
         let cloudSync = cloudSync
         Task { await cloudSync.run() }
         let knownServers = knownServers
@@ -158,9 +179,24 @@ final class AppDelegate: NSObject {
         Task { await sharePlay.run() }
         #if !os(tvOS)
         downloadNotifications.start()
+        let settings = settings
+        let history = history
         let downloads = downloads
+        let smartDownloads = smartDownloads
+        let spotlight = spotlight
+        AppDependencyManager.shared.add(dependency: settings)
+        AppDependencyManager.shared.add(dependency: history)
+        AppDependencyManager.shared.add(dependency: downloads)
+        AppDependencyManager.shared.add(dependency: smartDownloads)
+        AppDependencyManager.shared.add(dependency: spotlight)
         Task { await downloads.run() }
         Task { await downloads.trackProgress() }
+        Task { await spotlight.run() }
+        #endif
+        #if os(iOS) || os(macOS)
+        let widgetDownloads = widgetDownloads
+        AppDependencyManager.shared.add(dependency: widgetDownloads as any DownloadsRunning)
+        Task { await widgetDownloads.run() }
         #endif
         #if os(iOS) || os(visionOS)
         backgroundDownloads.registerLaunchHandlers()
@@ -188,6 +224,11 @@ final class AppDelegate: NSObject {
 extension AppDelegate: NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         launched()
+    }
+
+    /// The desktop's widgets come into view as another app takes over.
+    func applicationDidResignActive(_ notification: Notification) {
+        UpNextWidgets.reload()
     }
 }
 #else

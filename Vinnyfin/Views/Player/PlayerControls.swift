@@ -1,4 +1,6 @@
 import AetherEngine
+import Nuke
+import OSLog
 import SwiftUI
 
 /// The player's controls over the picture: close and title along the top, transport in the
@@ -306,6 +308,9 @@ struct PlayerControls: View {
             .disabled(model.audioOptions.isEmpty)
         panelButton(.subtitles, identifier: "player.subtitles", filled: model.selectedSubtitle != nil)
         panelButton(.speed, identifier: "player.speed")
+        if !model.chapters.isEmpty {
+            panelButton(.chapters, identifier: "player.chapters")
+        }
     }
 
     private func panelButton(_ kind: PlayerPanel, identifier: String, filled: Bool = false) -> some View {
@@ -359,8 +364,9 @@ private struct FormatBadge: View {
     }
 }
 
-/// The timeline: how far along, how much is buffered, and a handle to drag (or, on Apple TV,
-/// to move with the remote and click to jump).
+/// The timeline: how far along, how much is buffered, where chapters start, and a handle to drag
+/// (or, on Apple TV, to move with the remote and click to jump). While it moves, a preview over
+/// it shows the picture there, when the server made scrub previews, and the chapter.
 struct Scrubber: View {
     let model: PlayerModel
     @Binding var position: Double?
@@ -377,7 +383,23 @@ struct Scrubber: View {
         let time = position ?? model.clock.time
         VStack(spacing: 6) {
             TimelineBar(time: model.clock.time, buffered: model.clock.buffered, duration: duration, color: .white,
-                        height: barHeight, position: $position, onDrag: onInteraction) { model.seek(to: $0) }
+                        height: barHeight, marks: model.chapters.map(\.start), position: $position,
+                        onDrag: onInteraction) { model.seek(to: $0) }
+                .overlay {
+                    if let position {
+                        GeometryReader { geometry in
+                            let width = geometry.size.width
+                            let center = width * min(1, max(0, position / duration))
+                            ScrubPreview(model: model, time: position)
+                                // Centered over the handle, kept within the timeline, clear of the bar.
+                                .offset(x: min(max(0, center - ScrubPreview.width / 2), max(0, width - ScrubPreview.width)),
+                                        y: -(geometry.size.height + barHeight) / 2 - 8)
+                                .frame(width: width, height: geometry.size.height, alignment: .bottomLeading)
+                        }
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                    }
+                }
             #if os(visionOS)
             // Tall enough to look at and pinch, and lit under the eyes as a slider is.
             .frame(height: 44)
@@ -453,14 +475,105 @@ struct Scrubber: View {
     }
 }
 
-/// A timeline's bar: how far along and how much is buffered, with, but on Apple TV, a handle to
-/// drag. `position` follows the drag, and `onSeek` gets where it let go.
+/// Over the timeline while it moves: the picture at that point, when the server made scrub
+/// previews, with the chapter and the time under it.
+private struct ScrubPreview: View {
+    let model: PlayerModel
+    let time: Double
+
+    var body: some View {
+        let chapter = ChapterMark.current(in: model.chapters, at: time)
+        VStack(spacing: 4) {
+            if let tiles = model.trickplay {
+                TrickplayThumbnail(tiles: tiles, time: time)
+                    .frame(width: Self.thumbnailWidth,
+                           height: Self.thumbnailWidth * CGFloat(tiles.info.height) / CGFloat(max(1, tiles.info.width)))
+                    .clipShape(.rect(cornerRadius: 8))
+            }
+            if let chapter {
+                Text(chapter.name).font(.caption.weight(.semibold)).lineLimit(1)
+            }
+            Text(Scrubber.format(time)).font(.caption).monospacedDigit()
+        }
+        .padding(model.trickplay == nil ? 8 : 4)
+        .frame(width: Self.width)
+        // Its own height, not the timeline's it's laid over.
+        .fixedSize()
+        .platformGlass(in: .rect(cornerRadius: 12))
+        .accessibilityHidden(true)
+    }
+
+    static var width: CGFloat { thumbnailWidth + 8 }
+
+    private static var thumbnailWidth: CGFloat {
+        #if os(tvOS)
+        320
+        #else
+        CGFloat(TrickplayTiles.preferredWidth) / 2
+        #endif
+    }
+}
+
+/// One thumbnail cut from its sheet of scrub previews, which comes from the image cache, or from
+/// disk for a download.
+private struct TrickplayThumbnail: View {
+    let tiles: TrickplayTiles
+    let time: Double
+    @State private var sheet: (index: Int, image: CGImage)?
+    /// The sheet that couldn't be loaded, whose thumbnails say so.
+    @State private var failedSheet: Int?
+
+    private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "player")
+
+    var body: some View {
+        let spot = tiles.thumbnail(at: time)
+        Group {
+            if let spot, let sheet, sheet.index == spot.sheet, let thumbnail = sheet.image.cropping(to: spot.rect) {
+                Image(decorative: thumbnail, scale: 1).resizable()
+            } else {
+                Rectangle().fill(.black.opacity(0.6))
+                    .overlay {
+                        if let spot, failedSheet == spot.sheet {
+                            Text("No preview").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+            }
+        }
+        .aspectRatio(CGFloat(tiles.info.width) / CGFloat(max(1, tiles.info.height)), contentMode: .fit)
+        .task(id: spot?.sheet) {
+            guard let index = spot?.sheet, sheet?.index != index else { return }
+            do {
+                let image = try await ImagePipeline.shared.image(for: tiles.sheets[index])
+                #if os(macOS)
+                let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                #else
+                let cgImage = image.cgImage
+                #endif
+                if let cgImage {
+                    sheet = (index, cgImage)
+                } else {
+                    Self.log.notice("Scrub preview sheet \(index) has no bitmap")
+                    failedSheet = index
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                Self.log.notice("Couldn't load scrub previews: \(error.localizedDescription, privacy: .public)")
+                failedSheet = index
+            }
+        }
+    }
+}
+
+/// A timeline's bar: how far along and how much is buffered, with `marks` (as chapters' starts)
+/// and, but on Apple TV, a handle to drag. `position` follows the drag, and `onSeek` gets where
+/// it let go.
 struct TimelineBar: View {
     let time: Double
     var buffered: Double = 0
     let duration: Double
     let color: Color
     let height: CGFloat
+    var marks: [Double] = []
     @Binding var position: Double?
     var onDrag: () -> Void = {}
     let onSeek: (Double) -> Void
@@ -474,6 +587,11 @@ struct TimelineBar: View {
                     .frame(width: width * min(1, max(0, buffered / duration)))
                 Capsule().fill(color)
                     .frame(width: width * min(1, max(0, (position ?? time) / duration)))
+                ForEach(marks.filter { $0 > 0 && $0 < duration }, id: \.self) { mark in
+                    Rectangle().fill(.black.opacity(0.55))
+                        .frame(width: 2)
+                        .offset(x: width * mark / duration - 1)
+                }
             }
             .frame(height: height)
             .frame(maxHeight: .infinity)

@@ -4,16 +4,18 @@ import Observation
 import OSLog
 
 /// Keeps shows downloaded ahead of where they're being watched: per show, the next N episodes
-/// after the one watched last (or every remaining episode), topped up as episodes are watched
-/// here or on any other device. Each refresh also brings what the server says about how
-/// finished downloads were watched into the downloads (`DownloadManager.recordWatchState`),
-/// which decide from it, and from this device's history, what's watched: with "Delete Watched
-/// Episodes" on, watched episodes go, and watched downloads of any kind go to make room.
+/// after the one watched last, or every episode not yet watched, topped up as episodes are
+/// watched here or on any other device and as new ones reach the server. Each refresh also
+/// brings what the server says about how finished downloads were watched into the downloads
+/// (`DownloadManager.recordWatchState`), which decide from it, and from this device's history,
+/// what's watched: with "Delete Watched Episodes" on, watched episodes go, and watched
+/// downloads of any kind go to make room.
 ///
 /// Refreshes when the app opens, every `openInterval` while it's open, when a player closes, and
 /// on the background refresh wake (`BackgroundDownloads`). Never while a player is open: the
 /// episode in it could be the one a refresh deletes. The episodes a refresh queues for a show
-/// someone just set up count as downloads they started; the ones it tops up later don't.
+/// someone just set up count as downloads they started; the ones it tops up later don't. Siri
+/// and Shortcuts queue a show's next episodes once through `downloadNext`.
 @Observable
 final class SmartDownloads {
     static let openInterval: Duration = .seconds(15 * 60)
@@ -21,7 +23,7 @@ final class SmartDownloads {
     nonisolated struct Rule: Codable, Identifiable, Equatable, Sendable {
         let seriesId: String
         var seriesName: String
-        /// Nil keeps every remaining episode.
+        /// Nil keeps every episode not yet watched, wherever it is in the show.
         var episodesAhead: Int?
         var id: String { seriesId }
     }
@@ -151,9 +153,39 @@ final class SmartDownloads {
 
     private func refresh(seriesId: String) async throws {
         guard let client = accounts.client, let account = accounts.account, let rule = rule(for: seriesId) else { return }
-        let episodes = try await client.episodes(seriesId: seriesId, seasonId: nil, userId: account.userId, fields: "MediaSources")
+        let show = try await show(seriesId, client: client, userId: account.userId)
+        let wanted = SmartDownloadPlanner.episodesToDownload(show.states, nextUpId: show.nextUpId, count: rule.episodesAhead)
+        _ = try await queue(wanted, startedByUser: seriesSetUpByUser.contains(seriesId), client: client, userId: account.userId)
+        seriesSetUpByUser.remove(seriesId)
+    }
+
+    /// Queues the next `count` episodes to watch of a show, once, as Siri and Shortcuts ask.
+    /// Returns the episodes it queued: none when they're all downloaded or on their way.
+    func downloadNext(_ count: Int, seriesId: String) async throws -> [JellyfinItem] {
+        guard let client = accounts.client, let account = accounts.account else { throw PlaybackError.notSignedIn }
+        let show = try await show(seriesId, client: client, userId: account.userId)
+        let wanted = SmartDownloadPlanner.episodesToDownload(show.states, nextUpId: show.nextUpId, count: count)
+        return try await queue(wanted, startedByUser: true, client: client, userId: account.userId)
+    }
+
+    /// What keeping every unwatched episode of a show would add to the downloads, by the sizes
+    /// the server lists for the versions closest to the download quality.
+    func everyUnwatchedEstimate(seriesId: String) async throws -> DownloadEstimate {
+        guard let client = accounts.client, let account = accounts.account else { throw PlaybackError.notSignedIn }
+        let show = try await show(seriesId, client: client, userId: account.userId)
+        let wanted = Set(SmartDownloadPlanner.episodesToDownload(show.states, nextUpId: show.nextUpId, count: nil))
+        return DownloadEstimate(show.episodes.filter { wanted.contains($0.id) }.map { episode in
+            VersionChooser.choose(from: episode.mediaSources ?? [], quality: settings.downloadQuality)
+        })
+    }
+
+    /// A show's episodes in watching order, specials left out, with how smart downloads see each
+    /// and the server's next one to watch.
+    private func show(_ seriesId: String, client: JellyfinClient, userId: String) async throws
+        -> (episodes: [JellyfinItem], states: [SmartDownloadPlanner.Episode], nextUpId: String?) {
+        let episodes = try await client.episodes(seriesId: seriesId, seasonId: nil, userId: userId, fields: "MediaSources")
             .filter { $0.parentIndexNumber != 0 }
-        let nextUp = try await client.nextUp(userId: account.userId, seriesId: seriesId, limit: 1).items.first?.id
+        let nextUp = try await client.nextUp(userId: userId, seriesId: seriesId, limit: 1).items.first?.id
         let states = episodes.map { episode in
             SmartDownloadPlanner.Episode(
                 id: episode.id,
@@ -162,14 +194,7 @@ final class SmartDownloads {
                 isQueued: !downloads.jobs(forItem: episode.id).isEmpty
             )
         }
-        let wanted = SmartDownloadPlanner.episodesToDownload(states, nextUpId: nextUp, count: rule.episodesAhead)
-        let startedByUser = seriesSetUpByUser.contains(seriesId)
-        for id in wanted {
-            let detail = try await client.item(id: id, userId: account.userId)
-            guard let source = VersionChooser.choose(from: detail.mediaSources ?? [], quality: settings.downloadQuality) else { continue }
-            downloads.enqueue(detail, source: source, startedByUser: startedByUser)
-        }
-        seriesSetUpByUser.remove(seriesId)
+        return (episodes, states, nextUp)
     }
 
     /// Asks the server how every finished download was watched, a page of them at a time.
@@ -182,6 +207,19 @@ final class SmartDownloads {
             query.limit = page.count
             downloads.recordWatchState(from: try await client.items(userId: account.userId, query).items)
         }
+    }
+
+    /// Queues each episode's version closest to the download quality, and returns the episodes
+    /// it queued. The server looks each one's versions up as it's asked for its details.
+    private func queue(_ ids: [String], startedByUser: Bool, client: JellyfinClient, userId: String) async throws -> [JellyfinItem] {
+        var queued: [JellyfinItem] = []
+        for id in ids {
+            let detail = try await client.item(id: id, userId: userId)
+            guard let source = VersionChooser.choose(from: detail.mediaSources ?? [], quality: settings.downloadQuality) else { continue }
+            downloads.enqueue(detail, source: source, startedByUser: startedByUser)
+            queued.append(detail)
+        }
+        return queued
     }
 
     /// Item ids per request, which keeps its address well under what servers accept.
@@ -227,10 +265,12 @@ nonisolated enum SmartDownloadPlanner {
         let isQueued: Bool
     }
 
-    /// The episodes to queue: `count` episodes (or all) from the next one to watch, which is
-    /// the server's next-up episode, or else the one after the last watched. A next-up episode
-    /// finished here before the server heard about it is passed over.
+    /// The episodes to queue: `count` episodes from the next one to watch, which is the server's
+    /// next-up episode, or else the one after the last watched; a next-up episode finished here
+    /// before the server heard about it is passed over. Without a count, every episode not yet
+    /// watched, skipped ones before it too.
     static func episodesToDownload(_ episodes: [Episode], nextUpId: String?, count: Int?) -> [String] {
+        guard let count else { return episodes.filter { !$0.isQueued && !$0.isFinished }.map(\.id) }
         var start: Int
         if let nextUpId, let index = episodes.firstIndex(where: { $0.id == nextUpId }) {
             start = index
@@ -241,7 +281,7 @@ nonisolated enum SmartDownloadPlanner {
             start = 0
         }
         guard start < episodes.count else { return [] }
-        let end = count.map { min(episodes.count, start + max(0, $0)) } ?? episodes.count
+        let end = min(episodes.count, start + max(0, count))
         return episodes[start..<end].filter { !$0.isQueued && !$0.isFinished }.map(\.id)
     }
 }

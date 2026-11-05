@@ -1,7 +1,8 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Picks a version for each selected episode, then queues them all.
+/// Picks a version for each selected episode, says how much space the versions picked take by
+/// the server's sizes, then queues them all.
 /// Each episode starts on the version closest to the download quality; choosing a version for
 /// one episode can carry the same release over to the rest.
 struct BatchDownloadSheet: View {
@@ -33,11 +34,18 @@ struct BatchDownloadSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                if !episodes.isEmpty { space }
                 ForEach(episodes) { episode in
                     row(for: episode)
                 }
             }
-            .navigationTitle(episodes.count == 1 ? "Download Episode" : "Download \(episodes.count) Episodes")
+            .overlay {
+                if episodes.isEmpty {
+                    ContentUnavailableView("Nothing Left to Download", systemImage: "checkmark.circle",
+                                           description: Text("Every episode is downloaded or on its way."))
+                }
+            }
+            .navigationTitle(episodes.count == 1 ? "Download Episode" : episodes.isEmpty ? "Download" : "Download \(episodes.count) Episodes")
             .inlineNavigationTitle()
             .navigationDestination(for: String.self) { episodeId in
                 if case .success(let detail) = details[episodeId] {
@@ -63,6 +71,27 @@ struct BatchDownloadSheet: View {
                 }
             }
             .task { await loadAll() }
+        }
+    }
+
+    /// The space the versions picked take, against what's free, as their sizes come in.
+    private var space: some View {
+        let estimate = DownloadEstimate(ready.map(\.1))
+        let free = downloads.spaceForNewDownloads()
+        let loading = episodes.count { details[$0.id] == nil }
+        return Section {
+            LabeledContent("Size", value: estimate.summary(noun: "episode", plural: "episodes"))
+                .accessibilityIdentifier("batch.size")
+            if let free {
+                LabeledContent("Free for Downloads", value: DownloadEstimate.text(max(0, free)))
+            }
+            if let shortfall = estimate.shortfall(space: free) {
+                Label(shortfall, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+            }
+        } footer: {
+            Text(loading > 0
+                 ? "Finding the versions of \(loading) more \(loading == 1 ? "episode" : "episodes")…"
+                 : "Sizes are the server's, for the versions picked.")
         }
     }
 
