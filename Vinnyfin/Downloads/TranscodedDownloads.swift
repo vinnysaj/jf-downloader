@@ -84,8 +84,9 @@ final class TranscodedDownloads {
         /// seconds of the transcode's timeline: its later pieces follow at about the length the
         /// server cuts them.
         var anchor: Anchor?
-        /// How far back the next start of the server's transcode aims
-        /// (`TranscodeTimeline.searchBack`): further each time one doesn't take over from the file.
+        /// Which attempt at starting the server's transcode again the next is
+        /// (`TranscodeTimeline.restartCut`): one further back each time one doesn't take over
+        /// from the file.
         var searchLevel = 0
         /// Where the file ended, in seconds of the transcode's timeline, when a run of the
         /// server's transcode was last seen to end, by the next starting: a run ending there
@@ -455,10 +456,8 @@ final class TranscodedDownloads {
             let halfFrame = Double(timeline.video.sampleDuration) / Double(timeline.video.timescale) / 2
             seconds = mend.start - timeline.originSeconds - halfFrame
         } else {
-            let level = min(live[id]?.searchLevel ?? 0, TranscodeTimeline.searchBack.count - 1)
             let runtimeEnd = state.runtimeSeconds.map { timeline.originSeconds + $0 }
-            let cut = timeline.restartPoint(runtimeEnd: runtimeEnd, searchBack: TranscodeTimeline.searchBack[level]) ?? timeline.origin
-            seconds = timeline.seekTime(for: cut)
+            seconds = timeline.seekTime(for: timeline.restartCut(attempt: live[id]?.searchLevel ?? 0, runtimeEnd: runtimeEnd))
         }
         return Int64((max(0, seconds) * 10_000_000).rounded(.down))
     }
@@ -946,11 +945,12 @@ final class TranscodedDownloads {
 
     /// Stops the server's transcode and has the next piece start it again, at the next clean cut
     /// of the file `deeper` back, or at the latest, once the server has deleted what the stopped
-    /// one made. Past the furthest back it aims, the job stops.
+    /// one made; past those, where the file's last run started. When that doesn't take over
+    /// either, the job stops.
     private func restartTranscode(_ id: UUID, deeper: Bool) {
         guard let state = job(id)?.transcode, let client, let playSessionId = state.playSessionId, live[id]?.isRestarting != true else { return }
         let level = deeper ? (live[id]?.searchLevel ?? 0) + 1 : 0
-        guard level < TranscodeTimeline.searchBack.count else {
+        guard level < TranscodeTimeline.restartAttempts else {
             host?.stopJob(id, because: """
                 The server's transcode can't pick up where the download got to, \(Self.clock(state.downloadPosition)) in: each time it \
                 starts again there, it starts too late. Retry to try again, or download a version as it is.

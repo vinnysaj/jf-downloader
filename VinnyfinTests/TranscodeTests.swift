@@ -1173,6 +1173,25 @@ struct TranscodeTimelineTests {
         #expect(timeline.restartPoint(runtimeEnd: nil, searchBack: 10) == nil)
     }
 
+    /// A piece off the grid the server cuts a run's pieces on starts a run, which a restart
+    /// lands on whatever the source: where it aims once the file has no cut as far back as the
+    /// attempt says, and past the attempts that aim back.
+    @Test func aimsTheLastRestartWhereTheFilesLastRunStarted() {
+        var timeline = Film.timeline(0..<32)
+        #expect(timeline.runStart == timeline.origin)
+        for frames in [29..<37, 37..<45, 45..<53] {
+            let piece = Film.read(Film.piece(frames, audioFrom: frames.lowerBound == 29 ? 28 : nil, reordered: false))
+            timeline.append(piece, header: Film.parsed, cutInterval: Film.cutInterval)
+        }
+        #expect(timeline.runStart == Film.time(29))
+        #expect(timeline.restartCut(attempt: 0, runtimeEnd: nil) == timeline.restartPoint(runtimeEnd: nil, searchBack: 0))
+        #expect(timeline.restartCut(attempt: 1, runtimeEnd: nil) == Film.time(29))
+        #expect(timeline.restartCut(attempt: TranscodeTimeline.restartAttempts - 1, runtimeEnd: nil) == Film.time(29))
+        // A piece fetched again at its own start is on the grid.
+        timeline.append(Film.read(Film.piece(45..<53, reordered: false)), header: Film.parsed, cutInterval: Film.cutInterval)
+        #expect(timeline.runStart == Film.time(29))
+    }
+
     @Test func tellsAShortLastPiece() {
         #expect(!Film.timeline(0..<40).endsShort)
         #expect(Film.timeline(0..<36).endsShort)

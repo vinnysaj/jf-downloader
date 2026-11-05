@@ -52,6 +52,11 @@ nonisolated struct TranscodeTimeline: Equatable, Sendable {
     var origin: Int64
     /// The clean cuts of the file's last pictures, oldest first, as far back as a restart looks.
     var cuts: [Int64]
+    /// Where the run of the server's transcode that made the file's last pieces started. The
+    /// server starts each run's pieces every `cutInterval` from its start, so a piece off that
+    /// grid starts a run. A restart aimed there lands there whatever the source, for a run
+    /// started there before, and it's a clean cut of the file.
+    var runStart: Int64
     /// The last piece is shorter than the server cuts them: the run that made it ended there.
     var endsShort = false
 
@@ -59,13 +64,13 @@ nonisolated struct TranscodeTimeline: Equatable, Sendable {
     /// with room for the run to land.
     static let cutsKept: TimeInterval = 120
 
-    /// How far before the latest clean cut each attempt at a restart aims, one after another.
-    /// An MKV or MP4 source lands where it's asked, so the first does. MPEG-TS and M2TS land on
-    /// the first source keyframe at or after it (Jellyfin 12.4 lands on the frame asked for only
-    /// within a frame or two after one), usually past the file's end; aimed further back, the
-    /// new run lands within the file, and takes over when that keyframe is one of the file's
-    /// clean cuts, in an encoded transcode one frame time in five.
-    static let searchBack: [TimeInterval] = [0, 10, 20, 40, 80]
+    /// How far before the latest clean cut each attempt at a restart aims, one after another
+    /// (`restartCut`). An MKV or MP4 source lands where it's asked, so the first does. MPEG-TS
+    /// and M2TS land on the first source keyframe at or after it (Jellyfin 12.4 lands on the
+    /// frame asked for only within a frame or two after one), usually past the file's end;
+    /// aimed further back, the new run lands within the file, and takes over when that keyframe
+    /// is one of the file's clean cuts, which about half of those tried were.
+    static let searchBack: [TimeInterval] = [0, 10, 20, 30, 40, 60, 80, 100]
 
     var video: Track { tracks[videoTrack] ?? Track(timescale: 1, end: 0, sampleDuration: 1) }
 
@@ -79,6 +84,7 @@ nonisolated struct TranscodeTimeline: Equatable, Sendable {
         self.videoTrack = videoTrack
         tracks = [:]
         origin = span.start
+        runStart = span.start
         cuts = []
         append(piece, header: header, cutInterval: cutInterval)
     }
@@ -101,6 +107,12 @@ nonisolated struct TranscodeTimeline: Equatable, Sendable {
                 cuts.removeAll { $0 >= from }
                 cuts += FragmentedMP4.cleanCuts(piece.pictures(header: header))
                 tracks[id] = Track(timescale: timescale, end: span.end, sampleDuration: span.sampleDuration)
+                // The server cuts a piece at the first picture at or after each interval.
+                let interval = cutInterval * Double(timescale)
+                let sinceRunStart = Double(span.start - runStart)
+                if abs(sinceRunStart - (sinceRunStart / interval).rounded() * interval) > Double(span.sampleDuration) {
+                    runStart = span.start
+                }
                 let length = Double(span.end - span.start) / Double(timescale)
                 endsShort = length < cutInterval - Double(span.sampleDuration) / Double(timescale) - 0.001
             } else {
@@ -159,6 +171,15 @@ nonisolated struct TranscodeTimeline: Equatable, Sendable {
     /// The server starts a transcode it's asked to start later than this before the title's
     /// end this far before it instead; with a little to spare.
     static let serverEndLimit: TimeInterval = 5.1
+
+    /// Where attempt `attempt` at a restart aims: `restartPoint` as far back as `searchBack`
+    /// says, or `runStart` when the file has no cut that far back; after those, `runStart`.
+    func restartCut(attempt: Int, runtimeEnd: Double?) -> Int64 {
+        guard Self.searchBack.indices.contains(attempt) else { return runStart }
+        return restartPoint(runtimeEnd: runtimeEnd, searchBack: Self.searchBack[attempt]) ?? runStart
+    }
+
+    static var restartAttempts: Int { searchBack.count + 1 }
 
     /// The time a restart aimed at `cut` asks the server for, in seconds from the title's start:
     /// half a frame early, so a source whose clock starts with its audio a little ahead of its
