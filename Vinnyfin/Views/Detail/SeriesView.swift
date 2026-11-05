@@ -85,6 +85,7 @@ struct SeriesView: View {
         .screenTitle(series.name)
         .inlineNavigationTitle()
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
+        .handoffPage(shown)
         #if !os(tvOS)
         .toolbar { selectionToolbar }
         .sheet(item: $batch) { batch in

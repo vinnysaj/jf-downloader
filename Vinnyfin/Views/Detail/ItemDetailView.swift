@@ -81,6 +81,7 @@ struct ItemDetailView: View {
         .screenTitle(shown.name)
         .inlineNavigationTitle()
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
+        .handoffPage(shown)
         .task(id: item.id) { await load() }
         #if os(tvOS)
         // Focus starts on Play, also for a page opened from a link at launch, while focus is

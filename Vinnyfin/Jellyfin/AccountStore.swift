@@ -5,6 +5,8 @@ import Security
 /// Who is signed in to which server. The token lives in the Keychain, readable after the
 /// first unlock so downloads can carry on while the phone is locked. On Apple TV the sign-in is
 /// kept in the app group, where the Top Shelf extension reads it to ask the server what's up next.
+/// Each person on a shared Apple TV has a sign-in of their own: the app and the extension run as
+/// the user picked in Control Center, and tvOS keeps each user's defaults and Keychain apart.
 @Observable
 final class AccountStore {
     nonisolated struct Account: Codable, Equatable, Sendable {

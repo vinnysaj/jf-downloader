@@ -23,11 +23,16 @@ struct VinnyfinApp: App {
         }
         #if os(macOS)
         .defaultSize(width: 1200, height: 800)
+        #endif
+        #if !os(tvOS)
         .commands {
+            #if os(macOS)
             CommandGroup(replacing: .newItem) {
                 Button("Open File…") { appDelegate.openFilePanel() }
                     .keyboardShortcut("o")
             }
+            #endif
+            AppCommands()
         }
         #endif
 
@@ -71,12 +76,14 @@ extension View {
     func withAppEnvironment(_ app: AppDelegate) -> some View {
         #if os(tvOS)
         environment(app.accounts)
+            .environment(app.knownServers)
             .environment(app.settings)
             .environment(app.history)
             .environment(app.messages)
             .environment(app.player)
         #else
         environment(app.accounts)
+            .environment(app.knownServers)
             .environment(app.settings)
             .environment(app.history)
             .environment(app.messages)
@@ -95,10 +102,12 @@ extension View {
 /// Owns the app's state from launch, including the background launches the system makes
 /// to hand over finished transfers or run a background task, when no window may be shown.
 final class AppDelegate: NSObject {
-    let settings = AppSettings()
+    let settings = AppSettings(cloud: NSUbiquitousKeyValueStore.default)
     let accounts = AccountStore()
     let history = WatchHistory()
     let messages = AppMessages()
+    private(set) lazy var knownServers = KnownServers(accounts: accounts, cloud: NSUbiquitousKeyValueStore.default)
+    private lazy var cloudSync = CloudSync(store: .default, settings: settings, servers: knownServers, messages: messages)
     #if os(tvOS)
     private(set) lazy var player = PlayerCoordinator(accounts: accounts, settings: settings, history: history)
     #else
@@ -115,6 +124,10 @@ final class AppDelegate: NSObject {
 
     private func launched() {
         ImageCache.configure()
+        let cloudSync = cloudSync
+        Task { await cloudSync.run() }
+        let knownServers = knownServers
+        Task { await knownServers.followSignIns() }
         #if !os(tvOS)
         let downloads = downloads
         Task { await downloads.run() }

@@ -16,9 +16,19 @@ nonisolated struct PlaybackRequest: Codable, Hashable, Identifiable, Sendable {
     /// Shown while the player gets ready.
     var title: String
     var startFromBeginning = false
+    /// Where another of the person's devices had got to, for a playback continued from it.
+    var continuingFrom: Double?
 
-    static func item(_ item: JellyfinItem, mediaSourceId: String? = nil, fromBeginning: Bool = false) -> PlaybackRequest {
-        PlaybackRequest(source: .item(id: item.id, mediaSourceId: mediaSourceId), title: item.name, startFromBeginning: fromBeginning)
+    static func item(_ item: JellyfinItem, mediaSourceId: String? = nil, fromBeginning: Bool = false,
+                     continuingFrom: Double? = nil) -> PlaybackRequest {
+        PlaybackRequest(source: .item(id: item.id, mediaSourceId: mediaSourceId), title: item.name,
+                        startFromBeginning: fromBeginning, continuingFrom: continuingFrom)
+    }
+
+    /// Where to resume: at `resume`, or where another device had got to when that's later.
+    func start(resuming resume: Double?) -> Double? {
+        guard let continuingFrom else { return resume }
+        return max(continuingFrom, resume ?? 0)
     }
 
     /// Bookmarks a file the user picked. The caller holds access to it while this runs.
@@ -189,6 +199,7 @@ struct PlaybackResolver {
             let serverDate = item?.lastPlayedDate ?? .distantPast
             if local.updatedAt > serverDate { start = local.played ? nil : (local.position > 0 ? local.position : nil) }
         }
+        start = request.start(resuming: start)
         let reporting = accounts.client.map { _ in
             ResolvedPlayback.Reporting(itemId: itemId, mediaSourceId: item?.mediaSources?.first?.id,
                                        playSessionId: Self.newPlaySessionId(), playMethod: "DirectPlay")
@@ -226,6 +237,7 @@ struct PlaybackResolver {
         if !request.startFromBeginning, let local = history.entry(for: itemId), local.needsSync, !local.played {
             start = local.position > 0 ? local.position : start
         }
+        start = request.start(resuming: start)
 
         let resume = Self.resumable(start, length: plan.source.runtimeSeconds ?? item.runtimeSeconds)
         switch plan {

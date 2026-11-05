@@ -1,7 +1,14 @@
 import SwiftUI
 
+/// Signs in to a Jellyfin server: one the person has signed in to on any of their devices in a
+/// tap and then the password or Quick Connect, or another by its address.
 struct LoginView: View {
+    /// A sign-in to fill the form with, such as the one a handed-off title is from.
+    var offer: ServerSignIn?
+
     @Environment(AccountStore.self) private var accounts
+    @Environment(KnownServers.self) private var knownServers
+    @Environment(\.dismiss) private var dismiss
     @State private var address = ServerAddress()
     @State private var username = ""
     @State private var password = ""
@@ -27,6 +34,7 @@ struct LoginView: View {
     var body: some View {
         NavigationStack {
             Form {
+                knownServersSection
                 serverSection
                 Section {
                     TextField("Username", text: $username)
@@ -79,6 +87,14 @@ struct LoginView: View {
             }
             .formStyle(.grouped)
             .navigationTitle("Connect to Jellyfin")
+            #if !os(tvOS)
+            // On Apple TV the form is the first screen; elsewhere it's a sheet.
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            #endif
             .sheet(item: $quickConnect, onDismiss: cancelQuickConnect) { state in
                 QuickConnectSheet(code: state.code) { cancelQuickConnect() }
             }
@@ -89,6 +105,36 @@ struct LoginView: View {
                 if previous == .host { address.splitHost() }
             }
             .task(id: address) { await checkServer() }
+        }
+    }
+
+    /// The servers signed in to on the person's devices, from iCloud: one tap fills in the server
+    /// and the user, and the password or Quick Connect does the rest.
+    @ViewBuilder private var knownServersSection: some View {
+        if !knownServers.signIns.isEmpty || knownServers.problem != nil {
+            Section {
+                ForEach(knownServers.signIns) { signIn in
+                    Button {
+                        use(signIn)
+                    } label: {
+                        Label("Sign in to \(signIn.serverTitle) as \(signIn.userName)", systemImage: "server.rack")
+                    }
+                    .contextMenu {
+                        Button("Forget", systemImage: "trash", role: .destructive) { knownServers.forget(signIn) }
+                    }
+                    .accessibilityIdentifier("login.knownServer")
+                }
+            } header: {
+                Text("Your Servers")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Servers you've signed in to on your devices. Choose one, then enter the password or use Quick Connect.")
+                    if let problem = knownServers.problem {
+                        Text(problem).foregroundStyle(.orange)
+                        Button("Dismiss") { knownServers.problem = nil }
+                    }
+                }
+            }
         }
     }
 
@@ -181,6 +227,7 @@ struct LoginView: View {
             quickConnectTask = Task {
                 do {
                     try await accounts.finishQuickConnect(serverURL: url, secret: state.secret)
+                    dismiss()
                 } catch is CancellationError {
                     return
                 } catch {
@@ -199,14 +246,27 @@ struct LoginView: View {
         quickConnect = nil
     }
 
+    /// The offered sign-in, else the last one on this device.
     private func prefill() {
         guard address.host.isEmpty else { return }
-        if let url = accounts.lastServerURL, var previous = ServerAddress(parsing: url.absoluteString) {
-            // A saved http address without a port means port 80, not the form's 8096 default.
-            if url.port == nil { previous.port = previous.scheme == .http ? "80" : "" }
-            address = previous
+        if let offer {
+            use(offer)
+            return
         }
+        if let previous = accounts.lastServerURL.flatMap(ServerAddress.init(savedURL:)) { address = previous }
         if let name = accounts.lastUserName { username = name }
+    }
+
+    private func use(_ signIn: ServerSignIn) {
+        guard let known = ServerAddress(savedURL: signIn.address) else {
+            error = "\(signIn.address.absoluteString) isn't a server address vinnyfin can use."
+            return
+        }
+        address = known
+        username = signIn.userName
+        password = ""
+        error = nil
+        focus = .password
     }
 
     private func checkServer() async {
@@ -244,6 +304,7 @@ struct LoginView: View {
         defer { isSigningIn = false }
         do {
             try await accounts.signIn(serverURL: url, username: username, password: password)
+            dismiss()
         } catch {
             self.error = error.localizedDescription
         }

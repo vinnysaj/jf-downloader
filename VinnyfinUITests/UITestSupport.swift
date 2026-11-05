@@ -59,9 +59,10 @@ extension XCTestCase {
         let host = app.textFields["login.host"]
         guard host.waitForExistence(timeout: 5) else { return }
         host.tap()
-        // A full address in the host field is split into protocol, host, port and path, and
-        // Return walks the fields: host, port, path, username, password, then signs in.
-        host.typeText(server + "\n")
+        // The form starts from the last server signed in to. A full address in the host field
+        // is split into protocol, host, port and path, and Return walks the fields: host, port,
+        // path, username, password, then signs in.
+        host.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 40) + server + "\n")
         type("\n", into: app.textFields["login.port"])
         type("\n", into: app.textFields["login.path"])
         type(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20) + username + "\n", into: app.textFields["login.username"])

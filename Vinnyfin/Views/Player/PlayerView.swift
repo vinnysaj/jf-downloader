@@ -1,5 +1,8 @@
 import AetherEngine
 import AVKit
+#if os(macOS)
+import AppKit
+#endif
 #if os(visionOS)
 import Combine
 #endif
@@ -186,16 +189,19 @@ struct PlayerView: View {
             }
         }
         #else
+        // The player takes focus as it opens, for the Playback menu's keys (`PlayerCommand`) and
+        // for the menu to act on it: a scene value doesn't reach the menu from the full-screen
+        // cover the player is on iPhone and iPad.
         .focusable()
         .focusEffectDisabled()
         .focused($hasKeyboardFocus)
-        .onKeyPress(.space) { model.togglePlayPause(); showControls(); return .handled }
-        .onKeyPress(.leftArrow) { model.skip(by: -PlayerModel.skipInterval); showControls(); return .handled }
-        .onKeyPress(.rightArrow) { model.skip(by: PlayerModel.skipInterval); showControls(); return .handled }
-        .onKeyPress(.escape) {
-            if panel != nil { closePanel() } else { onClose() }
+        .onKeyPress(keys: PlayerCommand.keys) { press in
+            guard let command = PlayerCommand.pressed(press.key, modifiers: press.modifiers) else { return .ignored }
+            perform(command)
             return .handled
         }
+        .focusedValue(\.player, PlayerCommandTarget(model: model, fillsScreen: fillsScreen, perform: perform))
+        .handoffPlayback(model)
         #endif
         #if os(iOS)
         .statusBarHidden(!showsControls)
@@ -370,6 +376,33 @@ struct PlayerView: View {
             }
         }
     }
+
+    #if !os(tvOS)
+    /// A command from the Playback menu, or its key. The controls come up to show what it did.
+    private func perform(_ command: PlayerCommand) {
+        switch command {
+        case .playPause:
+            model.togglePlayPause()
+        case .skipBack:
+            model.skip(by: -PlayerModel.skipInterval)
+        case .skipForward:
+            model.skip(by: PlayerModel.skipInterval)
+        case .nextEpisode:
+            guard let next = model.nextEpisode else { return }
+            Task { await model.play(next) }
+        case .fullScreen:
+            #if os(macOS)
+            NSApplication.shared.keyWindow?.toggleFullScreen(nil)
+            #else
+            fillsScreen.toggle()
+            #endif
+        case .close:
+            if panel != nil { closePanel() } else { onClose() }
+            return
+        }
+        showControls()
+    }
+    #endif
 
     // MARK: Controls visibility
 

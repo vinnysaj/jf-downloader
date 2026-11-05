@@ -49,6 +49,10 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connects to your Jellyfin server and AirPlay devices on the local network.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>net.vinnysaj.vinnyfin.title</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -139,12 +139,13 @@ extension PrimitiveButtonStyle where Self == ArtworkButtonStyle {
 
 extension View {
     /// A search field that's always on screen. On iPhone, a search tab's field placed
-    /// automatically never appears: neither in the navigation bar nor in the tab bar.
-    func alwaysSearchable(text: Binding<String>, prompt: LocalizedStringKey) -> some View {
+    /// automatically never appears: neither in the navigation bar nor in the tab bar. `isActive`
+    /// is whether it has the cursor, and setting it puts the cursor there.
+    func alwaysSearchable(text: Binding<String>, isActive: Binding<Bool>, prompt: LocalizedStringKey) -> some View {
         #if os(iOS)
-        searchable(text: text, placement: .navigationBarDrawer(displayMode: .always), prompt: prompt)
+        searchable(text: text, isPresented: isActive, placement: .navigationBarDrawer(displayMode: .always), prompt: prompt)
         #else
-        searchable(text: text, prompt: prompt)
+        searchable(text: text, isPresented: isActive, prompt: prompt)
         #endif
     }
 }

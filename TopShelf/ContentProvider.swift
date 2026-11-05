@@ -1,8 +1,9 @@
 import OSLog
 import TVServices
 
-/// Fills the Top Shelf from the signed-in server each time the system asks. Signed out, or with
-/// the server out of reach, it hands back nothing, and the system shows the app's Top Shelf image.
+/// Fills the Top Shelf from the signed-in server each time the system asks, for the Apple TV's
+/// current user, as whom the extension runs. Signed out, or with the server out of reach, it hands
+/// back nothing, and the system shows the app's Top Shelf image.
 nonisolated final class ContentProvider: TVTopShelfContentProvider {
     private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin.topshelf", category: "content")
 

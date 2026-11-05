@@ -3,8 +3,15 @@ import SwiftUI
 /// Finds movies, shows and episodes by name as you type. Each row samples its matches; its title
 /// opens all of them.
 struct SearchView: View {
+    #if !os(tvOS)
+    /// Counts the Go menu's Search commands, each of which puts the cursor in the search field.
+    var fieldRequests = 0
+    #endif
+
     @Environment(\.session) private var session
     @State private var text = ""
+    /// The search field has the cursor.
+    @State private var fieldIsActive = false
     /// What the results on screen were found for.
     @State private var searched = ""
     @State private var movies: [JellyfinItem] = []
@@ -43,7 +50,12 @@ struct SearchView: View {
                 }
             }
             .screenTitle("Search")
-            .alwaysSearchable(text: $text, prompt: "Movies, shows and episodes")
+            .alwaysSearchable(text: $text, isActive: $fieldIsActive, prompt: "Movies, shows and episodes")
+            #if !os(tvOS)
+            .onChange(of: fieldRequests, initial: true) {
+                if fieldRequests > 0 { fieldIsActive = true }
+            }
+            #endif
             .itemDestinations()
             .task(id: text) { await search() }
         }

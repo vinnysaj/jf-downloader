@@ -23,6 +23,16 @@ final class PlayerCoordinator {
     /// Why the engine couldn't be built, to show instead of playing.
     var problem: String?
 
+    /// The player covers the app's screens, as it does on iPhone, iPad and Apple TV while it's
+    /// presented. On the Mac and Vision Pro it plays in a window of its own.
+    var coversScreens: Bool {
+        #if os(macOS) || os(visionOS)
+        false
+        #else
+        presented != nil
+        #endif
+    }
+
     @ObservationIgnored private let accounts: AccountStore
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let history: WatchHistory

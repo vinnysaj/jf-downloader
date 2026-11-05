@@ -38,6 +38,14 @@ nonisolated struct ServerAddress: Equatable, Sendable {
         path = Self.normalizedPath(components.path)
     }
 
+    /// A server's saved URL, as the form shows it. A saved HTTP address without a port is on port
+    /// 80, not the form's default of 8096.
+    init?(savedURL url: URL) {
+        guard var address = ServerAddress(parsing: url.absoluteString) else { return nil }
+        if url.port == nil { address.port = address.scheme == .http ? "80" : "" }
+        self = address
+    }
+
     /// Splits a full address typed into the host field into the fields; the port and path
     /// already entered stay unless the address has its own.
     mutating func splitHost() {

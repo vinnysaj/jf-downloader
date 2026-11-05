@@ -84,7 +84,7 @@ struct SettingsView: View {
                 Section("About") {
                     LabeledContent("Version", value: Self.version)
                     NavigationLink("Acknowledgements") { AcknowledgementsView() }
-                    Text("vinnyfin only talks to your Jellyfin server. No analytics, no tracking, no accounts.")
+                    Text("vinnyfin only talks to your Jellyfin server, and to your iCloud, which keeps your servers and most of these settings the same on all your devices. No analytics, no tracking, no accounts.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -115,10 +115,11 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.signOut")
                     .confirmationDialog("Sign out of \(account.serverName ?? "the server")?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
                         Button("Sign Out", role: .destructive) {
-                            #if !os(tvOS)
-                            downloads.removeUnfinished()
-                            #endif
+                            #if os(tvOS)
                             Task { await accounts.signOut() }
+                            #else
+                            Task { await accounts.signOut(cancelling: downloads) }
+                            #endif
                             dismiss()
                         }
                     } message: {
@@ -138,6 +139,16 @@ struct SettingsView: View {
         return "\(version) (\(build))"
     }
 }
+
+#if !os(tvOS)
+extension AccountStore {
+    /// Signs out, cancelling the downloads that haven't finished: only this sign-in can fetch them.
+    func signOut(cancelling downloads: DownloadManager) async {
+        downloads.removeUnfinished()
+        await signOut()
+    }
+}
+#endif
 
 /// A setting chosen from a list. On Apple TV it's the setting's name and a button with the
 /// choice made, which opens a menu of them: a form's picker there lists every choice inline,

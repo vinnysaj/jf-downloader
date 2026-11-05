@@ -1,7 +1,9 @@
 import Foundation
 import Observation
 
-/// The choices in Settings, kept in UserDefaults.
+/// The choices in Settings, kept in UserDefaults, and in iCloud so they follow the person to all
+/// their devices, apart from those in `deviceOnlyKeys`. A new setting follows them too, unless
+/// it's added there.
 @Observable
 final class AppSettings {
     nonisolated enum SubtitleMode: String, CaseIterable, Identifiable, Sendable {
@@ -44,33 +46,38 @@ final class AppSettings {
     }
 
     /// The browsing screens' look; the player is always dark.
-    var appearance: Appearance { didSet { store(appearance.rawValue, Keys.appearance) } }
-    var streamingQuality: VideoQuality { didSet { store(streamingQuality.rawValue, Keys.streamingQuality) } }
+    var appearance = Appearance.system { didSet { store(appearance.rawValue, Keys.appearance) } }
+    var streamingQuality = VideoQuality.original { didSet { store(streamingQuality.rawValue, Keys.streamingQuality) } }
     /// Lets the server scale a version down when none matches `streamingQuality`.
-    var allowTranscoding: Bool { didSet { store(allowTranscoding, Keys.allowTranscoding) } }
+    var allowTranscoding = true { didSet { store(allowTranscoding, Keys.allowTranscoding) } }
     /// Moves a stream the connection can't keep up with to a smaller version, or to a transcode
     /// when `allowTranscoding` lets it, as it plays.
-    var adaptiveQuality: Bool { didSet { store(adaptiveQuality, Keys.adaptiveQuality) } }
-    var downloadQuality: VideoQuality { didSet { store(downloadQuality.rawValue, Keys.downloadQuality) } }
+    var adaptiveQuality = true { didSet { store(adaptiveQuality, Keys.adaptiveQuality) } }
+    var downloadQuality = VideoQuality.fullHD { didSet { store(downloadQuality.rawValue, Keys.downloadQuality) } }
     /// Deletes a downloaded episode once it has been watched, here or on another device.
-    var deleteWatchedEpisodes: Bool { didSet { store(deleteWatchedEpisodes, Keys.deleteWatchedEpisodes) } }
+    var deleteWatchedEpisodes = true { didSet { store(deleteWatchedEpisodes, Keys.deleteWatchedEpisodes) } }
     /// How many episodes a new smart download keeps ahead.
-    var smartDownloadCount: Int { didSet { store(smartDownloadCount, Keys.smartDownloadCount) } }
-    var autoplayNextEpisode: Bool { didSet { store(autoplayNextEpisode, Keys.autoplayNextEpisode) } }
+    var smartDownloadCount = 10 { didSet { store(smartDownloadCount, Keys.smartDownloadCount) } }
+    var autoplayNextEpisode = true { didSet { store(autoplayNextEpisode, Keys.autoplayNextEpisode) } }
     /// Offers to skip intros, recaps, previews and credits the server has marked.
-    var showSkipButtons: Bool { didSet { store(showSkipButtons, Keys.showSkipButtons) } }
+    var showSkipButtons = true { didSet { store(showSkipButtons, Keys.showSkipButtons) } }
     /// ISO 639-2 code, such as "eng"; empty plays the file's default track.
-    var audioLanguage: String { didSet { store(audioLanguage, Keys.audioLanguage) } }
-    var subtitleLanguage: String { didSet { store(subtitleLanguage, Keys.subtitleLanguage) } }
-    var subtitleMode: SubtitleMode { didSet { store(subtitleMode.rawValue, Keys.subtitleMode) } }
+    var audioLanguage = "" { didSet { store(audioLanguage, Keys.audioLanguage) } }
+    var subtitleLanguage = "eng" { didSet { store(subtitleLanguage, Keys.subtitleLanguage) } }
+    var subtitleMode = SubtitleMode.forcedOnly { didSet { store(subtitleMode.rawValue, Keys.subtitleMode) } }
     /// Relative to the standard size.
-    var subtitleScale: Double { didSet { store(subtitleScale, Keys.subtitleScale) } }
+    var subtitleScale = 1.0 { didSet { store(subtitleScale, Keys.subtitleScale) } }
     /// Switches the TV's frame rate and dynamic range to the video's (Apple TV).
-    var matchContent: Bool { didSet { store(matchContent, Keys.matchContent) } }
+    var matchContent = true { didSet { store(matchContent, Keys.matchContent) } }
 
     private let defaults: UserDefaults
+    @ObservationIgnored private let cloud: (any CloudKeyValues)?
+    /// The settings are being read from the defaults rather than chosen.
+    @ObservationIgnored private var isLoading = false
 
-    private enum Keys {
+    nonisolated private enum Keys {
+        /// Every setting's key starts with it.
+        static let prefix = "settings."
         static let appearance = "settings.appearance"
         static let streamingQuality = "settings.streamingQuality"
         static let allowTranscoding = "settings.allowTranscoding"
@@ -88,26 +95,75 @@ final class AppSettings {
         static let matchContent = "settings.matchContent"
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, cloud: (any CloudKeyValues)? = nil) {
         self.defaults = defaults
-        appearance = defaults.string(forKey: Keys.appearance).flatMap(Appearance.init) ?? .system
-        streamingQuality = defaults.string(forKey: Keys.streamingQuality).flatMap(VideoQuality.init) ?? .original
-        allowTranscoding = defaults.object(forKey: Keys.allowTranscoding) as? Bool ?? true
-        adaptiveQuality = defaults.object(forKey: Keys.adaptiveQuality) as? Bool ?? true
-        downloadQuality = defaults.string(forKey: Keys.downloadQuality).flatMap(VideoQuality.init) ?? .fullHD
-        deleteWatchedEpisodes = defaults.object(forKey: Keys.deleteWatchedEpisodes) as? Bool ?? true
-        smartDownloadCount = defaults.object(forKey: Keys.smartDownloadCount) as? Int ?? 10
-        autoplayNextEpisode = defaults.object(forKey: Keys.autoplayNextEpisode) as? Bool ?? true
-        showSkipButtons = defaults.object(forKey: Keys.showSkipButtons) as? Bool ?? true
-        audioLanguage = defaults.string(forKey: Keys.audioLanguage) ?? ""
-        subtitleLanguage = defaults.string(forKey: Keys.subtitleLanguage) ?? "eng"
-        subtitleMode = defaults.string(forKey: Keys.subtitleMode).flatMap(SubtitleMode.init) ?? .forcedOnly
-        subtitleScale = defaults.object(forKey: Keys.subtitleScale) as? Double ?? 1
-        matchContent = defaults.object(forKey: Keys.matchContent) as? Bool ?? true
+        self.cloud = cloud
+        load()
+    }
+
+    /// Reads the settings from the defaults; one never chosen keeps its default.
+    private func load() {
+        isLoading = true
+        defer { isLoading = false }
+        appearance = defaults.string(forKey: Keys.appearance).flatMap(Appearance.init) ?? appearance
+        streamingQuality = defaults.string(forKey: Keys.streamingQuality).flatMap(VideoQuality.init) ?? streamingQuality
+        allowTranscoding = defaults.object(forKey: Keys.allowTranscoding) as? Bool ?? allowTranscoding
+        adaptiveQuality = defaults.object(forKey: Keys.adaptiveQuality) as? Bool ?? adaptiveQuality
+        downloadQuality = defaults.string(forKey: Keys.downloadQuality).flatMap(VideoQuality.init) ?? downloadQuality
+        deleteWatchedEpisodes = defaults.object(forKey: Keys.deleteWatchedEpisodes) as? Bool ?? deleteWatchedEpisodes
+        smartDownloadCount = defaults.object(forKey: Keys.smartDownloadCount) as? Int ?? smartDownloadCount
+        autoplayNextEpisode = defaults.object(forKey: Keys.autoplayNextEpisode) as? Bool ?? autoplayNextEpisode
+        showSkipButtons = defaults.object(forKey: Keys.showSkipButtons) as? Bool ?? showSkipButtons
+        audioLanguage = defaults.string(forKey: Keys.audioLanguage) ?? audioLanguage
+        subtitleLanguage = defaults.string(forKey: Keys.subtitleLanguage) ?? subtitleLanguage
+        subtitleMode = defaults.string(forKey: Keys.subtitleMode).flatMap(SubtitleMode.init) ?? subtitleMode
+        subtitleScale = defaults.object(forKey: Keys.subtitleScale) as? Double ?? subtitleScale
+        matchContent = defaults.object(forKey: Keys.matchContent) as? Bool ?? matchContent
     }
 
     private func store(_ value: Any, _ key: String) {
+        guard !isLoading else { return }
         defaults.set(value, forKey: key)
+        if Self.syncs(key) { cloud?.set(value, forKey: key) }
+    }
+
+    // MARK: iCloud
+
+    /// The settings that stay on the device they're chosen on, as what suits one device doesn't
+    /// suit another: the streaming quality suits its screen and its connection, the download
+    /// quality and the episodes smart downloads keep suit its storage, and matching the frame rate
+    /// and dynamic range suits the TV it's plugged into.
+    nonisolated static let deviceOnlyKeys: Set<String> = [
+        Keys.streamingQuality, Keys.downloadQuality, Keys.smartDownloadCount, Keys.matchContent,
+    ]
+
+    /// Whether the setting under `key` follows the person to their other devices.
+    nonisolated static func syncs(_ key: String) -> Bool {
+        key.hasPrefix(Keys.prefix) && !deviceOnlyKeys.contains(key)
+    }
+
+    /// Brings this device's settings and iCloud's together, as iCloud hands over its whole store.
+    func reconcileWithCloud() {
+        guard let cloud else { return }
+        let merge = SettingsMerge(local: defaults.dictionaryRepresentation(), cloud: cloud.dictionaryRepresentation, syncs: Self.syncs)
+        for (key, value) in merge.uploaded { cloud.set(value, forKey: key) }
+        adopt(merge.adopted)
+    }
+
+    /// Takes the settings another device changed.
+    func cloudChanged(_ keys: [String]) {
+        guard let cloud else { return }
+        var values: [String: Any] = [:]
+        for key in keys where Self.syncs(key) {
+            if let value = cloud.object(forKey: key) { values[key] = value }
+        }
+        adopt(values)
+    }
+
+    private func adopt(_ values: [String: Any]) {
+        guard !values.isEmpty else { return }
+        for (key, value) in values { defaults.set(value, forKey: key) }
+        load()
     }
 
     /// Languages offered for audio and subtitles, by their ISO 639-2 codes.
