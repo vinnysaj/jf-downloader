@@ -764,6 +764,14 @@ struct ServerDownTests {
         #expect(live.startsAfresh(.running(position: 30), pieceLength: 3))
         live.observe(.running(position: 30), pieceLength: 3)
         #expect(live.hasMadeAPiece(at: 33, pieceLength: 3))
+        // First seen paced, well ahead of the download, it has made pieces though it stands still.
+        var paced = TranscodedDownloads.Live()
+        let start = Date.now
+        for second in stride(from: 0.0, through: 30, by: 5) {
+            paced.observe(.running(position: 400), pieceLength: 3)
+            paced.throttle.observe(position: 400, downloadPosition: 300, now: start + second)
+        }
+        #expect(paced.hasMadeAPiece(at: 400, pieceLength: 3))
     }
 
     /// The app stops the server's transcode to start it again elsewhere: the queue is planned

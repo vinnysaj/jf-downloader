@@ -144,10 +144,11 @@ final class TranscodedDownloads {
         }
 
         /// Whether the server's transcode, at `position`, has made a piece since it was first
-        /// seen running, and with it its init segment. Asked for before the server has it, the
-        /// init segment starts the transcode again from the title's start to make it.
+        /// seen running, and with it its init segment: it has got a piece further, or it's
+        /// paced, which it is only once well past the piece last asked for. Asked for before the
+        /// server has it, the init segment starts the transcode again from the title's start.
         func hasMadeAPiece(at position: Double, pieceLength: Double) -> Bool {
-            runFirstSeen.map { position >= $0 + pieceLength } ?? false
+            throttle.isThrottled || runFirstSeen.map { position >= $0 + pieceLength } ?? false
         }
     }
 
