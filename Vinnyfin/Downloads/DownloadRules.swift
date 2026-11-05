@@ -242,7 +242,7 @@ nonisolated enum StorageBudget {
         }
         for job in queue {
             guard let total = job.displayTotalBytes else { continue }
-            let need = max(0, total - (bytesSoFar[job.id] ?? job.completed.byteCount))
+            let need = max(0, total - (bytesSoFar[job.id] ?? job.bytesOnDisk))
             if shortfall(need) <= deletableBytes {
                 while shortfall(need) > 0, let next = candidates.popFirst() {
                     outcome.deletions.append(next.id)

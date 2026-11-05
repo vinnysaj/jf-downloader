@@ -37,7 +37,7 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
             switch job.status {
             case .active:
                 let total = job.displayTotalBytes ?? 0
-                let received = job.isTransferComplete ? total : min(total, receivedBytes[job.id] ?? job.completed.byteCount)
+                let received = job.isTransferComplete ? total : min(total, receivedBytes[job.id] ?? job.bytesOnDisk)
                 counted[job.id] = Counted(done: max(counted[job.id]?.done ?? 0, received), total: total)
             case .completed:
                 guard counted[job.id] != nil, let total = job.totalBytes else { continue }
@@ -117,16 +117,18 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
         isInFront && !isPausedForPlayback && DownloadJob.queue(jobs).contains { userStartedJobIds.contains($0) && waits[$0] == nil }
     }
 
-    /// The Live Activity's words while downloading: what's downloading and how much is left, and
-    /// that Keep Downloads Running keeps the app running too while it plays.
+    /// The Live Activity's words while downloading: what's downloading and how much is left, what
+    /// the server is doing for a transcoded one (`notes`), and that Keep Downloads Running keeps
+    /// the app running too while it plays.
     @MainActor static func text(jobs: [DownloadJob], receivedBytes: [UUID: Int64], isNetworkReachable: Bool,
-                     waits: [UUID: DownloadWait], isKeptRunning: Bool) -> (title: String, subtitle: String) {
-        let text = downloadingText(jobs: jobs, receivedBytes: receivedBytes, isNetworkReachable: isNetworkReachable, waits: waits)
+                     waits: [UUID: DownloadWait], notes: [UUID: String] = [:], isKeptRunning: Bool) -> (title: String, subtitle: String) {
+        let text = downloadingText(jobs: jobs, receivedBytes: receivedBytes, isNetworkReachable: isNetworkReachable, waits: waits,
+                                   notes: notes)
         return isKeptRunning ? (text.title, "\(text.subtitle) · Kept running") : text
     }
 
     @MainActor private static func downloadingText(jobs: [DownloadJob], receivedBytes: [UUID: Int64], isNetworkReachable: Bool,
-                                                   waits: [UUID: DownloadWait]) -> (title: String, subtitle: String) {
+                                                   waits: [UUID: DownloadWait], notes: [UUID: String]) -> (title: String, subtitle: String) {
         let queue = DownloadJob.queued(jobs)
         guard let first = queue.first(where: { waits[$0.id] == nil }) ?? queue.first else { return ("Downloading", "Finishing up") }
         let title = queue.count == 1 ? "Downloading \(first.shortName)" : "Downloading \(first.shortName) and \(queue.count - 1) more"
@@ -135,9 +137,11 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
         let sizes = queue.map(\.displayTotalBytes)
         guard !sizes.contains(nil) else { return (title, "Starting") }
         let left = queue.reduce(Int64(0)) { total, job in
-            total + max(0, (job.displayTotalBytes ?? 0) - (receivedBytes[job.id] ?? job.completed.byteCount))
+            total + max(0, (job.displayTotalBytes ?? 0) - (receivedBytes[job.id] ?? job.bytesOnDisk))
         }
-        return (title, "\(left.formatted(.byteCount(style: .file))) left")
+        let estimate = queue.contains { $0.transcode != nil && $0.totalBytes == nil } ? "About " : ""
+        let progress = "\(estimate)\(left.formatted(.byteCount(style: .file))) left"
+        return (title, [progress, notes[first.id]].compactMap(\.self).joined(separator: " · "))
     }
 }
 #endif

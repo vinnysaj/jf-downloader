@@ -132,6 +132,8 @@ final class DownloadManager {
     private(set) var artworkRevision = 0
     /// A local problem (storage, the saved queue) to show until dismissed.
     var problem: String?
+    /// The server's side of transcoded downloads, and how far each one's server has got.
+    let transcodes: TranscodedDownloads
 
     struct FreedSpace: Equatable {
         let titles: [String]
@@ -211,6 +213,8 @@ final class DownloadManager {
     @ObservationIgnored private var lastStallCheck = Date.now
     /// The open players, by their model's id, and whether each is playing.
     @ObservationIgnored private var players: [UUID: Bool] = [:]
+    /// The open players that stream a server transcode.
+    @ObservationIgnored private var transcodingPlayers: Set<UUID> = []
     /// The app is off screen, so the session holds the next files' chunks as well.
     @ObservationIgnored private var isQueuingAhead = false
     /// Transfers cancelled to set them aside whose resume data hasn't come yet, with the bytes
@@ -286,6 +290,8 @@ final class DownloadManager {
         probing.requestCachePolicy = .reloadIgnoringLocalCacheData
         probing.urlCache = nil
         probeSession = URLSession(configuration: probing)
+        transcodes = TranscodedDownloads(accounts: accounts, storage: storage)
+        transcodes.host = self
     }
 
     private static func setAsideUnreadableJobs(_ storage: DownloadStorage, error: any Error) -> String {
@@ -425,13 +431,14 @@ final class DownloadManager {
 
     // MARK: Commands
 
-    /// Queues a version of an item at the end of the list. `startedByUser` is false for
-    /// downloads smart downloads add by themselves; the first one someone starts asks whether
-    /// vinnyfin may notify them.
-    func enqueue(_ item: JellyfinItem, source: MediaSource, startedByUser: Bool) {
-        let known = jobs.contains { $0.itemId == item.id && $0.mediaSourceId == source.id }
+    /// Queues what `plan` says of an item at the end of the list: a version as it is, or the
+    /// server's transcode of one (`TranscodedDownloads`). `startedByUser` is false for downloads
+    /// smart downloads add by themselves; the first one someone starts asks whether vinnyfin may
+    /// notify them.
+    func enqueue(_ item: JellyfinItem, plan: DownloadPlan, startedByUser: Bool) {
+        let known = jobs.contains { $0.itemId == item.id && $0.mediaSourceId == plan.source.id }
         guard !known else { return }
-        let job = DownloadJob(item: item, source: source)
+        let job = DownloadJob(item: item, plan: plan)
         jobs.append(job)
         if startedByUser {
             noteStartedByUser([job.id])
@@ -521,14 +528,17 @@ final class DownloadManager {
         downloadNext(id)
     }
 
-    /// A player opened, or started or stopped playing.
-    func playerChanged(_ player: UUID, isPlaying: Bool) {
+    /// A player opened, or started or stopped playing; `isTranscoding` when it streams a server
+    /// transcode, which a transcoded download then leaves the server to.
+    func playerChanged(_ player: UUID, isPlaying: Bool, isTranscoding: Bool = false) {
         players[player] = isPlaying
+        if isTranscoding { transcodingPlayers.insert(player) } else { transcodingPlayers.remove(player) }
         updateHold()
     }
 
     func playerClosed(_ player: UUID) {
         players[player] = nil
+        transcodingPlayers.remove(player)
         // Watched downloads can make room again.
         isSpaceCheckDue = true
         updateHold()
@@ -600,6 +610,8 @@ final class DownloadManager {
             self.isInFront = isInFront
             Self.log.info("App \(isInFront ? "in front" : "leaving the front")")
             updateHold()
+            // The server's administrator may have taken downloads away meanwhile.
+            if isInFront { Task { await transcodes.recheckPolicy() } }
         }
         pump()
     }
@@ -685,7 +697,7 @@ final class DownloadManager {
         guard let bytes = awaitingResumeData.removeValue(forKey: tag) else { return }
         if let data {
             let point = ResumePoint(data: data, bytes: bytes)
-            if tag.range == nil {
+            if tag.isWholeFile {
                 keepResumeData(point, of: tag.jobId)
             } else {
                 keepHeld(point, for: tag)
@@ -723,6 +735,7 @@ final class DownloadManager {
     /// Starts over from the first byte, for a source that changed on the server.
     func restart(_ id: UUID) {
         guard let index = index(of: id), jobs[index].status != .completed else { return }
+        transcodes.leave(jobs[index])
         cancelTransfers(of: id)
         removePartial(of: id)
         jobs[index].resetProgress()
@@ -747,6 +760,7 @@ final class DownloadManager {
     private func forget(_ id: UUID, deletingFile: Bool) -> Bool {
         guard let index = index(of: id) else { return false }
         let job = jobs[index]
+        transcodes.leave(job)
         cancelTransfers(of: id)
         removePartial(of: id)
         if deletingFile, let savedPath = job.savedPath {
@@ -766,6 +780,7 @@ final class DownloadManager {
     /// Stops and forgets every unfinished job, for signing out. Finished files stay.
     func removeUnfinished() {
         for job in jobs where job.status != .completed {
+            transcodes.leave(job)
             cancelTransfers(of: job.id)
             removePartial(of: job.id)
             removeExtras(of: job, besideFile: false)
@@ -788,8 +803,10 @@ final class DownloadManager {
         for job in candidates {
             if let url = savedFileURL(of: job), FileManager.default.fileExists(atPath: url.path) {
                 let saved = DownloadExtras.saved(for: job, storage: storage) { FileManager.default.fileExists(atPath: $0.path) }
-                return PlaybackResolver.DownloadedCopy(url: url, item: job.item, segments: job.segments ?? [],
-                                                       subtitleFiles: saved.subtitles, trickplaySheets: saved.trickplaySheets,
+                // A transcoded file's streams are the transcode's, numbered as it has them.
+                let (item, subtitles) = job.transcode?.playback(of: job.item, subtitleFiles: saved.subtitles) ?? (job.item, saved.subtitles)
+                return PlaybackResolver.DownloadedCopy(url: url, item: item, segments: job.segments ?? [],
+                                                       subtitleFiles: subtitles, trickplaySheets: saved.trickplaySheets,
                                                        chapterImages: saved.chapterImages)
             }
         }
@@ -943,11 +960,14 @@ final class DownloadManager {
         // Transfers of other files on the wire hold the file in hand back in front, as for its
         // new chunks; one waiting for a network it may use isn't on the wire.
         let finishing = Set(running.values.filter { $0.carriesBytes && $0.access.allows(network) }.map(\.tag.jobId))
-        carryOnSetAside(in: inSession, finishing: finishing, client: client)
+        let segmentWindows = transcodes.windows(for: jobs, claimed: running.values.map(\.tag) + awaitingReports + awaitingResumeData.keys,
+                                                inSession: inSession, queuingAhead: isQueuingAhead, bytesPerSecond: bytesPerSecond, now: now)
+        carryOnSetAside(in: inSession, finishing: finishing, segmentWindows: segmentWindows, client: client)
         let probing = probes.keys.map { TransferTag(jobId: $0, range: DownloadJob.probeRange) }
         let claimed = running.values.map(\.tag) + awaitingReports + probing + heldResumeData.keys + awaitingResumeData.keys
         let plan = DownloadJob.plan(jobs, running: claimed, finishing: finishing, held: held, waitingForNetwork: waitingForNetwork,
-                                    budget: Self.maxQueuedTransfers - running.count, queuingAhead: isQueuingAhead, now: now)
+                                    segmentWindows: segmentWindows, budget: Self.maxQueuedTransfers - running.count,
+                                    queuingAhead: isQueuingAhead, now: now)
         for tag in plan {
             guard let job = jobs.first(where: { $0.id == tag.jobId }) else { continue }
             if job.rangeSupport == .unknown, tag.range == DownloadJob.probeRange {
@@ -1018,14 +1038,16 @@ final class DownloadManager {
     }
 
     /// Takes back transfers that haven't started and shouldn't wait in the session now: those
-    /// of files not in `inSession`, or made for networks the rules no longer give their file.
-    /// Ones with bytes, under way or carrying on from resume data, finish.
+    /// of files not in `inSession`, or made for networks the rules no longer give their file,
+    /// and pieces of a transcode that asking for now would start the server's transcode
+    /// elsewhere. Ones with bytes, under way or carrying on from resume data, finish.
     private func takeBack(keeping inSession: Set<UUID>) {
         let rules = rules
         let byId = Dictionary(jobs.map { ($0.id, $0) }) { first, _ in first }
         var count = 0
         for (identifier, transfer) in running where !transfer.carriesBytes {
-            if let job = byId[transfer.tag.jobId], inSession.contains(job.id), transfer.access == rules.access(for: job) { continue }
+            if let job = byId[transfer.tag.jobId], inSession.contains(job.id), transfer.access == rules.access(for: job),
+               transfer.tag.segment.map({ transcodes.mayKeep($0, of: job) }) ?? true { continue }
             cancel(identifier, transfer)
             count += 1
         }
@@ -1035,23 +1057,26 @@ final class DownloadManager {
 
     /// Starts the ranges set aside whose file is in the session again, from their bytes, in
     /// queue order: in front, once other files' transfers on the wire are done, as for new
-    /// chunks. One whose range came in by other means, or whose job is gone, is dropped.
-    private func carryOnSetAside(in inSession: Set<UUID>, finishing: Set<UUID>, client: JellyfinClient) {
+    /// chunks. One whose range came in by other means, or whose job is gone, is dropped. A piece
+    /// of a transcode carries on once `segmentWindows` has it.
+    private func carryOnSetAside(in inSession: Set<UUID>, finishing: Set<UUID>, segmentWindows: [UUID: [Int]], client: JellyfinClient) {
         guard !heldResumeData.isEmpty else { return }
         let order = Dictionary(jobs.enumerated().map { ($1.id, $0) }) { first, _ in first }
+        func place(_ tag: TransferTag) -> Int64 { tag.range?.lowerBound ?? Int64(tag.segment ?? 0) }
         let sorted = heldResumeData.sorted {
-            (order[$0.key.jobId] ?? .max, $0.key.range?.lowerBound ?? 0) < (order[$1.key.jobId] ?? .max, $1.key.range?.lowerBound ?? 0)
+            (order[$0.key.jobId] ?? .max, place($0.key)) < (order[$1.key.jobId] ?? .max, place($1.key))
         }
         var done: Set<TransferTag> = []
         for (tag, point) in sorted {
             guard let job = jobs.first(where: { $0.id == tag.jobId }), job.status != .completed,
-                  let range = tag.range, !job.completed.covers(range), !running.values.contains(where: { tag.overlaps($0.tag) })
+                  !tag.isWholeFile, !job.isDelivered(tag), !running.values.contains(where: { tag.overlaps($0.tag) })
             else {
                 done.insert(tag)
                 continue
             }
             guard job.status == .active, inSession.contains(job.id), isQueuingAhead || finishing.subtracting([job.id]).isEmpty,
-                  !awaitingReports.contains(where: tag.overlaps), running.count < Self.maxQueuedTransfers
+                  !awaitingReports.contains(where: tag.overlaps), running.count < Self.maxQueuedTransfers,
+                  tag.segment.map({ segmentWindows[job.id]?.contains($0) ?? false }) ?? true
             else { continue }
             start(tag, for: job, client: client, resumeData: point)
             done.insert(tag)
@@ -1143,9 +1168,14 @@ final class DownloadManager {
     /// was made with.
     private func start(_ tag: TransferTag, for job: DownloadJob, client: JellyfinClient, resumeData: ResumePoint? = nil) {
         let task: URLSessionDownloadTask
-        let resumePoint = resumeData ?? (tag.range == nil ? takeResumeData(of: job.id) : nil)
+        let resumePoint = resumeData ?? (tag.isWholeFile ? takeResumeData(of: job.id) : nil)
         if let resumePoint {
             task = session.downloadTask(withResumeData: resumePoint.data)
+        } else if let segment = tag.segment {
+            guard var request = transcodes.request(for: segment, of: job) else { return }
+            rules.access(for: job).apply(to: &request)
+            task = session.downloadTask(with: request)
+            if let bytes = job.transcode?.expectedSegmentBytes { task.countOfBytesClientExpectsToReceive = bytes }
         } else {
             var request = URLRequest(url: client.streamURL(itemId: job.itemId, mediaSourceId: job.mediaSourceId))
             // Byte offsets have to be offsets into the file itself, not into a compressed body.
@@ -1184,7 +1214,7 @@ final class DownloadManager {
     private func cancel(_ identifier: Int, _ transfer: RunningTransfer) {
         cancelledByUs.insert(identifier)
         running[identifier] = nil
-        if transfer.tag.range == nil {
+        if transfer.tag.isWholeFile {
             // All a whole-file transfer has is its resume data: stopped, it carries on from there
             // when retried.
             let bytes = transfer.bytes
@@ -1266,10 +1296,10 @@ final class DownloadManager {
         guard let transfer = running.removeValue(forKey: identifier) else { return }
         if let resumeData, let job = jobs.first(where: { $0.id == transfer.tag.jobId }), job.status == .active {
             let point = ResumePoint(data: resumeData, bytes: transfer.bytes)
-            if let range = transfer.tag.range {
-                if !job.completed.covers(range) { keepHeld(point, for: transfer.tag) }
-            } else {
+            if transfer.tag.isWholeFile {
                 keepResumeData(point, of: job.id)
+            } else if !job.isDelivered(transfer.tag) {
+                keepHeld(point, for: transfer.tag)
             }
         }
         pump()
@@ -1310,7 +1340,7 @@ final class DownloadManager {
             // A transfer from before a relaunch that the session didn't list counts no bytes until
             // it carries on and reports.
             let resumePoint = finished.resumeData.map { ResumePoint(data: $0, bytes: transfer?.bytes ?? 0) }
-            if tag.range == nil, let resumePoint { keepResumeData(resumePoint, of: tag.jobId) }
+            if tag.isWholeFile, let resumePoint { keepResumeData(resumePoint, of: tag.jobId) }
             guard jobs[index].status == .active else { return }
             if let reason = (error as? URLError)?.backgroundTaskCancelledReason, systemCancellation != reason {
                 Self.log.notice("The system cancelled transfers: \(String(describing: reason), privacy: .public)")
@@ -1326,9 +1356,14 @@ final class DownloadManager {
             // A range that can resume carries on from its bytes, as one set aside, instead of
             // being planned again, unless it has been already: after a relaunch, the wait for
             // reports is bounded.
-            if let range = tag.range, let resumePoint, !jobs[index].completed.covers(range), !isClaimed(tag) {
+            if !tag.isWholeFile, let resumePoint, !jobs[index].isDelivered(tag), !isClaimed(tag) {
                 keepHeld(resumePoint, for: tag)
             }
+            return
+        }
+
+        if let segment = tag.segment {
+            await acceptSegment(finished, segment: segment, of: jobs[index], received: received, attemptStart: transfer?.attemptStart)
             return
         }
 
@@ -1409,12 +1444,36 @@ final class DownloadManager {
         save()
     }
 
+    /// A piece of a transcode came back: `TranscodedDownloads` takes it, and the job counts it
+    /// as it counts a chunk.
+    private func acceptSegment(_ finished: TransferDelegate.Finished, segment: Int, of job: DownloadJob, received: Int64,
+                               attemptStart: Date?) async {
+        let outcome = await transcodes.accept(finished, segment: segment, of: job)
+        guard let index = index(of: job.id) else { return }
+        switch outcome {
+        case .collected:
+            if jobs[index].status == .active { jobs[index].recordSuccess() }
+            save()
+        case .retry(let failure):
+            Self.log.notice("[\(job.id.uuidString.prefix(8)) s\(segment)] \(String(describing: failure), privacy: .public)")
+            guard jobs[index].status == .active else { return }
+            jobs[index].recordFailure(failure, receivedBytes: max(received, finished.stagedSize ?? 0), attemptStart: attemptStart ?? .now)
+            if jobs[index].status == .failed { cancelTransfers(of: job.id) }
+            save()
+        case .giveUp(let message):
+            stop(index, because: message)
+        case .dropped:
+            break
+        }
+    }
+
     /// Moves the finished file into Documents, and tells the user it's ready.
     private func publish(_ index: Int) {
         // Ranges another transfer already delivered can still be in flight.
         cancelTransfers(of: jobs[index].id)
         do {
             jobs[index].savedPath = try storage.publish(jobs[index])
+            transcodes.leave(jobs[index])
             // Publishing deleted it on disk.
             wholeFileResumeData[jobs[index].id] = nil
             jobs[index].status = .completed
@@ -1665,11 +1724,12 @@ final class DownloadManager {
         }
     }
 
-    /// Deletes the job's partial file and its whole-file resume data.
+    /// Deletes the job's partial file and its whole-file resume data, and a transcode's pieces.
     private func removePartial(of jobId: UUID) {
         wholeFileResumeData[jobId] = nil
         do {
             try storage.removePartial(for: jobId)
+            try storage.removeTranscodeFiles(for: jobId)
         } catch {
             problem = "Couldn't delete a partial download: \(error.localizedDescription)"
         }
@@ -1765,11 +1825,43 @@ final class DownloadManager {
     }
 }
 
+extension DownloadManager: TranscodeHost {
+    var isPlaybackTranscoding: Bool {
+        players.contains { $0.value && transcodingPlayers.contains($0.key) }
+    }
+
+    func changeJob(_ id: UUID, _ change: (inout DownloadJob) -> Void) {
+        update(id, change)
+    }
+
+    func transcodesChanged() {
+        pump()
+    }
+
+    func startOver(_ id: UUID, because reason: String) {
+        guard let index = index(of: id) else { return }
+        Self.log.notice("Starting \(self.jobs[index].title, privacy: .public) over: \(reason, privacy: .public)")
+        cancelTransfers(of: id)
+        removePartial(of: id)
+        jobs[index].resetProgress()
+        jobs[index].transcode?.startOvers += 1
+        jobs[index].lastError = "\(reason) It started over."
+        isSpaceCheckDue = true
+        save()
+        pump()
+    }
+
+    func stopJob(_ id: UUID, because message: String) {
+        guard let index = index(of: id), jobs[index].status != .completed else { return }
+        stop(index, because: message)
+    }
+}
+
 #if !os(macOS)
 /// Time the system grants the app to finish something it started, in front or in the
 /// background, until `end()` or until the system takes it back.
 @MainActor
-private final class BackgroundTime {
+final class BackgroundTime {
     private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "downloads")
     private let name: String
     private var identifier = UIBackgroundTaskIdentifier.invalid

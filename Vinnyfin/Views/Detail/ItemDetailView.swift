@@ -333,11 +333,9 @@ struct DownloadButton: View {
 
     private func download() {
         guard let item else { return }
-        guard let chosen = source ?? VersionChooser.choose(from: item.mediaSources ?? [], quality: settings.downloadQuality) else {
-            messages.show("The server lists no versions of \(item.name) to download.")
-            return
+        Task {
+            if let problem = await downloads.download(item, picked: source, settings: settings) { messages.show(problem) }
         }
-        downloads.enqueue(item, source: chosen, startedByUser: true)
     }
 }
 
@@ -347,7 +345,7 @@ struct DownloadRing: View {
     @Environment(DownloadManager.self) private var downloads
 
     var body: some View {
-        let received = downloads.receivedBytes[job.id] ?? job.completed.byteCount
+        let received = downloads.receivedBytes[job.id] ?? job.bytesOnDisk
         let fraction = job.displayTotalBytes.map { $0 > 0 ? Double(received) / Double($0) : 0 } ?? 0
         ZStack {
             Circle().stroke(.secondary.opacity(0.3), lineWidth: 2.5)

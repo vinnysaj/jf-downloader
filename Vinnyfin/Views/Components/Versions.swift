@@ -107,6 +107,13 @@ struct JobStatusLine: View {
                     if let lastError = job.lastError { Text(lastError).foregroundStyle(.secondary) }
                 }
                 .foregroundStyle(.orange)
+            } else if let note = downloads.transcodes.note(for: job) {
+                // What the server is doing, which the bytes here don't show.
+                let speed = downloads.bytesPerSecond[job.id].flatMap { $0 >= 1024 ? "\(Int64($0).formatted(.byteCount(style: .file)))/s" : nil }
+                Label([note, speed].compactMap(\.self).joined(separator: " · "), systemImage: "server.rack")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .accessibilityIdentifier("job.transcodeNote")
             } else if let speed = downloads.bytesPerSecond[job.id], speed >= 1024 {
                 // The next file can start as the one before it finishes its last chunks.
                 Text("\(Int64(speed).formatted(.byteCount(style: .file)))/s")
@@ -135,12 +142,14 @@ struct JobProgress: View {
     let job: DownloadJob
 
     var body: some View {
-        let received = downloads.receivedBytes[job.id] ?? job.completed.byteCount
+        let received = downloads.receivedBytes[job.id] ?? job.bytesOnDisk
         let total = job.displayTotalBytes
         VStack(alignment: .leading, spacing: 4) {
             if let total, total > 0 {
+                // A transcode's size is an estimate until it's all here.
+                let about = job.transcode != nil && job.totalBytes == nil ? "about " : ""
                 ProgressView(value: Double(min(received, total)), total: Double(total))
-                Text("\(received.formatted(.byteCount(style: .file))) of \(total.formatted(.byteCount(style: .file)))")
+                Text("\(received.formatted(.byteCount(style: .file))) of \(about)\(total.formatted(.byteCount(style: .file)))")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             } else {

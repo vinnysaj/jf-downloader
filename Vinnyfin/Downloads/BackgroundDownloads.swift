@@ -249,6 +249,8 @@ final class BackgroundDownloads {
         let isPausedForPlayback: Bool
         let isNetworkReachable: Bool
         let waits: [UUID: DownloadWait]
+        /// What the server is doing for transcoded downloads.
+        let notes: [UUID: String]
         let isKeptRunning: Bool
 
         @MainActor init(_ downloads: DownloadManager, keepAwake: KeepAwakeAudio) {
@@ -259,11 +261,12 @@ final class BackgroundDownloads {
             isPausedForPlayback = downloads.isPausedForPlayback
             isNetworkReachable = downloads.isNetworkReachable
             waits = downloads.waits
+            notes = downloads.transcodes.notes(for: downloads.jobs)
             isKeptRunning = keepAwake.isRunning
         }
 
         @MainActor var text: (title: String, subtitle: String) {
-            ContinuedProgress.text(jobs: jobs, receivedBytes: receivedBytes, isNetworkReachable: isNetworkReachable, waits: waits,
+            ContinuedProgress.text(jobs: jobs, receivedBytes: receivedBytes, isNetworkReachable: isNetworkReachable, waits: waits, notes: notes,
                                    isKeptRunning: isKeptRunning)
         }
     }

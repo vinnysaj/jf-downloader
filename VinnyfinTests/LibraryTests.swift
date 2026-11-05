@@ -208,14 +208,14 @@ struct PlaybackExtrasTests {
 
 #if !os(tvOS)
 struct DownloadEstimateTests {
-    private func source(_ size: Int64?) -> MediaSource {
+    private func plan(_ size: Int64?) -> DownloadPlan {
         var source = MediaSource(id: UUID().uuidString)
         source.size = size
-        return source
+        return .original(source)
     }
 
     @Test func addsUpTheListedSizes() {
-        let estimate = DownloadEstimate([source(2_000_000_000), source(1_500_000_000), nil])
+        let estimate = DownloadEstimate([plan(2_000_000_000), plan(1_500_000_000), nil])
         #expect(estimate.count == 2)
         #expect(estimate.bytes == 3_500_000_000)
         #expect(estimate.summary(noun: "episode", plural: "episodes") == "2 episodes, \(DownloadEstimate.text(3_500_000_000))")
@@ -226,11 +226,11 @@ struct DownloadEstimateTests {
     }
 
     @Test func saysWhichSizesArentListed() {
-        let some = DownloadEstimate([source(2_000_000_000), source(nil), source(500)])
+        let some = DownloadEstimate([plan(2_000_000_000), plan(nil), plan(500)])
         #expect(some.unknownCount == 2)
         #expect(some.summary(noun: "episode", plural: "episodes")
             == "3 episodes, at least \(DownloadEstimate.text(2_000_000_000)): 2 sizes aren't listed")
-        #expect(DownloadEstimate([source(nil)]).summary(noun: "episode", plural: "episodes") == "1 episode, sizes not listed")
+        #expect(DownloadEstimate([plan(nil)]).summary(noun: "episode", plural: "episodes") == "1 episode, sizes not listed")
         #expect(DownloadEstimate([]).summary(noun: "episode", plural: "episodes") == "No episodes")
     }
 }
@@ -353,9 +353,9 @@ struct IntentSummaryTests {
         var job = DownloadJob(item: Samples.movie, source: Samples.source)
         job.status = .completed
         #expect(IntentSummaries.alreadyThere(job) == "\(job.title) is already downloaded.")
-        #expect(IntentSummaries.movieQueued(nil, name: "Big Test Movie", source: Samples.source, isOneOfSeveral: true)
+        #expect(IntentSummaries.movieQueued(nil, name: "Big Test Movie", plan: .original(Samples.source), isOneOfSeveral: true)
             == "Downloading Big Test Movie: 1080p, \(DownloadEstimate.text(300_000_000)).")
-        #expect(IntentSummaries.movieQueued(nil, name: "Big Test Movie", source: Samples.source, isOneOfSeveral: false)
+        #expect(IntentSummaries.movieQueued(nil, name: "Big Test Movie", plan: .original(Samples.source), isOneOfSeveral: false)
             == "Downloading Big Test Movie: \(DownloadEstimate.text(300_000_000)).")
     }
 }

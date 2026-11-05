@@ -71,6 +71,8 @@ struct SettingsView: View {
                         ForEach(VideoQuality.allCases) { Text($0.label).tag($0) }
                     }
                     .accessibilityIdentifier("settings.downloadQuality")
+                    Toggle("Transcode When No Version Fits", isOn: $settings.transcodeDownloads)
+                        .accessibilityIdentifier("settings.transcodeDownloads")
                     Toggle("Delete Watched Episodes", isOn: $settings.deleteWatchedEpisodes)
                         .accessibilityIdentifier("settings.deleteWatched")
                     Stepper("Smart Downloads Keep \(settings.smartDownloadCount) Episodes", value: $settings.smartDownloadCount, in: 1...50)
@@ -82,9 +84,9 @@ struct SettingsView: View {
                     Text("Downloads")
                 } footer: {
                     #if os(iOS) || os(visionOS)
-                    Text("Downloads are always the original file: the version closest to this quality. Watched episodes are deleted once they're watched here or on any of your devices. Diagnostics shows what the system reports about why vinnyfin stopped running.")
+                    Text("Downloads take the best version up to this quality, untouched. When every version is bigger, the smallest downloads as it is; with Transcode When No Version Fits on, the server makes one at this quality instead, which takes longer, as the server works through the whole title first. Watched episodes are deleted once they're watched here or on any of your devices. Diagnostics shows what the system reports about why vinnyfin stopped running.")
                     #else
-                    Text("Downloads are always the original file: the version closest to this quality. Watched episodes are deleted once they're watched here or on any of your devices.")
+                    Text("Downloads take the best version up to this quality, untouched. When every version is bigger, the smallest downloads as it is; with Transcode When No Version Fits on, the server makes one at this quality instead, which takes longer, as the server works through the whole title first. Watched episodes are deleted once they're watched here or on any of your devices.")
                     #endif
                 }
                 whenToDownload
@@ -279,9 +281,11 @@ struct SettingsView: View {
 
 #if !os(tvOS)
 extension AccountStore {
-    /// Signs out, cancelling the downloads that haven't finished: only this sign-in can fetch them.
+    /// Signs out, cancelling the downloads that haven't finished: only this sign-in can fetch
+    /// them. The server's copies of their transcodes are deleted while it still can be.
     func signOut(cancelling downloads: DownloadManager) async {
         downloads.removeUnfinished()
+        await downloads.transcodes.finishCleanups()
         await signOut()
     }
 }

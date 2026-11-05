@@ -75,11 +75,7 @@ struct ItemContextMenu: View {
         guard let session else { return }
         do {
             let detail = try await session.client.item(id: item.id, userId: session.userId)
-            guard let source = VersionChooser.choose(from: detail.mediaSources ?? [], quality: settings.downloadQuality) else {
-                messages.show("The server lists no versions of \(item.name) to download.")
-                return
-            }
-            downloads.enqueue(detail, source: source, startedByUser: true)
+            if let problem = await downloads.download(detail, settings: settings) { messages.show(problem) }
         } catch {
             messages.show("Couldn't start the download of \(item.name): \(error.localizedDescription)")
         }

@@ -169,13 +169,14 @@ final class SmartDownloads {
     }
 
     /// What keeping every unwatched episode of a show would add to the downloads, by the sizes
-    /// the server lists for the versions closest to the download quality.
+    /// the server lists for the versions closest to the download quality, and the transcodes'
+    /// estimates where none fits and Transcode When No Version Fits is on.
     func everyUnwatchedEstimate(seriesId: String) async throws -> DownloadEstimate {
         guard let client = accounts.client, let account = accounts.account else { throw PlaybackError.notSignedIn }
         let show = try await show(seriesId, client: client, userId: account.userId)
         let wanted = Set(SmartDownloadPlanner.episodesToDownload(show.states, nextUpId: show.nextUpId, count: nil))
         return DownloadEstimate(show.episodes.filter { wanted.contains($0.id) }.map { episode in
-            VersionChooser.choose(from: episode.mediaSources ?? [], quality: settings.downloadQuality)
+            DownloadPlanner.plan(for: episode, settings: settings)
         })
     }
 
@@ -209,14 +210,16 @@ final class SmartDownloads {
         }
     }
 
-    /// Queues each episode's version closest to the download quality, and returns the episodes
-    /// it queued. The server looks each one's versions up as it's asked for its details.
+    /// Queues each episode as the download settings say (`DownloadPlanner`), and returns the
+    /// episodes it queued. The server looks each one's versions up as it's asked for its details.
+    /// Throws `DownloadRefused` when the account may not download them.
     private func queue(_ ids: [String], startedByUser: Bool, client: JellyfinClient, userId: String) async throws -> [JellyfinItem] {
         var queued: [JellyfinItem] = []
         for id in ids {
             let detail = try await client.item(id: id, userId: userId)
-            guard let source = VersionChooser.choose(from: detail.mediaSources ?? [], quality: settings.downloadQuality) else { continue }
-            downloads.enqueue(detail, source: source, startedByUser: startedByUser)
+            guard let plan = DownloadPlanner.plan(for: detail, settings: settings) else { continue }
+            if let refusal = await downloads.transcodes.refusal(for: plan) { throw DownloadRefused(message: refusal) }
+            downloads.enqueue(detail, plan: plan, startedByUser: startedByUser)
             queued.append(detail)
         }
         return queued

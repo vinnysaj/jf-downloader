@@ -54,6 +54,9 @@ final class AppSettings {
     /// when `allowTranscoding` lets it, as it plays.
     var adaptiveQuality = true { didSet { store(adaptiveQuality, Keys.adaptiveQuality) } }
     var downloadQuality = VideoQuality.fullHD { didSet { store(downloadQuality.rawValue, Keys.downloadQuality) } }
+    /// Has the server make a download at `downloadQuality` when every version of a title is
+    /// bigger, rather than downloading the smallest as it is.
+    var transcodeDownloads = false { didSet { store(transcodeDownloads, Keys.transcodeDownloads) } }
     /// Deletes a downloaded episode once it has been watched, here or on another device.
     var deleteWatchedEpisodes = true { didSet { store(deleteWatchedEpisodes, Keys.deleteWatchedEpisodes) } }
     /// How many episodes a new smart download keeps ahead.
@@ -98,6 +101,7 @@ final class AppSettings {
         static let allowTranscoding = "settings.allowTranscoding"
         static let adaptiveQuality = "settings.adaptiveQuality"
         static let downloadQuality = "settings.downloadQuality"
+        static let transcodeDownloads = "settings.transcodeDownloads"
         static let deleteWatchedEpisodes = "settings.deleteWatchedEpisodes"
         static let smartDownloadCount = "settings.smartDownloadCount"
         static let downloadOverCellular = "settings.downloadOverCellular"
@@ -132,6 +136,7 @@ final class AppSettings {
         allowTranscoding = defaults.object(forKey: Keys.allowTranscoding) as? Bool ?? allowTranscoding
         adaptiveQuality = defaults.object(forKey: Keys.adaptiveQuality) as? Bool ?? adaptiveQuality
         downloadQuality = defaults.string(forKey: Keys.downloadQuality).flatMap(VideoQuality.init) ?? downloadQuality
+        transcodeDownloads = defaults.object(forKey: Keys.transcodeDownloads) as? Bool ?? transcodeDownloads
         deleteWatchedEpisodes = defaults.object(forKey: Keys.deleteWatchedEpisodes) as? Bool ?? deleteWatchedEpisodes
         smartDownloadCount = defaults.object(forKey: Keys.smartDownloadCount) as? Int ?? smartDownloadCount
         downloadOverCellular = defaults.object(forKey: Keys.downloadOverCellular) as? Bool ?? downloadOverCellular
@@ -163,8 +168,9 @@ final class AppSettings {
     /// downloads keep and the space downloads may take suit its storage, as a Mac's isn't an
     /// iPhone's; cellular data, charging and keeping downloads running in the background suit how
     /// it's carried and powered; and matching the frame rate and dynamic range suits the TV it's
-    /// plugged into. The download quality, the sound that keeps downloads running and their
-    /// notifications are the person's taste, and follow them.
+    /// plugged into. The download quality, whether downloads may be transcoded to it, the sound
+    /// that keeps downloads running and their notifications are the person's taste, and follow
+    /// them.
     nonisolated static let deviceOnlyKeys: Set<String> = [
         Keys.streamingQuality, Keys.smartDownloadCount, Keys.downloadStorageLimit, Keys.downloadOverCellular,
         Keys.downloadOnlyWhileCharging, Keys.keepDownloadsRunning, Keys.keepPlayingAfterDownloads, Keys.matchContent,

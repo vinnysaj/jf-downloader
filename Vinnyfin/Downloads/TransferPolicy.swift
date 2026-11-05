@@ -7,10 +7,19 @@ nonisolated struct TransferTag: Hashable, Sendable {
     let jobId: UUID
     /// The bytes asked for; nil for a whole-file request without a Range header.
     let range: Range<Int64>?
+    /// The piece of a transcoded download asked for, whole (`TranscodedDownloads`).
+    let segment: Int?
 
     init(jobId: UUID, range: Range<Int64>?) {
         self.jobId = jobId
         self.range = range
+        segment = nil
+    }
+
+    init(jobId: UUID, segment: Int) {
+        self.jobId = jobId
+        range = nil
+        self.segment = segment
     }
 
     init?(encoded: String?) {
@@ -19,6 +28,9 @@ nonisolated struct TransferTag: Hashable, Sendable {
         switch parts.count {
         case 1:
             self.init(jobId: jobId, range: nil)
+        case 2:
+            guard parts[1].hasPrefix("s"), let segment = Int(parts[1].dropFirst()), segment >= 0 else { return nil }
+            self.init(jobId: jobId, segment: segment)
         case 3:
             guard let lower = Int64(parts[1]), let upper = Int64(parts[2]), lower < upper else { return nil }
             self.init(jobId: jobId, range: lower..<upper)
@@ -28,18 +40,24 @@ nonisolated struct TransferTag: Hashable, Sendable {
     }
 
     var encoded: String {
+        if let segment { return "\(jobId.uuidString) s\(segment)" }
         guard let range else { return jobId.uuidString }
         return "\(jobId.uuidString) \(range.lowerBound) \(range.upperBound)"
     }
+
+    /// A request for the whole file, without a Range header: what its resume data carries on is all it has.
+    var isWholeFile: Bool { range == nil && segment == nil }
 
     /// The Range header value; HTTP ranges are inclusive.
     var rangeHeader: String? {
         range.map { "bytes=\($0.lowerBound)-\($0.upperBound - 1)" }
     }
 
-    /// Whether the two ask for some of the same bytes. A whole-file request asks for them all.
+    /// Whether the two ask for some of the same bytes. A whole-file request asks for them all;
+    /// a piece of a transcode is its own.
     func overlaps(_ other: TransferTag) -> Bool {
         guard other.jobId == jobId else { return false }
+        if segment != nil || other.segment != nil { return segment == other.segment }
         guard let range, let otherRange = other.range else { return true }
         return range.overlaps(otherRange)
     }
@@ -209,7 +227,7 @@ nonisolated extension DownloadJob {
     /// says its transfers hold in the session's files, running or set aside with resume data.
     static func bytesSoFar(_ jobs: [DownloadJob], held: [(jobId: UUID, bytes: Int64)]) -> [UUID: Int64] {
         var bytes: [UUID: Int64] = [:]
-        for job in jobs where job.status != .completed { bytes[job.id] = job.completed.byteCount }
+        for job in jobs where job.status != .completed { bytes[job.id] = job.bytesOnDisk }
         for (jobId, count) in held { bytes[jobId]? += count }
         return bytes
     }
@@ -219,7 +237,7 @@ nonisolated extension DownloadJob {
     /// Chunks planned from the listed size would each fetch the whole file from a server that
     /// ignores Range.
     func needsProbe(serverTakesRanges: Bool) -> Bool {
-        rangeSupport == .unknown && (sizeHint == nil || !serverTakesRanges)
+        transcode == nil && rangeSupport == .unknown && (sizeHint == nil || !serverTakesRanges)
     }
 
     /// Whether a file in the queue has shown that the server takes ranges. Unfinished files are
@@ -263,9 +281,11 @@ nonisolated extension DownloadJob {
     /// gets one transfer, timed for its retry. A file that needs a probe gets only that, one
     /// probe at a time, so the server isn't asked about every file at once. In front, the files
     /// after the one in hand that need a probe get it in turn, so that all their chunks can go
-    /// in the moment the app leaves the screen.
+    /// in the moment the app leaves the screen. A transcoded download's transfers are the pieces
+    /// `segmentWindows` gives it, planned as chunks are.
     static func plan(_ jobs: [DownloadJob], running: [TransferTag], finishing: Set<UUID> = [], held: Set<UUID> = [],
-                     waitingForNetwork: Set<UUID> = [], budget: Int, queuingAhead: Bool, now: Date = .now) -> [TransferTag] {
+                     waitingForNetwork: Set<UUID> = [], segmentWindows: [UUID: [Int]] = [:], budget: Int, queuingAhead: Bool,
+                     now: Date = .now) -> [TransferTag] {
         let serverTakesRanges = serverTakesRanges(jobs)
         let notPlanned = queuingAhead ? held : held.union(waitingForNetwork)
         let inSession = sessionFiles(jobs, held: notPlanned, queuingAhead: queuingAhead, now: now)
@@ -277,6 +297,13 @@ nonisolated extension DownloadJob {
         for id in queue(jobs) where !notPlanned.contains(id) {
             guard tags.count < budget, let job = byId[id] else { break }
             let claimed = running.filter { $0.jobId == id }
+            if job.transcode != nil {
+                guard inSession.contains(id), queuingAhead || finishing.subtracting([id]).isEmpty else { continue }
+                let limit = job.isBackingOff(at: now) ? (claimed.isEmpty ? 1 : 0) : budget - tags.count
+                let unclaimed = (segmentWindows[id] ?? []).filter { segment in !claimed.contains { $0.segment == segment } }
+                tags += unclaimed.prefix(limit).map { TransferTag(jobId: id, segment: $0) }
+                continue
+            }
             let needsProbe = job.needsProbe(serverTakesRanges: serverTakesRanges)
             let mayProbe = !waitingForNetwork.contains(id)
             if job.isBackingOff(at: now) {
@@ -308,7 +335,7 @@ nonisolated extension DownloadJob {
     /// The transfers to start, given the ones already running for this job.
     /// Each element is a byte range, or nil for one whole-file request.
     func nextRequests(running: [TransferTag], limit: Int, serverTakesRanges: Bool) -> [Range<Int64>?] {
-        guard status == .active, limit > 0 else { return [] }
+        guard status == .active, transcode == nil, limit > 0 else { return [] }
         let size: Int64
         switch rangeSupport {
         case .unknown:
@@ -399,6 +426,7 @@ nonisolated extension DownloadJob {
     /// Back to the start, for a file that changed on the server.
     mutating func resetProgress() {
         resume()
+        transcode?.reset()
         rangeSupport = .unknown
         totalBytes = nil
         completed = ByteRanges()

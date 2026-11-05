@@ -94,6 +94,20 @@ struct RootView: View {
         } message: {
             Text(sharePlay.problem ?? "")
         }
+        #if !os(tvOS)
+        .alert("Download a Transcode?", isPresented: Binding(get: { downloads.transcodes.proposal != nil },
+                                                             set: { if !$0 { downloads.transcodes.proposal = nil } }),
+               presenting: downloads.transcodes.proposal) { proposal in
+            Button("Download Transcode") { downloads.enqueue(proposal.item, plan: proposal.plan, startedByUser: true) }
+                .accessibilityIdentifier("transcode.download")
+            Button("Download As It Is (\(proposal.original.summary))") {
+                downloads.enqueue(proposal.item, plan: proposal.original, startedByUser: true)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { proposal in
+            Text(proposal.message)
+        }
+        #endif
         #if os(iOS) || os(macOS)
         .sheet(isPresented: showsRemoteScreen) {
             RemoteScreen()

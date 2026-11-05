@@ -28,7 +28,8 @@ struct DownloadNextEpisodesIntent: AppIntent {
     }
 }
 
-/// Queues a movie's version closest to the download quality.
+/// Queues a movie as the download settings say: its version closest to the download quality, or
+/// a transcode to it when every version is bigger and Transcode When No Version Fits is on.
 struct DownloadMovieIntent: AppIntent {
     static let title: LocalizedStringResource = "Download Movie"
     static let description = IntentDescription("Downloads a movie in the download quality, to watch offline.")
@@ -52,13 +53,12 @@ struct DownloadMovieIntent: AppIntent {
         }
         let session = try ServerTitles.session(accounts)
         let detail = try await session.client.item(id: movie.id, userId: session.userId)
-        guard let source = VersionChooser.choose(from: detail.mediaSources ?? [], quality: settings.downloadQuality) else {
-            throw PlaybackError.noVersions
-        }
-        downloads.enqueue(detail, source: source, startedByUser: true)
+        guard let plan = DownloadPlanner.plan(for: detail, settings: settings) else { throw PlaybackError.noVersions }
+        if let refusal = await downloads.transcodes.refusal(for: plan) { throw DownloadRefused(message: refusal) }
+        downloads.enqueue(detail, plan: plan, startedByUser: true)
         // Queued, or turned away at once for want of space.
         let job = downloads.jobs(forItem: movie.id).first
-        let summary = IntentSummaries.movieQueued(job, name: detail.name, source: source,
+        let summary = IntentSummaries.movieQueued(job, name: detail.name, plan: plan,
                                                   isOneOfSeveral: (detail.mediaSources?.count ?? 0) > 1)
         return .result(dialog: IntentDialog("\(summary)"))
     }
@@ -137,10 +137,14 @@ nonisolated enum IntentSummaries {
 
     /// The version is named only when it was picked from several: a movie's only version is
     /// named after the file, which repeats the movie's name.
-    static func movieQueued(_ job: DownloadJob?, name: String, source: MediaSource, isOneOfSeveral: Bool) -> String {
+    static func movieQueued(_ job: DownloadJob?, name: String, plan: DownloadPlan, isOneOfSeveral: Bool) -> String {
         if let job, job.status == .failed, let error = job.lastError { return "Couldn't download \(name). \(error)" }
-        let details = [isOneOfSeveral ? source.name : nil, source.plausibleSize.map(DownloadEstimate.text)]
-            .compactMap(\.self).joined(separator: ", ")
+        let details = switch plan {
+        case .original(let source):
+            [isOneOfSeveral ? source.name : nil, source.plausibleSize.map(DownloadEstimate.text)].compactMap(\.self).joined(separator: ", ")
+        case .transcode(_, let request):
+            [request.label, request.estimatedBytes.map { "about \(DownloadEstimate.text($0))" }].compactMap(\.self).joined(separator: ", ")
+        }
         return details.isEmpty ? "Downloading \(name)." : "Downloading \(name): \(details)."
     }
 
