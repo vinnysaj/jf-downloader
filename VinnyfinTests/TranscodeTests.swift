@@ -744,6 +744,30 @@ struct ServerDownTests {
         host.jobs[0].transcode?.pieceCount = 20
         #expect(!transcodes.mayKeep(20, of: host.jobs[0]))
     }
+
+    /// The app stops the server's transcode to start it again elsewhere: the queue is planned
+    /// first, which takes back every piece the server hasn't answered, as none may stay.
+    @Test func takesBackThePiecesOutBeforeStoppingTheServersTranscode() throws {
+        var job = DownloadJob(item: Titles.item, plan: .transcode(Titles.uhd, Titles.request()))
+        var state = Titles.state()
+        state.collected = IndexSet(0..<20)
+        job.transcode = state
+        let host = TranscodeHostStub([job])
+        let base = FileManager.default.temporaryDirectory.appending(path: "ServerDownTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let defaults = try #require(UserDefaults(suiteName: "ServerDownTests-\(UUID().uuidString)"))
+        let transcodes = TranscodedDownloads(accounts: AccountStore(defaults: defaults),
+                                             storage: DownloadStorage(finished: base.appending(path: "Finished"), root: base.appending(path: "Root")))
+        transcodes.host = host
+        #expect(transcodes.mayKeep(21, of: host.jobs[0]))
+        #expect(transcodes.holdForRestart(job.id, deeper: false))
+        #expect(host.changes == 1)
+        #expect(!transcodes.mayKeep(20, of: host.jobs[0]))
+        #expect(!transcodes.mayKeep(21, of: host.jobs[0]))
+        // Being stopped already: nothing more.
+        #expect(!transcodes.holdForRestart(job.id, deeper: true))
+        #expect(host.changes == 1)
+    }
 }
 
 // MARK: Fragmented MP4

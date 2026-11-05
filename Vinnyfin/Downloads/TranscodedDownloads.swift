@@ -948,25 +948,7 @@ final class TranscodedDownloads {
     /// one made; past those, where the file's last run started. When that doesn't take over
     /// either, the job stops.
     private func restartTranscode(_ id: UUID, deeper: Bool) {
-        guard let state = job(id)?.transcode, let client, let playSessionId = state.playSessionId, live[id]?.isRestarting != true else { return }
-        let level = deeper ? (live[id]?.searchLevel ?? 0) + 1 : 0
-        guard level < TranscodeTimeline.restartAttempts else {
-            host?.stopJob(id, because: """
-                The server's transcode can't pick up where the download got to, \(Self.clock(state.downloadPosition)) in: each time it \
-                starts again there, it starts too late. Retry to try again, or download a version as it is.
-                """)
-            return
-        }
-        var live = self.live[id] ?? Live()
-        live.searchLevel = level
-        live.isRestarting = true
-        live.restartedAt = .now
-        live.restartIsOwn = true
-        live.anchor = nil
-        // The run stopped didn't end by itself, and what it made goes.
-        live.runEndedAt = nil
-        live.skippedEnd = nil
-        self.live[id] = live
+        guard let client, let playSessionId = job(id)?.transcode?.playSessionId, holdForRestart(id, deeper: deeper) else { return }
         Task { [weak self] in
             do {
                 try await client.stopTranscoding(playSessionId: playSessionId)
@@ -978,6 +960,36 @@ final class TranscodedDownloads {
             try? await Task.sleep(for: Self.restartPause)
             self?.restarted(id)
         }
+    }
+
+    /// Holds the job's pieces while its server transcode is stopped to start again: false, with
+    /// nothing held, when one is being stopped already or the attempts have run out, which stops
+    /// the job. The pieces the server hasn't answered are taken back before it's stopped
+    /// (`mayKeep`): the first of them to reach it after would start it again where that one
+    /// asked, numbering its pieces from there, and leave them behind on the server when the
+    /// piece asked for next starts it where it should be.
+    func holdForRestart(_ id: UUID, deeper: Bool) -> Bool {
+        guard let state = job(id)?.transcode, live[id]?.isRestarting != true else { return false }
+        let level = deeper ? (live[id]?.searchLevel ?? 0) + 1 : 0
+        guard level < TranscodeTimeline.restartAttempts else {
+            host?.stopJob(id, because: """
+                The server's transcode can't pick up where the download got to, \(Self.clock(state.downloadPosition)) in: each time it \
+                starts again there, it starts too late. Retry to try again, or download a version as it is.
+                """)
+            return false
+        }
+        var live = self.live[id] ?? Live()
+        live.searchLevel = level
+        live.isRestarting = true
+        live.restartedAt = .now
+        live.restartIsOwn = true
+        live.anchor = nil
+        // The run stopped didn't end by itself, and what it made goes.
+        live.runEndedAt = nil
+        live.skippedEnd = nil
+        self.live[id] = live
+        host?.transcodesChanged()
+        return true
     }
 
     /// The server's transcode was stopped: the pieces beside the file came from it and go, and
