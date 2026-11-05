@@ -1629,6 +1629,35 @@ struct FlattenedMP4Tests {
         #expect(fields(try box(table + ["stts"], in: data, track: 1), in: data) == [1, 37, 2002])
     }
 
+    /// Each restarted run's audio frames fall elsewhere than the file's, here 500 and then 600
+    /// ticks later. Joining each at the frame nearest the file's end would add the gaps up, and a
+    /// decoder playing the frames back to back would take the sound 1100 ticks, more than half a
+    /// frame, ahead of the picture. The second run joins at the frame that keeps it within half.
+    @Test func keepsTheSoundWithinHalfAFrameOfThePictureAcrossJoins() throws {
+        func sound(from time: Int64, count: Int) -> MP4.Run {
+            MP4.Run(track: Film.audio, decodeTime: time, samples: (0..<count).map { _ in MP4.Sample(duration: UInt32(2 * Film.frame)) })
+        }
+        let pieces = [Film.piece(0..<8), Film.piece(8..<16),
+                      MP4.piece([Film.pictures(from: 13, count: 11, reordered: false), sound(from: Film.time(12) * 2 + 500, count: 12)]),
+                      MP4.piece([Film.pictures(from: 21, count: 11, reordered: false), sound(from: Film.time(20) * 2 + 1100, count: 12)])]
+        let (data, _, _) = try flatten(pieces, header: Film.header)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let table = ["moov", "trak", "mdia", "minf", "stbl"]
+        // Each sample at its own time: the first run's 16, the second's from 500 after the first's
+        // end, and the third's from 1402 before the second's, the frame before the one nearest.
+        #expect(fields(try box(table + ["stts"], in: data, track: 1), in: data) == [5, 15, 2002, 1, 2502, 7, 2002, 1, 600, 9, 2002])
+        let durations = fields(try box(table + ["stts"], in: data, track: 1), in: data).dropFirst()
+        var own: Int64 = 0
+        var played: Int64 = 0
+        for entry in stride(from: durations.startIndex, to: durations.endIndex, by: 2) {
+            for _ in 0..<durations[entry] {
+                #expect(abs(own - played) <= Int64(Film.frame))
+                own += Int64(durations[entry + 1])
+                played += Int64(2 * Film.frame)
+            }
+        }
+    }
+
     /// Anything else that doesn't follow on names the piece, in pictures or in audio, rather
     /// than move samples to hide it.
     @Test func namesAPieceThatDoesntFollowOn() throws {

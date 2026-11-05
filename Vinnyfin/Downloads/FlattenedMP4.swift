@@ -172,6 +172,10 @@ nonisolated enum FlattenedMP4 {
         var syncs: [Bool] = []
         /// Each run is a chunk: its samples lie one after another from `offset`.
         var chunks: [(offset: Int, count: Int)] = []
+        /// How far the samples' own times have got ahead of where a decoder that plays each whole,
+        /// one after another, has them, as AVFoundation plays audio: the gaps less the overlaps
+        /// where a restarted run's audio joins the file's, its frames falling elsewhere.
+        private(set) var drift: Int64 = 0
 
         init(timescale: Int64, presentationOffset: Int64) {
             self.timescale = timescale
@@ -213,27 +217,39 @@ nonisolated enum FlattenedMP4 {
         }
 
         /// Adds a run's samples. For a track other than the pictures, with the file's samples of it
-        /// ending at `fileEnd`, the run's samples that start before it, by more than `halfSample`, go,
-        /// and so do any that start no later than the file's last: a restarted transcode's audio
-        /// that the file has already. A run the server stopped can end on a sample it cut short,
-        /// which the next run has whole at the same time: the file reaches as far as that one.
+        /// ending at `fileEnd`, the run's samples the file has already go: a restarted
+        /// transcode's audio from before its pictures take over. Its frames fall elsewhere than
+        /// the file's, leaving a gap or an overlap where they join, which a decoder playing the
+        /// frames back to back closes, moving the sound after it. The run's samples go up to the
+        /// one starting nearest where that keeps what those moves add up to (`drift`) within
+        /// `halfSample`, so the sound stays within half a frame of the picture however many runs
+        /// join. The run's samples that start no later than the file's last go too. A run the
+        /// server stopped can end on a sample it cut short, which the next run has whole at the
+        /// same time: the file reaches as far as that one.
         mutating func add(_ run: FragmentedMP4.Run, after fileEnd: Int64? = nil, halfSample: Int64 = 0) throws {
             var time = run.decodeTime
             var offset = run.dataOffset
             var count = 0
             var end = fileEnd
             let fileLast = fileEnd == nil ? nil : decodeTimes.last
+            let pull = min(max(drift, -halfSample), halfSample)
+            var leftOutOverlap = false
             for sample in run.samples {
                 let shown = time + Int64(sample.compositionOffset) - presentationOffset
                 let isFiles = fileLast.map { time <= $0 } ?? false
                 if isFiles { end = max(end ?? 0, shown + Int64(sample.duration)) }
-                if let end, isFiles || shown < end - halfSample {
+                if let end, isFiles || shown < end - pull - halfSample {
+                    leftOutOverlap = leftOutOverlap || !isFiles
                     time += Int64(sample.duration)
                     offset += Int(sample.size)
                     continue
                 }
-                if count == 0, let end, shown > end + halfSample {
-                    throw FragmentedMP4.Problem(message: "a track starts \(Self.seconds(shown - end, timescale)) s after it ends in the piece before.")
+                if count == 0, let end {
+                    // Past the file's end with none of the run left out before it: the run starts late.
+                    if shown > end + halfSample, !leftOutOverlap {
+                        throw FragmentedMP4.Problem(message: "a track starts \(Self.seconds(shown - end, timescale)) s after it ends in the piece before.")
+                    }
+                    if !decodeTimes.isEmpty { drift += shown - end }
                 }
                 if let last = decodeTimes.last, time <= last {
                     throw FragmentedMP4.Problem(message: "its samples are decoded before the ones before them.")
