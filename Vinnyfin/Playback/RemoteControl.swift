@@ -63,6 +63,9 @@ final class RemoteControl {
     }
     /// When `session` was seen, which the position counts on from while it plays.
     private(set) var seenAt = Date()
+    /// What plays there is the last episode of its show, as the server says, so there's no
+    /// next one to skip to. False until the server has said, and for anything not an episode.
+    private(set) var isLastEpisode = false
     /// Why the last command didn't get through.
     var error: String?
     /// The remote's screen is up, over the app.
@@ -74,6 +77,8 @@ final class RemoteControl {
     @ObservationIgnored private let player: PlayerCoordinator
     @ObservationIgnored private var followTask: Task<Void, Never>?
     @ObservationIgnored private var lastPush = Date.distantPast
+    /// The episode whose place in its show was asked about, and the asking.
+    @ObservationIgnored private var nextEpisodeLookup: (itemId: String, task: Task<Void, Never>)?
 
     private static let log = Logger(subsystem: "net.vinnysaj.vinnyfin", category: "remote")
 
@@ -229,7 +234,32 @@ final class RemoteControl {
         session = nil
         error = nil
         showsScreen = false
+        lookUpNextEpisode()
         playbackEnded(after: command)
+    }
+
+    /// Asks the server whether the episode playing there is its show's last, once for each
+    /// episode. Until it says, and when it can't, Next Episode stays: the device there knows.
+    private func lookUpNextEpisode() {
+        let item = item
+        guard item?.id != nextEpisodeLookup?.itemId else { return }
+        nextEpisodeLookup?.task.cancel()
+        nextEpisodeLookup = nil
+        isLastEpisode = false
+        guard let item, item.isEpisode, let seriesId = item.seriesId, let client = accounts.client,
+              let userId = accounts.account?.userId
+        else { return }
+        let task = Task { [weak self] in
+            do {
+                let next = try await client.episode(after: item.id, seriesId: seriesId, userId: userId)
+                guard !Task.isCancelled, let self, self.nextEpisodeLookup?.itemId == item.id else { return }
+                self.isLastEpisode = next == nil
+            } catch {
+                guard !error.isCancellation else { return }
+                Self.log.notice("Couldn't find the episode after \(item.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        nextEpisodeLookup = (item.id, task)
     }
 
     @discardableResult
@@ -285,6 +315,7 @@ final class RemoteControl {
         session = playTarget.session
         seenAt = .now
         phase = .starting(itemId: sent.item.id, since: .now)
+        lookUpNextEpisode()
         showsScreen = true
         socket.onSessions = { [weak self] sessions in self?.received(sessions) }
         socket.followsSessions = true
@@ -340,6 +371,7 @@ final class RemoteControl {
             if let seriesId = item.seriesId { playedTitleIds.insert(seriesId) }
         }
         if let target { phase = phase.next(session: found, targetName: target.name, now: .now) }
+        lookUpNextEpisode()
     }
 
     /// The titles the device played while this followed it, and the shows of its episodes.

@@ -138,7 +138,7 @@ struct RemoteScreen: View {
                 .accessibilityIdentifier("remote.playPause")
             Button("Forward 10 Seconds", systemImage: "goforward.10") { remote.skip(by: RemoteCommand.skipInterval) }
                 .font(.title)
-            if remote.item?.isEpisode == true {
+            if remote.item?.isEpisode == true, !remote.isLastEpisode {
                 Button("Next Episode", systemImage: "forward.end.fill") { remote.nextEpisode() }
                     .font(.title2)
                     .accessibilityIdentifier("remote.next")

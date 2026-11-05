@@ -322,10 +322,12 @@ nonisolated struct JellyfinClient: Sendable {
         return page.items
     }
 
-    /// The episode after `episodeId` in the show's order, if there is one.
+    /// The episode after `episodeId` in the show's order, if there is one. Neither neighbour
+    /// lookup takes an episode the server lists from its metadata without a file (missing), which
+    /// a user's "display missing episodes" puts in the list, and which can't be played.
     func episode(after episodeId: String, seriesId: String, userId: String) async throws -> JellyfinItem? {
         let page: ItemsPage = try await get("Shows/\(seriesId)/Episodes", query: [
-            "userId": userId, "startItemId": episodeId, "limit": "2", "enableUserData": "true",
+            "userId": userId, "startItemId": episodeId, "limit": "2", "enableUserData": "true", "isMissing": "false",
             "fields": Self.listFields,
         ])
         return page.items.dropFirst().first { $0.parentIndexNumber != 0 }
@@ -334,7 +336,8 @@ nonisolated struct JellyfinClient: Sendable {
     /// The episode before `episodeId` in the show's order, if there is one.
     func episode(before episodeId: String, seriesId: String, userId: String) async throws -> JellyfinItem? {
         let page: ItemsPage = try await get("Shows/\(seriesId)/Episodes", query: [
-            "userId": userId, "adjacentTo": episodeId, "enableUserData": "true", "fields": Self.listFields,
+            "userId": userId, "adjacentTo": episodeId, "enableUserData": "true", "isMissing": "false",
+            "fields": Self.listFields,
         ])
         guard let index = page.items.firstIndex(where: { $0.id == episodeId }), index > 0 else { return nil }
         return page.items[index - 1]
