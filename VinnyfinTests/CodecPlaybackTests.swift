@@ -121,4 +121,26 @@ struct PlayerHandoffTests {
         await first.close()
         try FileManager.default.removeItem(at: folder)
     }
+
+    /// Until its first frame is on screen a playback reads as loading, though the engine plays and
+    /// its clock runs, so the player doesn't offer Pause over a black picture.
+    @Test func playingWaitsForThePicture() async throws {
+        let engine = try AetherEngine()
+        let history = WatchHistory(file: FileManager.default.temporaryDirectory.appending(path: "Picture-\(UUID().uuidString).json"))
+        let folder = FileManager.default.temporaryDirectory.appending(path: "Picture-\(UUID().uuidString)")
+        let files = try copies(of: ["movies/Big Test Movie (2024)/Big Test Movie (2024) - 1080p.mkv"], into: folder)
+
+        let model = try makeModel(playing: files[0], engine: engine, lease: EngineLease(), history: history)
+        await model.start()
+        var playedBeforeThePicture = false
+        try await waitUntil {
+            if model.status == .playing, engine.startupProgress?.isComplete != true { playedBeforeThePicture = true }
+            return model.status == .playing
+        }
+        #expect(model.status == .playing)
+        #expect(!playedBeforeThePicture, "Read as playing before the first frame was on screen")
+
+        await model.close()
+        try FileManager.default.removeItem(at: folder)
+    }
 }

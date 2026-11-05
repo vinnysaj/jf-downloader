@@ -23,13 +23,14 @@ final class ScreenshotTests: XCTestCase {
     #if os(iOS)
     @MainActor
     func testIPhone() async throws {
-        let app = launch()
+        let app = try launch()
         try await snapHome(app)
         try await startDownloads(app)
         try await snapShow(app, name: "02-show")
         tap(tab("Movies", in: app))
         tap(app.buttons["poster.The Quiet Meridian"])
         try await snap("03-movie", once: app.buttons["detail.play"])
+        try await snapRemote(app)
         tap(tab("Search", in: app))
         let field = app.searchFields.firstMatch
         tap(field)
@@ -38,10 +39,27 @@ final class ScreenshotTests: XCTestCase {
         try await snapDownloads(app, name: "04-downloads")
     }
 
+    /// Plays the title whose page is open on the living room's Apple TV, and shows the remote.
+    @MainActor
+    private func snapRemote(_ app: XCUIApplication) async throws {
+        let livingRoom = LivingRoomTV(server: server, username: Self.username)
+        try await livingRoom.open()
+        tap(app.buttons["playElsewhere"])
+        // By name: any other device signed in to the server, such as a simulator still running
+        // an earlier test's app, is a target too.
+        tap(app.buttons.matching(identifier: "playOn.target").matching(NSPredicate(format: "label BEGINSWITH %@", "Living Room")).firstMatch)
+        let playing = app.descendants(matching: .any)["remote.playing"]
+        XCTAssertTrue(playing.waitForExistence(timeout: uiTimeout), "The remote never showed the living room playing")
+        try await snap("06-remote", once: app.descendants(matching: .any)["remote.title"])
+        tap(app.buttons["remote.stop"])
+        try await livingRoom.close()
+    }
+
     @MainActor
     func testIPad() async throws {
+        useFullScreenApps()
         XCUIDevice.shared.orientation = .landscapeLeft
-        let app = launch()
+        let app = try launch()
         try await snapHome(app)
         try await startDownloads(app)
         try await snapShow(app, name: "02-show")
@@ -52,11 +70,24 @@ final class ScreenshotTests: XCTestCase {
         try await snapDownloads(app, name: "05-downloads")
     }
 
+    /// Full Screen Apps, as the App Store shows an iPad app: a window has a resize handle in its
+    /// corner, and its app's name in the status bar.
+    @MainActor
+    private func useFullScreenApps() {
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        settings.launch()
+        tap(settings.descendants(matching: .any)["Multitasking & Gestures"].firstMatch)
+        let fullScreen = settings.buttons["com.apple.settings.multitaskingAndGestures.fullScreenApps"]
+        tap(fullScreen)
+        XCTAssertTrue(fullScreen.wait(for: \.isSelected, toEqual: true, timeout: uiTimeout), "Full Screen Apps never took")
+        settings.terminate()
+    }
+
     /// Closed: the outer display.
     @MainActor
     func testDuoOuter() async throws {
         XCUIDevice.shared.orientation = .portrait
-        let app = launch()
+        let app = try launch()
         try await snapHome(app)
         try await snapShow(app, name: "02-show")
     }
@@ -65,7 +96,7 @@ final class ScreenshotTests: XCTestCase {
     @MainActor
     func testDuoInner() async throws {
         XCUIDevice.shared.orientation = .portrait
-        let app = launch()
+        let app = try launch()
         try await snapHome(app)
         try await snapShow(app, name: "02-show")
         tap(tab("Movies", in: app))
@@ -77,11 +108,15 @@ final class ScreenshotTests: XCTestCase {
     @MainActor
     func testDuoLaptop() async throws {
         XCUIDevice.shared.orientation = .landscapeLeft
-        let app = launch()
+        let app = try launch()
+        let window = app.windows.firstMatch.frame.size
+        XCTAssertGreaterThan(window.height, window.width, "The inner display never turned to stand like a laptop")
         tap(tab("Shows", in: app))
         tap(app.buttons["poster.Port Ellery"])
-        tap(app.buttons["episode.3"])
+        // Resume S01E03: half open, the episode's row is off the screen below.
+        tap(app.buttons["series.play"])
         XCTAssertTrue(app.buttons["episodes.episode.3"].waitForExistence(timeout: uiTimeout), "The player didn't split at the fold")
+        waitForPicture(app)
         tap(app.buttons["player.playPause"])
         try await snap("01-player")
     }
@@ -90,49 +125,68 @@ final class ScreenshotTests: XCTestCase {
     #if os(tvOS)
     @MainActor
     func testTV() async throws {
-        let app = launch()
+        let app = try launch()
+        // From the sidebar, where focus starts, to the hero's button for its film, partway through.
+        focus(app.descendants(matching: .any)["home.hero"].buttons["Resume"], in: app, moving: [.right, .up, .left])
         try await snapHome(app)
-        // The hero's film is partway through: its button resumes it.
         XCUIRemote.shared.press(.select)
-        XCTAssertTrue(app.descendants(matching: .any)["player.timeline"].waitForExistence(timeout: uiTimeout), "The player never opened")
-        try await Task.sleep(for: .seconds(3))
+        let timeline = app.descendants(matching: .any)["player.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: uiTimeout), "The player never opened")
+        // Until the picture is up, a spinner over it reads Loading.
+        XCTAssertTrue(app.activityIndicators["Loading"].waitForNonExistence(timeout: uiTimeout), "The picture never came up")
         XCUIRemote.shared.press(.playPause)
+        for _ in 0..<3 where !timeline.hasFocus { XCUIRemote.shared.press(.up) }
+        XCTAssertTrue(timeline.hasFocus, "The timeline never took focus")
+        // Back into the chapter before, whose picture the scrub preview shows over the paused one.
+        for _ in 0..<12 { XCUIRemote.shared.press(.left) }
         try await snap("04-player")
-        XCUIRemote.shared.press(.menu)
-        XCUIRemote.shared.press(.menu)
+        // Menu backs out of the scrub, then out of the player.
+        for _ in 0..<3 where timeline.exists {
+            XCUIRemote.shared.press(.menu)
+            _ = timeline.waitForNonExistence(timeout: 3)
+        }
+        XCTAssertFalse(timeline.exists, "The player never closed")
         selectTab("Shows", in: app)
-        XCUIRemote.shared.press(.down)
+        focus(app.buttons["poster.Port Ellery"], in: app, moving: [.right, .left])
         XCUIRemote.shared.press(.select)
         try await snap("02-show", once: app.descendants(matching: .any)["series.play"])
         XCUIRemote.shared.press(.menu)
         selectTab("Movies", in: app)
-        XCUIRemote.shared.press(.down)
         try await snap("03-movies", once: app.buttons["poster.Amber Cartographers"])
         selectTab("Search", in: app)
-        XCUIRemote.shared.press(.down)
         app.typeText("the")
         try await snap("05-search", once: app.buttons["poster.The Quiet Meridian"])
     }
 
-    /// Moves focus up to the tab bar and along it to `name`, which shows that tab.
+    /// Moves focus left into the sidebar, no further: a press left there closes it. Then along it
+    /// to `name`, and shows that tab.
     @MainActor
     private func selectTab(_ name: String, in app: XCUIApplication) {
-        let tab = app.buttons[name].firstMatch
-        XCTAssertTrue(tab.waitForExistence(timeout: uiTimeout))
-        for _ in 0..<6 where !app.tabBars.buttons.allElementsBoundByIndex.contains(where: \.hasFocus) {
-            XCUIRemote.shared.press(.up)
-        }
-        for direction in [XCUIRemote.Button.right, .left] {
-            for _ in 0..<6 where !tab.hasFocus { XCUIRemote.shared.press(direction) }
-        }
-        XCTAssertTrue(tab.hasFocus, "The \(name) tab never took focus")
+        let sidebar = app.collectionViews["Sidebar"]
+        let focusedRow = sidebar.cells.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        for _ in 0..<12 where !focusedRow.exists { XCUIRemote.shared.press(.left) }
+        XCTAssertTrue(focusedRow.exists, "Focus never reached the sidebar")
+        focus(sidebar.buttons[name], in: app)
+        XCUIRemote.shared.press(.select)
     }
     #endif
 
     #if os(macOS)
     @MainActor
     func testMac() async throws {
-        let app = launch()
+        let app = try launch()
+        try await snapHome(app)
+        try await snapShow(app, name: "02-show")
+        tap(tab("Movies", in: app))
+        tap(app.buttons["poster.The Quiet Meridian"])
+        try await snapPlayer(app, name: "03-player")
+    }
+    #endif
+
+    #if os(visionOS)
+    @MainActor
+    func testVision() async throws {
+        let app = try launch()
         try await snapHome(app)
         try await snapShow(app, name: "02-show")
         tap(tab("Movies", in: app))
@@ -144,14 +198,20 @@ final class ScreenshotTests: XCTestCase {
     // MARK: Screens
 
     @MainActor
-    private func launch() -> XCUIApplication {
+    private func launch() throws -> XCUIApplication {
         let app = XCUIApplication()
         #if os(macOS)
         // A window of the default size, not wherever an earlier run left it.
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         #endif
+        #if os(visionOS)
+        app.launchArguments += try signInArguments(server: server, username: Self.username)
+        app.launch()
+        signInIfNeeded(app)
+        #else
         app.launch()
         signInIfNeeded(app, server: server, username: Self.username)
+        #endif
         return app
     }
 
@@ -165,30 +225,42 @@ final class ScreenshotTests: XCTestCase {
     private func snapShow(_ app: XCUIApplication, name: String) async throws {
         tap(tab("Shows", in: app))
         tap(app.buttons["poster.Port Ellery"])
-        try await snap(name, once: app.buttons["episode.3"])
+        try await snap(name, once: app.buttons["episode.1"])
     }
 
-    /// Plays the title whose page is open from where it was left, and pauses with the controls up.
+    /// Plays the title whose page is open from where it was left, and pauses with the controls up
+    /// and the chapters open.
     @MainActor
     private func snapPlayer(_ app: XCUIApplication, name: String) async throws {
         tap(app.buttons["detail.play"])
+        waitForPicture(app)
         let pause = app.buttons["player.playPause"]
-        XCTAssertTrue(pause.waitForExistence(timeout: uiTimeout), "The player never opened")
         // Playing, the controls hide after a few seconds; once they have, a tap on the picture
         // brings them back for a few more. Paused, they stay up.
-        if pause.waitForNonExistence(timeout: 10) {
-            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
-        }
+        if pause.waitForNonExistence(timeout: 10) { tap(app.buttons["player.picture"]) }
         tap(pause)
-        try await snap(name)
+        tap(app.buttons["player.chapters"])
+        try await snap(name, once: app.buttons["panel.chapter.0"])
         tap(app.buttons["player.close"])
     }
 
-    /// A tab: a button in the tab bar, or a row in iPad's sidebar. Not just any button by that
-    /// name, which can be the back button to the tab's first screen.
+    /// Waits for the player's picture: until it's up, the play button is a spinner that reads Play.
+    @MainActor
+    private func waitForPicture(_ app: XCUIApplication) {
+        let playPause = app.buttons["player.playPause"]
+        XCTAssertTrue(playPause.waitForExistence(timeout: uiTimeout), "The player never opened")
+        XCTAssertTrue(playPause.wait(for: \.label, toEqual: "Pause", timeout: uiTimeout), "The picture never came up")
+    }
+
+    /// A tab: a button in the tab bar, a row in iPad's sidebar, or a button in the bar down the
+    /// side of iPhone Duo's outer display, which isn't a tab bar to XCUITest. A tab reads its
+    /// badge's count after its name. Not the back button to the tab's first screen, which can
+    /// have the same name.
     @MainActor
     private func tab(_ name: String, in app: XCUIApplication) -> XCUIElement {
-        let places = [app.tabBars.buttons[name], app.cells[name]]
+        let named = NSPredicate(format: "label == %@ OR label BEGINSWITH %@", name, name + ", ")
+        let places = [app.tabBars.buttons.matching(named).firstMatch, app.cells.matching(named).firstMatch,
+                      app.buttons.matching(named).matching(NSPredicate(format: "identifier != 'BackButton'")).firstMatch]
         let deadline = Date.now.addingTimeInterval(uiTimeout)
         while Date.now < deadline {
             if let tab = places.first(where: \.exists) { return tab }
@@ -200,8 +272,10 @@ final class ScreenshotTests: XCTestCase {
 
     #if os(iOS)
     /// A film and a smart download for a show, so the Downloads tab has something in it by the end.
+    /// They download as they are.
     @MainActor
     private func startDownloads(_ app: XCUIApplication) async throws {
+        chooseDownloads("1080p", transcoded: false, in: app)
         tap(tab("Movies", in: app))
         tap(app.buttons["poster.Saltwater Hymns"])
         tap(app.buttons["detail.download"])
@@ -216,33 +290,87 @@ final class ScreenshotTests: XCTestCase {
         }
     }
 
+    /// `element`, once the list it's in has scrolled up to it: a list makes its rows as they come
+    /// into view.
+    @MainActor
+    private func scrolledTo(_ element: XCUIElement, in app: XCUIApplication) -> XCUIElement {
+        for _ in 0..<8 where !element.exists { app.swipeUp() }
+        return element
+    }
+
+    /// Chooses the download quality and whether the server may make a download at it, in Settings
+    /// from Home. Both follow the person through iCloud, so a fresh install can start from what an
+    /// earlier run chose.
+    @MainActor
+    private func chooseDownloads(_ quality: String, transcoded: Bool, keepingThemRunning: Bool = false, in app: XCUIApplication) {
+        tap(tab("Home", in: app))
+        tap(app.buttons["home.settings"])
+        tap(scrolledTo(app.buttons["settings.downloadQuality"], in: app))
+        tap(app.buttons[quality])
+        turn(scrolledTo(app.switches["settings.transcodeDownloads"], in: app), on: transcoded)
+        if keepingThemRunning { turn(scrolledTo(app.switches["settings.keepDownloadsRunning"], in: app), on: true) }
+        tap(app.navigationBars.buttons["Done"])
+    }
+
+    /// Turns `toggle` on or off, a row whose switch at the end takes the tap.
+    @MainActor
+    private func turn(_ toggle: XCUIElement, on: Bool) {
+        let value = on ? "1" : "0"
+        XCTAssertTrue(toggle.waitForExistence(timeout: uiTimeout), "\(toggle) never appeared")
+        if toggle.value as? String != value { tap(toggle.switches.firstMatch) }
+        let turned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: toggle)
+        XCTAssertEqual(XCTWaiter.wait(for: [turned], timeout: uiTimeout), .completed, "\(toggle) never turned \(on ? "on" : "off")")
+    }
+
+    /// The Downloads tab once those downloads are done, and a season is on its way at a quality
+    /// the server makes for it, with Keep Downloads Running on.
     @MainActor
     private func snapDownloads(_ app: XCUIApplication, name: String) async throws {
         tap(tab("Downloads", in: app))
         let downloaded = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'downloaded.'"))
         let four = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count >= 4"), object: downloaded)
         XCTAssertEqual(XCTWaiter.wait(for: [four], timeout: 120), .completed, "The downloads didn't finish")
-        try await snap(name)
+        chooseDownloads("720p", transcoded: true, keepingThemRunning: true, in: app)
+        // Port Ellery's page, still open from its screenshot.
+        tap(tab("Shows", in: app))
+        tap(app.descendants(matching: .any)["series.smartDownload"].firstMatch)
+        tap(app.buttons["Download Season 1"])
+        tap(app.buttons["batch.download"])
+        tap(tab("Downloads", in: app))
+        let downloading = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'job.'")).firstMatch
+        XCTAssertTrue(downloading.waitForExistence(timeout: uiTimeout), "The season never started downloading")
+        try await snap(name, once: app.descendants(matching: .any)["keepAwake.status"])
     }
     #endif
 
     /// Attaches a screenshot named `name`, once `landmark` is on screen and artwork has had a
-    /// moment to load. The Mac's is the app's window; elsewhere, the whole screen.
+    /// moment to load. The Mac's is the app's window; elsewhere, the whole screen, which on
+    /// Vision Pro the script takes when asked.
     @MainActor
     private func snap(_ name: String, once landmark: XCUIElement? = nil) async throws {
         if let landmark {
             XCTAssertTrue(landmark.waitForExistence(timeout: uiTimeout), "\(landmark) never appeared for \(name)")
         }
         try await Task.sleep(for: .seconds(2.5))
+        #if os(visionOS)
+        try await requestScreenshot(name)
+        #else
         #if os(macOS)
         let screenshot = XCUIApplication().windows.firstMatch.screenshot()
         #else
-        let screenshot = XCUIScreen.main.screenshot()
+        // The screen the app's window fills, which on iPhone Duo open is the inner display, not
+        // the main one. The largest window: the player adds one of no size ahead of it.
+        let window = XCUIApplication().windows.allElementsBoundByIndex.map(\.frame.size)
+            .max { $0.width * $0.height < $1.width * $1.height } ?? .zero
+        let screenshot = try XCTUnwrap(XCUIScreen.screens.lazy.map { $0.screenshot() }.first { shot in
+            abs(shot.image.size.width - window.width) < 1 && abs(shot.image.size.height - window.height) < 1
+        }, "No screen is the size of the app's window, \(window)")
         #endif
         let attachment = XCTAttachment(screenshot: screenshot, quality: .original)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        #endif
     }
 }
 
@@ -250,6 +378,10 @@ final class ScreenshotTests: XCTestCase {
 private struct ShowcaseHistory {
     let server: String
     let username: String
+
+    private var api: ShowcaseAPI {
+        ShowcaseAPI(server: server, client: #"Client="vinnyfin screenshots", Device="Test runner", DeviceId="vinnyfin-screenshots""#)
+    }
 
     private struct Item: Decodable {
         let id: String
@@ -271,17 +403,6 @@ private struct ShowcaseHistory {
         enum CodingKeys: String, CodingKey { case items = "Items" }
     }
 
-    private struct Authentication: Decodable {
-        struct User: Decodable {
-            let id: String
-            enum CodingKeys: String, CodingKey { case id = "Id" }
-        }
-
-        let user: User
-        let accessToken: String
-        enum CodingKeys: String, CodingKey { case user = "User", accessToken = "AccessToken" }
-    }
-
     /// Partway through, as a fraction of the runtime.
     private static let inProgress: [String: Double] = ["The Quiet Meridian": 0.46, "Port Ellery S1E3": 0.35]
     private static let watched: Set<String> = ["Port Ellery S1E1", "Port Ellery S1E2", "Starfall Station S1E1",
@@ -289,12 +410,8 @@ private struct ShowcaseHistory {
     private static let favorites: Set<String> = ["Port Ellery", "Neon Tidewater"]
 
     func reset() async throws {
-        let decoder = JSONDecoder()
-        let signIn = try decoder.decode(Authentication.self, from: try await send(
-            "POST", "/Users/AuthenticateByName", body: ["Username": username, "Pw": ""]))
-        let user = signIn.user.id
-        let token = signIn.accessToken
-        let items = try decoder.decode(Page.self, from: try await send(
+        let (user, token) = try await api.signIn(username)
+        let items = try JSONDecoder().decode(Page.self, from: try await api.send(
             "GET", "/Items?userId=\(user)&recursive=true&includeItemTypes=Movie,Series,Episode&fields=RunTimeTicks", token: token)).items
         XCTAssertFalse(items.isEmpty, "The showcase library is empty")
         for item in items {
@@ -311,21 +428,41 @@ private struct ShowcaseHistory {
                     data["LastPlayedDate"] = ISO8601DateFormatter().string(from: .now)
                 }
             }
-            _ = try await send("POST", "/UserItems/\(item.id)/UserData?userId=\(user)", token: token,
-                               body: try JSONSerialization.data(withJSONObject: data))
+            try await api.send("POST", "/UserItems/\(item.id)/UserData?userId=\(user)", token: token, body: try ShowcaseAPI.json(data))
         }
     }
+}
 
-    private func send(_ method: String, _ path: String, token: String? = nil, body: [String: String]) async throws -> Data {
-        try await send(method, path, token: token, body: try JSONEncoder().encode(body))
+/// The showcase server's API, called as the client and device `client` names.
+private struct ShowcaseAPI: Sendable {
+    let server: String
+    /// The Authorization header's client, device and device id.
+    let client: String
+
+    private struct Authentication: Decodable {
+        struct User: Decodable {
+            let id: String
+            enum CodingKeys: String, CodingKey { case id = "Id" }
+        }
+
+        let user: User
+        let accessToken: String
+        enum CodingKeys: String, CodingKey { case user = "User", accessToken = "AccessToken" }
     }
 
-    private func send(_ method: String, _ path: String, token: String? = nil, body: Data? = nil) async throws -> Data {
+    /// Signs in as `username`, a user without a password.
+    func signIn(_ username: String) async throws -> (userId: String, token: String) {
+        let signIn = try JSONDecoder().decode(Authentication.self, from: try await send(
+            "POST", "/Users/AuthenticateByName", body: try Self.json(["Username": username, "Pw": ""])))
+        return (signIn.user.id, signIn.accessToken)
+    }
+
+    /// Sends `body`, JSON, and returns what the server answers.
+    @discardableResult
+    func send(_ method: String, _ path: String, token: String? = nil, body: Data? = nil) async throws -> Data {
         var request = URLRequest(url: try XCTUnwrap(URL(string: server + path)))
         request.httpMethod = method
-        var authorization = #"MediaBrowser Client="vinnyfin screenshots", Device="Test runner", DeviceId="vinnyfin-screenshots", Version="1""#
-        if let token { authorization += #", Token="\#(token)""# }
-        request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        request.setValue(authorization(token: token), forHTTPHeaderField: "Authorization")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
@@ -337,4 +474,146 @@ private struct ShowcaseHistory {
         }
         return data
     }
+
+    /// The server's socket, signed in with `token`.
+    func socketRequest(token: String) throws -> URLRequest {
+        var request = URLRequest(url: try XCTUnwrap(URL(string: server.replacingOccurrences(of: "http", with: "ws", options: .anchored) + "/socket")))
+        request.setValue(authorization(token: token), forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    private func authorization(token: String?) -> String {
+        #"MediaBrowser \#(client), Version="1""# + (token.map { #", Token="\#($0)""# } ?? "")
+    }
+
+    static func json(_ object: Any) throws -> Data {
+        try JSONSerialization.data(withJSONObject: object)
+    }
 }
+
+#if os(iOS)
+/// vinnyfin on the living room's Apple TV, as the server sees it, for the remote's screenshot.
+/// It holds the server's socket open, which lists it among the devices to play on, and plays
+/// what it's sent by telling the server it plays it, as the app there would.
+private actor LivingRoomTV {
+    private static let deviceId = "vinnyfin-screenshots-living-room"
+    private let username: String
+    private let api: ShowcaseAPI
+    private var token = ""
+    private var socket: URLSessionWebSocketTask?
+    private var listening: Task<Void, Never>?
+    private var keepingAlive: Task<Void, Never>?
+    /// What it plays, and from where, as the server's playback reports put it.
+    private var playing: [String: Any]?
+    private var isClosing = false
+    /// What went wrong while it was open.
+    private var failure: (any Error)?
+
+    init(server: String, username: String) {
+        self.username = username
+        api = ShowcaseAPI(server: server, client: #"Client="vinnyfin tvOS", Device="Living Room", DeviceId="\#(Self.deviceId)""#)
+    }
+
+    func open() async throws {
+        token = try await api.signIn(username).token
+        try await api.send("POST", "/Sessions/Capabilities/Full", token: token, body: try ShowcaseAPI.json([
+            "PlayableMediaTypes": ["Video"], "SupportedCommands": [String](), "SupportsMediaControl": true,
+        ]))
+        let socket = URLSession.shared.webSocketTask(with: try api.socketRequest(token: token))
+        socket.resume()
+        self.socket = socket
+        listening = Task { await listen(to: socket) }
+        try await waitUntilListed()
+    }
+
+    private struct Session: Decodable {
+        let supportsRemoteControl: Bool
+        enum CodingKeys: String, CodingKey { case supportsRemoteControl = "SupportsRemoteControl" }
+    }
+
+    /// Waits for the server to take the socket, after which it lists the TV as a device to play on.
+    private func waitUntilListed() async throws {
+        let deadline = Date.now.addingTimeInterval(uiTimeout)
+        while Date.now < deadline {
+            let sessions = try JSONDecoder().decode([Session].self, from: try await api.send(
+                "GET", "/Sessions?deviceId=\(Self.deviceId)", token: token))
+            if sessions.contains(where: \.supportsRemoteControl) { return }
+            if let failure { throw failure }
+            try await Task.sleep(for: .seconds(0.5))
+        }
+        throw URLError(.timedOut, userInfo: [NSLocalizedDescriptionKey: "The server never listed the living room as a device to play on"])
+    }
+
+    /// Stops what it plays and closes the socket, and throws what went wrong while it was open.
+    func close() async throws {
+        isClosing = true
+        keepingAlive?.cancel()
+        socket?.cancel(with: .goingAway, reason: nil)
+        await listening?.value
+        if let playing { try await report("Stopped", playing) }
+        playing = nil
+        if let failure { throw failure }
+    }
+
+    private func listen(to socket: URLSessionWebSocketTask) async {
+        do {
+            while true {
+                guard case .string(let text) = try await socket.receive(),
+                      let message = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { continue }
+                try await handle(message, from: socket)
+            }
+        } catch {
+            if !isClosing { failure = error }
+        }
+    }
+
+    private func handle(_ message: [String: Any], from socket: URLSessionWebSocketTask) async throws {
+        switch message["MessageType"] as? String {
+        case "ForceKeepAlive":
+            // Word at least this often, in seconds, or the server closes the socket.
+            let seconds = message["Data"] as? Double ?? 60
+            keepingAlive?.cancel()
+            keepingAlive = Task {
+                do {
+                    while true {
+                        try await socket.send(.string(#"{"MessageType":"KeepAlive"}"#))
+                        try await Task.sleep(for: .seconds(seconds / 2))
+                    }
+                } catch {
+                    if !isClosing, !(error is CancellationError) { failure = error }
+                }
+            }
+        case "Play":
+            let data = message["Data"] as? [String: Any] ?? [:]
+            guard let itemId = (data["ItemIds"] as? [String])?.first else { return }
+            var started: [String: Any] = ["ItemId": itemId, "PositionTicks": data["StartPositionTicks"] ?? 0,
+                                          "IsPaused": false, "CanSeek": true, "PlayMethod": "DirectPlay"]
+            started["MediaSourceId"] = data["MediaSourceId"]
+            playing = started
+            try await report(nil, started)
+        case "Playstate":
+            let data = message["Data"] as? [String: Any] ?? [:]
+            guard var progress = playing else { return }
+            switch data["Command"] as? String {
+            case "Pause": progress["IsPaused"] = true
+            case "Unpause": progress["IsPaused"] = false
+            case "Seek": progress["PositionTicks"] = data["SeekPositionTicks"] ?? progress["PositionTicks"]
+            case "Stop":
+                playing = nil
+                try await report("Stopped", progress)
+                return
+            default: return
+            }
+            playing = progress
+            try await report("Progress", progress)
+        default:
+            return
+        }
+    }
+
+    /// Tells the server a playback started (`event` nil), went on or stopped.
+    private func report(_ event: String?, _ playback: [String: Any]) async throws {
+        try await api.send("POST", "/Sessions/Playing" + (event.map { "/\($0)" } ?? ""), token: token, body: try ShowcaseAPI.json(playback))
+    }
+}
+#endif

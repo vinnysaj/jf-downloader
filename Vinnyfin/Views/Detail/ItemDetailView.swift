@@ -65,7 +65,7 @@ struct ItemDetailView: View {
     }
 
     var body: some View {
-        EdgeToEdgeScrollView {
+        EdgeToEdgeScrollView(underTopBars: true) {
             VStack(alignment: .leading, spacing: 28) {
                 DetailHero(item: shown, eyebrow: shown.isEpisode ? shown.seriesName : nil, badgesSource: playbackSource) {
                     actions
@@ -89,7 +89,6 @@ struct ItemDetailView: View {
                 .padding(.bottom, Metrics.edge)
             }
         }
-        .ignoresSafeArea(edges: .top)
         // The page color the hero artwork fades into.
         .background(Color.pageBackground.ignoresSafeArea())
         .screenTitle(shown.name)
@@ -205,6 +204,8 @@ struct PlayButton: View {
         }
         .buttonStyle(.platformGlassProminent)
         .controlSize(.large)
+        // Its title on one line: the row's other buttons would otherwise take width it needs.
+        .fixedSize(horizontal: true, vertical: false)
         .accessibilityIdentifier("detail.play")
         #if os(tvOS)
         .focused(focus)

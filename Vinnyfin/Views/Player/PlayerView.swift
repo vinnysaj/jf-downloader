@@ -141,11 +141,19 @@ struct PlayerView: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
             if let panel {
-                TrackPanel(model: model, panel: panel) { closePanel() }
-                    .padding(Metrics.edge)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(.bottom, 60)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                let clearsControls = controlsVisible && fold == nil && Self.controlsArePictureOverlay
+                // Between the controls' bars, so the panel covers none of them.
+                GeometryReader { geometry in
+                    let frame = geometry.frame(in: .global)
+                    let top = clearsControls ? topBarBottom.map { max(0, $0 - frame.minY) } ?? 0 : 0
+                    let bottom = clearsControls ? bottomBarTop.map { max(0, frame.maxY - $0) } ?? 60 : 60
+                    TrackPanel(model: model, panel: panel, room: max(0, frame.height - top - bottom - 2 * Metrics.edge)) { closePanel() }
+                        .padding(Metrics.edge)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .padding(.top, top)
+                        .padding(.bottom, bottom)
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .animation(.easeInOut(duration: 0.25), value: controlsVisible)

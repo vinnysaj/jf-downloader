@@ -114,6 +114,10 @@ final class PlayerModel: Identifiable {
     @ObservationIgnored private var appliedSubtitlePreference = false
     /// The engine's load returned, so its track lists are complete.
     @ObservationIgnored private var isLoaded = false
+    /// The stream's first frame is on screen, or it has none to show. Until then a playing engine
+    /// reads as loading: its clock and sound can run for seconds ahead of the picture, as when a
+    /// start far from a keyframe is decoded in software.
+    @ObservationIgnored private var isPresenting = false
     @ObservationIgnored private var lastReportedPaused: Bool?
     @ObservationIgnored private var startedReporting = false
     /// Telling the server that the last session stopped, and giving the title its position.
@@ -274,6 +278,7 @@ final class PlayerModel: Identifiable {
         if tracks != nil { askedStreams = nil }
         appliedSubtitlePreference = false
         isLoaded = false
+        isPresenting = false
         startedReporting = false
         lastReportedPaused = nil
         watchTask?.cancel()
@@ -419,6 +424,8 @@ final class PlayerModel: Identifiable {
             .store(in: &subscriptions)
         engine.$playbackPhase.dropFirst().receive(on: RunLoop.main).sink { [weak self] phase in self?.phaseChanged(phase) }
             .store(in: &subscriptions)
+        engine.$startupProgress.dropFirst().receive(on: RunLoop.main).sink { [weak self] progress in self?.startupChanged(progress) }
+            .store(in: &subscriptions)
         engine.$duration.dropFirst().receive(on: RunLoop.main).sink { [weak self] duration in
             if duration > 0 { self?.duration = duration }
         }
@@ -472,7 +479,7 @@ final class PlayerModel: Identifiable {
             if status != .ended { status = .paused }
             reportPauseChange(paused: true)
         case .playing:
-            status = .playing
+            status = isPresenting ? .playing : .loading
             reportPauseChange(paused: false)
         case .loading, .seeking, .idle:
             break
@@ -484,10 +491,19 @@ final class PlayerModel: Identifiable {
         case .rebuffering, .stalled, .seeking:
             if status == .playing { status = .buffering }
         case .playing:
-            if status == .buffering || status == .loading { status = .playing }
+            if isPresenting, status == .buffering || status == .loading { status = .playing }
         default:
             break
         }
+    }
+
+    /// A picture that comes up after the engine started playing turns loading into playing.
+    private func startupChanged(_ progress: StartupProgress?) {
+        isPresenting = progress?.isComplete == true
+        guard isPresenting, status == .loading, engine.state == .playing else { return }
+        status = .playing
+        phaseChanged(engine.playbackPhase)
+        nowPlayingChanged()
     }
 
     private func audioTracksChanged(_ tracks: [TrackInfo], active: Int?) {

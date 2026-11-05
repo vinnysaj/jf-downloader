@@ -159,10 +159,13 @@ extension View {
 
 /// A vertical scroll view whose artwork and rows run the whole width: past Apple TV's overscan
 /// margin, and elsewhere under the bars at the sides, like iPad's sidebar and iPhone Duo's
-/// vertical bar. Text and controls keep clear of those bars with `edgePadding()`, and the view
-/// itself takes the safe area's size, so what's laid over it stays clear of them too. Apple TV's
-/// overscan margin isn't a bar: there the content and what's laid over it keep to `Metrics.edge`.
+/// vertical bar, and up under the bars over the top when `underTopBars`. Text and controls keep
+/// clear of those bars with `edgePadding()` and `barInsets`, and the view itself takes the safe
+/// area's size, so what's laid over it stays clear of them too. Apple TV's overscan margin isn't a
+/// bar: there the content and what's laid over it keep to `Metrics.edge`.
 struct EdgeToEdgeScrollView<Content: View>: View {
+    /// Runs up under the bars over the top, as a page does whose artwork starts at the screen's top.
+    var underTopBars = false
     @ViewBuilder let content: Content
     #if !os(tvOS)
     @State private var insets = EdgeInsets()
@@ -171,20 +174,26 @@ struct EdgeToEdgeScrollView<Content: View>: View {
     var body: some View {
         #if os(tvOS)
         ScrollView { content }
-            .ignoresSafeArea(edges: .horizontal)
+            .ignoresSafeArea(edges: edges)
         #else
         Color.clear.overlay {
-            ScrollView { content.environment(\.sideBarInsets, insets) }
-                .ignoresSafeArea(edges: .horizontal)
+            ScrollView { content.environment(\.barInsets, insets) }
+                .ignoresSafeArea(edges: edges)
+                // Measured outside the edges given up: inside, they'd read as no bars at all.
                 .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: { insets = $0 }
         }
         #endif
     }
+
+    private var edges: Edge.Set {
+        underTopBars ? [.horizontal, .top] : .horizontal
+    }
 }
 
 extension EnvironmentValues {
-    /// How far the bars at the sides reach over an `EdgeToEdgeScrollView`'s content.
-    @Entry var sideBarInsets = EdgeInsets()
+    /// How far the bars around an `EdgeToEdgeScrollView` reach over its content: at the sides,
+    /// and over the top of a page that runs up under them.
+    @Entry var barInsets = EdgeInsets()
 }
 
 extension View {
@@ -195,7 +204,7 @@ extension View {
 }
 
 private struct EdgePadding: ViewModifier {
-    @Environment(\.sideBarInsets) private var insets
+    @Environment(\.barInsets) private var insets
 
     func body(content: Content) -> some View {
         content

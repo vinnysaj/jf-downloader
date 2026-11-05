@@ -1,6 +1,7 @@
 // Generates the showcase library the App Store screenshots browse: original titles with drawn
 // artwork, logos, metadata and still-picture videos, so nothing on screen belongs to anyone else.
-// Files that already exist are kept, so a second run only fills in what's missing.
+// Pictures and metadata that already exist are kept, and videos still made the same way, so a
+// second run only fills in what's missing or made differently.
 // Usage: swift Showcase.swift <media folder>
 import AppKit
 import Synchronization
@@ -44,6 +45,14 @@ struct Art {
     let font: TitleFont
 }
 
+/// A stretch of a film, with a picture of its own: the film's scene in another light.
+struct Chapter {
+    let title: String
+    let minute: Int
+    /// Nil for the film's own light, its backdrop.
+    var palette: Palette?
+}
+
 struct Movie {
     let title: String
     let year: Int
@@ -55,6 +64,8 @@ struct Movie {
     let plot: String
     let art: Art
     var versions: [String] = ["1080p"]
+    /// From the start; a film without any is its backdrop throughout.
+    var chapters: [Chapter] = []
 }
 
 struct Episode {
@@ -111,7 +122,14 @@ let movies: [Movie] = [
     Movie(title: "The Quiet Meridian", year: 2025, genres: ["Drama", "Mystery"], rating: "PG-13", score: 8.4, minutes: 128,
           tagline: "Some maps only point home.",
           plot: "A surveyor sent to redraw a remote mountain border finds the old markers moved by someone who still lives along the line, and a reason to stay through the first snow.",
-          art: Art(scene: .mountains, palette: Palettes.dusk, font: .serif), versions: ["2160p", "1080p"]),
+          art: Art(scene: .mountains, palette: Palettes.dusk, font: .serif), versions: ["2160p", "1080p"],
+          chapters: [Chapter(title: "The Survey Office", minute: 0, palette: Palettes.morning),
+                     Chapter(title: "Up the Pass", minute: 17, palette: Palettes.pine),
+                     Chapter(title: "The Moved Markers", minute: 36, palette: Palettes.goldField),
+                     Chapter(title: "The House on the Line", minute: 52),
+                     Chapter(title: "Night Crossing", minute: 77, palette: Palettes.nightSea),
+                     Chapter(title: "First Snow", minute: 98, palette: Palettes.glacier),
+                     Chapter(title: "Some Maps Only Point Home", minute: 117, palette: Palettes.ember)]),
     Movie(title: "Saltwater Hymns", year: 2023, genres: ["Drama", "Music"], rating: "PG", score: 7.9, minutes: 112,
           tagline: "Every tide has a melody.",
           plot: "A church organist in a fishing town loses her hearing in one ear and learns the harbor's sounds all over again, one Sunday at a time.",
@@ -610,13 +628,69 @@ func writeIfMissing(_ url: URL, _ make: (URL) throws -> Void) throws {
     try make(url)
 }
 
-/// A video of one still picture for the given length: Jellyfin reads the runtime from the file,
-/// and a still at one frame a second stays a few megabytes however long it runs.
+/// A video of still pictures for the given length, one for each chapter or one throughout:
+/// Jellyfin reads the runtime and the chapters from the file, and a still at one frame a second
+/// stays a few megabytes however long it runs.
 struct Encode {
-    let still: URL
+    struct Scene {
+        /// Seconds in.
+        let start: Int
+        /// The chapter's; nil in a video without chapters.
+        let title: String?
+        let still: Still
+    }
+
+    enum Still {
+        /// A picture drawn for the library already, as a backdrop.
+        case file(URL)
+        /// Drawn for the video alone.
+        case drawn(Art, seed: String)
+    }
+
+    /// The codecs every video is made with, at one frame a second.
+    static let settings = ["-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-crf", "26", "-g", "120",
+                           "-pix_fmt", "yuv420p", "-c:a", "libopus", "-b:a", "6k", "-metadata:s:a:0", "language=eng"]
+
+    let scenes: [Scene]
     let output: URL
     let seconds: Int
     let resolution: String
+
+    /// Where each scene ends, in seconds.
+    func end(of index: Int) -> Int {
+        index + 1 < scenes.count ? scenes[index + 1].start : seconds
+    }
+
+    /// How the video is made, kept beside it, so one made another way is made again.
+    var recipe: String {
+        let scenes = scenes.map { scene in
+            let still = switch scene.still {
+            case .file(let url): url.lastPathComponent
+            case .drawn(let art, let seed): "\(seed) \(art)"
+            }
+            return "\(scene.start) \(scene.title ?? "") \(still)"
+        }
+        return ([Self.settings.joined(separator: " "), "\(resolution) \(seconds)"] + scenes).joined(separator: "\n")
+    }
+
+    var recipeFile: URL { output.deletingLastPathComponent().appending(path: ".\(output.lastPathComponent).recipe") }
+
+    var isCurrent: Bool {
+        fileManager.fileExists(atPath: output.path) && (try? String(contentsOf: recipeFile, encoding: .utf8)) == recipe
+    }
+
+    /// The chapters in FFmpeg's metadata format, which escapes `=`, `;`, `#` and `\` in values.
+    var chapterMetadata: String {
+        let chapters = scenes.enumerated().compactMap { index, scene -> String? in
+            guard let title = scene.title else { return nil }
+            let value = title.reduce(into: "") { escaped, character in
+                if "=;#\\".contains(character) { escaped.append("\\") }
+                escaped.append(character)
+            }
+            return "[CHAPTER]\nTIMEBASE=1/1\nSTART=\(scene.start)\nEND=\(end(of: index))\ntitle=\(value)"
+        }
+        return ([";FFMETADATA1"] + chapters).joined(separator: "\n") + "\n"
+    }
 }
 
 var encodes: [Encode] = []
@@ -642,9 +716,16 @@ for movie in movies {
         </movie>
         """.write(to: url, atomically: true, encoding: .utf8)
     }
+    let backdrop = Encode.Still.file(folder.appending(path: "backdrop.jpg"))
+    let scenes = movie.chapters.isEmpty ? [Encode.Scene(start: 0, title: nil, still: backdrop)] : movie.chapters.map { chapter in
+        let still = chapter.palette.map { palette in
+            Encode.Still.drawn(Art(scene: movie.art.scene, palette: palette, font: movie.art.font), seed: "\(movie.title) \(chapter.title)")
+        }
+        return Encode.Scene(start: chapter.minute * 60, title: chapter.title, still: still ?? backdrop)
+    }
     for version in movie.versions {
         let name = movie.versions.count > 1 ? "\(movie.title) (\(movie.year)) - \(version).mkv" : "\(movie.title) (\(movie.year)).mkv"
-        encodes.append(Encode(still: folder.appending(path: "backdrop.jpg"), output: folder.appending(path: name),
+        encodes.append(Encode(scenes: scenes, output: folder.appending(path: name),
                               seconds: movie.minutes * 60, resolution: version == "2160p" ? "3840:2160" : "1920:1080"))
     }
 }
@@ -692,39 +773,68 @@ for show in shows {
                 </episodedetails>
                 """.write(to: url, atomically: true, encoding: .utf8)
             }
-            encodes.append(Encode(still: thumb, output: base.appendingPathExtension("mkv"), seconds: show.minutes * 60, resolution: "1920:1080"))
+            encodes.append(Encode(scenes: [Encode.Scene(start: 0, title: nil, still: .file(thumb))], output: base.appendingPathExtension("mkv"),
+                                  seconds: show.minutes * 60, resolution: "1920:1080"))
         }
     }
 }
 
-// Encodes run a few at a time; each is one ffmpeg.
-let pending = encodes.filter { !fileManager.fileExists(atPath: $0.output.path) }
+// What the pending videos need beyond the library's own pictures, the chapters' stills and their
+// chapter lists, is made in a folder of its own for the run.
+let pending = encodes.filter { !$0.isCurrent }
+let work = fileManager.temporaryDirectory.appending(path: "vinnyfin-showcase-\(UUID().uuidString)")
+try fileManager.createDirectory(at: work, withIntermediateDirectories: true)
+let drawnStills = try pending.flatMap(\.scenes).reduce(into: [String: URL]()) { stills, scene in
+    guard case .drawn(let art, let seed) = scene.still, stills[seed] == nil else { return }
+    let url = work.appending(path: "\(stills.count).jpg")
+    try backdrop(seed: seed, art: art, to: url)
+    stills[seed] = url
+}
+
+// Encodes run a few at a time; each is one ffmpeg, holding each still for its scene.
 let queue = OperationQueue()
 queue.maxConcurrentOperationCount = max(2, ProcessInfo.processInfo.activeProcessorCount / 2)
 let failures = Mutex<[String]>([])
 for encode in pending {
     queue.addOperation {
         let partial = encode.output.deletingPathExtension().appendingPathExtension("partial.mkv")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y",
-                             "-loop", "1", "-framerate", "1", "-i", encode.still.path,
-                             "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-                             "-t", "\(encode.seconds)", "-vf", "scale=\(encode.resolution)",
-                             "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-crf", "26", "-g", "120",
-                             "-pix_fmt", "yuv420p", "-c:a", "libopus", "-b:a", "6k",
-                             "-metadata:s:a:0", "language=eng", partial.path]
+        var arguments = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y"]
+        var filters: [String] = []
+        for (index, scene) in encode.scenes.enumerated() {
+            let still = switch scene.still {
+            case .file(let url): url
+            case .drawn(_, let seed): drawnStills[seed]!
+            }
+            arguments += ["-loop", "1", "-framerate", "1", "-t", "\(encode.end(of: index) - scene.start)", "-i", still.path]
+            filters.append("[\(index):v]scale=\(encode.resolution),setsar=1[v\(index)]")
+        }
+        let count = encode.scenes.count
+        filters.append((0..<count).map { "[v\($0)]" }.joined() + "concat=n=\(count):v=1:a=0[video]")
+        arguments += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
         do {
+            if encode.scenes.contains(where: { $0.title != nil }) {
+                let chapters = work.appending(path: "\(encode.output.lastPathComponent).txt")
+                try encode.chapterMetadata.write(to: chapters, atomically: true, encoding: .utf8)
+                arguments += ["-i", chapters.path, "-map_chapters", "\(count + 1)"]
+            }
+            arguments += ["-filter_complex", filters.joined(separator: ";"), "-map", "[video]", "-map", "\(count):a",
+                          "-t", "\(encode.seconds)"] + Encode.settings + [partial.path]
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = arguments
             try process.run()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
+            if fileManager.fileExists(atPath: encode.output.path) { try fileManager.removeItem(at: encode.output) }
             try fileManager.moveItem(at: partial, to: encode.output)
+            try encode.recipe.write(to: encode.recipeFile, atomically: true, encoding: .utf8)
         } catch {
             failures.withLock { $0.append(encode.output.lastPathComponent) }
         }
     }
 }
 queue.waitUntilAllOperationsAreFinished()
+try fileManager.removeItem(at: work)
 let failed = failures.withLock { $0 }
 if !failed.isEmpty {
     FileHandle.standardError.write(Data("Couldn't encode: \(failed.joined(separator: ", "))\n".utf8))
