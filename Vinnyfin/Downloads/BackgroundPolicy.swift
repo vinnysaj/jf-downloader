@@ -10,7 +10,6 @@ extension DownloadWait {
         case .wifi: "They carry on over Wi-Fi"
         case .lowDataMode: "They carry on once Low Data Mode is off"
         case .power: "They carry on once your \(Device.name) is charging"
-        case .overnight(let opens): "They carry on at \(opens.formatted(date: .omitted, time: .shortened))"
         case .space: "They need more space: open vinnyfin"
         }
     }
@@ -118,9 +117,16 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
         isInFront && !isPausedForPlayback && DownloadJob.queue(jobs).contains { userStartedJobIds.contains($0) && waits[$0] == nil }
     }
 
-    /// The Live Activity's words while downloading: what's downloading and how much is left.
+    /// The Live Activity's words while downloading: what's downloading and how much is left, and
+    /// that Keep Downloads Running keeps the app running too while it plays.
     @MainActor static func text(jobs: [DownloadJob], receivedBytes: [UUID: Int64], isNetworkReachable: Bool,
-                     waits: [UUID: DownloadWait]) -> (title: String, subtitle: String) {
+                     waits: [UUID: DownloadWait], isKeptRunning: Bool) -> (title: String, subtitle: String) {
+        let text = downloadingText(jobs: jobs, receivedBytes: receivedBytes, isNetworkReachable: isNetworkReachable, waits: waits)
+        return isKeptRunning ? (text.title, "\(text.subtitle) · Kept running") : text
+    }
+
+    @MainActor private static func downloadingText(jobs: [DownloadJob], receivedBytes: [UUID: Int64], isNetworkReachable: Bool,
+                                                   waits: [UUID: DownloadWait]) -> (title: String, subtitle: String) {
         let queue = DownloadJob.queued(jobs)
         guard let first = queue.first(where: { waits[$0.id] == nil }) ?? queue.first else { return ("Downloading", "Finishing up") }
         let title = queue.count == 1 ? "Downloading \(first.shortName)" : "Downloading \(first.shortName) and \(queue.count - 1) more"

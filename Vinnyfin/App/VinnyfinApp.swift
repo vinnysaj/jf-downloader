@@ -94,6 +94,7 @@ extension View {
             .environment(app.localLibrary)
             #if os(iOS) || os(visionOS)
             .environment(app.backgroundDownloads)
+            .environment(app.keepAwake)
             .environment(app.diagnostics)
             #endif
             #if os(iOS) || os(macOS)
@@ -122,7 +123,9 @@ final class AppDelegate: NSObject {
                                                      downloads: downloads, smartDownloads: smartDownloads, localLibrary: localLibrary)
     #endif
     #if os(iOS) || os(visionOS)
-    private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads)
+    private(set) lazy var keepAwake = KeepAwakeAudio(downloads: downloads, settings: settings, accounts: accounts)
+    private(set) lazy var backgroundDownloads = BackgroundDownloads(downloads: downloads, smartDownloads: smartDownloads,
+                                                                    keepAwake: keepAwake)
     let diagnostics = AppDiagnostics()
     #endif
     /// Jellyfin's remote control: other devices play to this one, and this one to them.
@@ -150,6 +153,8 @@ final class AppDelegate: NSObject {
         backgroundDownloads.registerLaunchHandlers()
         let backgroundDownloads = backgroundDownloads
         Task { await backgroundDownloads.run() }
+        let keepAwake = keepAwake
+        Task { await keepAwake.run() }
         let diagnostics = diagnostics
         Task { await diagnostics.run() }
         #endif

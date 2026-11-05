@@ -3,17 +3,6 @@ import Foundation
 import Testing
 @testable import vinnyfin
 
-/// A calendar that doesn't move with the machine running the tests.
-private let utc: Calendar = {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = TimeZone(identifier: "UTC") ?? .gmt
-    return calendar
-}()
-
-private func date(hour: Int, minute: Int = 0, day: Int = 4) -> Date {
-    utc.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute)) ?? .distantPast
-}
-
 private func job(_ item: JellyfinItem = Samples.movie, size: Int64? = 300_000_000, at offset: TimeInterval = 0) -> DownloadJob {
     var source = Samples.source
     source.size = size
@@ -30,30 +19,30 @@ struct NetworkRuleTests {
     @Test func keepsDownloadsOffCellularAndHotspotsUnlessAllowed() {
         let rules = DownloadRules(downloadsOverCellular: false)
         let movie = job()
-        #expect(rules.wait(for: movie, network: wifi, isOnPower: nil, now: .now) == nil)
-        #expect(rules.wait(for: movie, network: cellular, isOnPower: nil, now: .now) == .wifi)
-        #expect(rules.wait(for: movie, network: hotspot, isOnPower: nil, now: .now) == .wifi)
+        #expect(rules.wait(for: movie, network: wifi, isOnPower: nil) == nil)
+        #expect(rules.wait(for: movie, network: cellular, isOnPower: nil) == .wifi)
+        #expect(rules.wait(for: movie, network: hotspot, isOnPower: nil) == .wifi)
         let access = rules.access(for: movie)
         #expect(!access.allowsCellular && !access.allowsExpensive && !access.allowsConstrained)
         #expect(!access.allows(cellular) && !access.allows(hotspot) && access.allows(wifi))
 
         let allowed = DownloadRules(downloadsOverCellular: true)
-        #expect(allowed.wait(for: movie, network: cellular, isOnPower: nil, now: .now) == nil)
+        #expect(allowed.wait(for: movie, network: cellular, isOnPower: nil) == nil)
         #expect(allowed.access(for: movie).allows(cellular))
     }
 
     @Test func alwaysHonorsLowDataMode() {
         let movie = job()
-        #expect(DownloadRules(downloadsOverCellular: true).wait(for: movie, network: lowData, isOnPower: nil, now: .now) == .lowDataMode)
+        #expect(DownloadRules(downloadsOverCellular: true).wait(for: movie, network: lowData, isOnPower: nil) == .lowDataMode)
         #expect(!DownloadRules(downloadsOverCellular: true).access(for: movie).allows(lowData))
         // On cellular in Low Data Mode, Wi-Fi is what lets it go.
         var both = cellular
         both.isConstrained = true
-        #expect(DownloadRules(downloadsOverCellular: false).wait(for: movie, network: both, isOnPower: nil, now: .now) == .wifi)
+        #expect(DownloadRules(downloadsOverCellular: false).wait(for: movie, network: both, isOnPower: nil) == .wifi)
     }
 
     @Test func noNetworkIsntARule() {
-        #expect(DownloadRules(downloadsOverCellular: false).wait(for: job(), network: offline, isOnPower: nil, now: .now) == nil)
+        #expect(DownloadRules(downloadsOverCellular: false).wait(for: job(), network: offline, isOnPower: nil) == nil)
     }
 
     @Test func downloadNowLiftsTheNetworkRules() {
@@ -61,8 +50,8 @@ struct NetworkRuleTests {
         urgent.downloadNowAt = .now
         let rules = DownloadRules(downloadsOverCellular: false)
         #expect(rules.access(for: urgent) == .any)
-        #expect(rules.wait(for: urgent, network: cellular, isOnPower: nil, now: .now) == nil)
-        #expect(rules.wait(for: urgent, network: lowData, isOnPower: nil, now: .now) == nil)
+        #expect(rules.wait(for: urgent, network: cellular, isOnPower: nil) == nil)
+        #expect(rules.wait(for: urgent, network: lowData, isOnPower: nil) == nil)
     }
 
     @Test func readsTheAccessARequestWasMadeWith() {
@@ -74,60 +63,50 @@ struct NetworkRuleTests {
     }
 }
 
-struct ScheduleRuleTests {
+struct PowerRuleTests {
     @Test func waitsForPowerOnlyWhenTheDeviceSaysItsUnplugged() {
         let rules = DownloadRules(onlyWhileCharging: true)
-        #expect(rules.wait(for: job(), network: wifi, isOnPower: false, now: .now) == .power)
-        #expect(rules.wait(for: job(), network: wifi, isOnPower: true, now: .now) == nil)
-        #expect(rules.wait(for: job(), network: wifi, isOnPower: nil, now: .now) == nil)
+        #expect(rules.wait(for: job(), network: wifi, isOnPower: false) == .power)
+        #expect(rules.wait(for: job(), network: wifi, isOnPower: true) == nil)
+        #expect(rules.wait(for: job(), network: wifi, isOnPower: nil) == nil)
     }
 
-    @Test func waitsForTheOvernightWindow() {
-        let rules = DownloadRules(overnightOnly: true)
-        #expect(rules.wait(for: job(), network: wifi, isOnPower: nil, now: date(hour: 3), calendar: utc) == nil)
-        #expect(rules.wait(for: job(), network: wifi, isOnPower: nil, now: date(hour: 0, minute: 59), calendar: utc)
-            == .overnight(opens: date(hour: 1)))
-        #expect(rules.wait(for: job(), network: wifi, isOnPower: nil, now: date(hour: 7), calendar: utc)
-            == .overnight(opens: date(hour: 1, day: 5)))
-        #expect(rules.wait(for: job(), network: wifi, isOnPower: nil, now: date(hour: 22), calendar: utc)
-            == .overnight(opens: date(hour: 1, day: 5)))
-    }
-
-    @Test func looksAgainWhenTheWindowOpensAndCloses() {
-        let rules = DownloadRules(overnightOnly: true)
-        #expect(rules.nextScheduleChange(after: date(hour: 22), calendar: utc) == date(hour: 1, day: 5))
-        #expect(rules.nextScheduleChange(after: date(hour: 2), calendar: utc) == date(hour: 7))
-        #expect(DownloadRules().nextScheduleChange(after: date(hour: 2), calendar: utc) == nil)
-    }
-
-    @Test func schedulesFirstThenTheNetwork() {
+    @Test func powerFirstThenTheNetwork() {
         let rules = DownloadRules(downloadsOverCellular: false, onlyWhileCharging: true)
-        #expect(rules.wait(for: job(), network: cellular, isOnPower: false, now: .now) == .power)
-        #expect(rules.wait(for: job(), network: cellular, isOnPower: true, now: .now) == .wifi)
+        #expect(rules.wait(for: job(), network: cellular, isOnPower: false) == .power)
+        #expect(rules.wait(for: job(), network: cellular, isOnPower: true) == .wifi)
     }
 
-    @Test func downloadNowLiftsTheSchedule() {
+    @Test func downloadNowLiftsOnlyWhileCharging() {
         var urgent = job()
         urgent.downloadNowAt = .now
-        let rules = DownloadRules(onlyWhileCharging: true, overnightOnly: true)
-        #expect(rules.wait(for: urgent, network: wifi, isOnPower: false, now: date(hour: 12), calendar: utc) == nil)
+        let rules = DownloadRules(downloadsOverCellular: false, onlyWhileCharging: true)
+        #expect(rules.wait(for: urgent, network: cellular, isOnPower: false) == nil)
     }
 
-    /// The catch-up launch waits for what the schedule needs, unless something can go now.
-    @Test func booksTheCatchUpForWhenTheRulesAllow() {
-        let rules = DownloadRules(onlyWhileCharging: true, overnightOnly: true)
+    /// The catch-up launch waits for power for Only While Charging, and for nothing else, unless
+    /// something can go now.
+    @Test func booksTheCatchUpForPowerOnly() {
         let queued = [job(), job(at: 1)]
-        let daytime = rules.catchUp(for: queued, now: date(hour: 15), calendar: utc)
-        #expect(daytime.requiresExternalPower)
-        #expect(daytime.earliestBeginDate == date(hour: 1, day: 5))
-        let night = rules.catchUp(for: queued, now: date(hour: 2), calendar: utc)
-        #expect(night.requiresExternalPower && night.earliestBeginDate == nil)
+        #expect(DownloadRules(onlyWhileCharging: true).catchUpRequiresExternalPower(for: queued))
         var urgent = job(at: 2)
         urgent.downloadNowAt = .now
-        let anyway = rules.catchUp(for: queued + [urgent], now: date(hour: 15), calendar: utc)
-        #expect(!anyway.requiresExternalPower && anyway.earliestBeginDate == nil)
-        let plain = DownloadRules().catchUp(for: queued, now: date(hour: 15), calendar: utc)
-        #expect(!plain.requiresExternalPower && plain.earliestBeginDate == nil)
+        #expect(!DownloadRules(onlyWhileCharging: true).catchUpRequiresExternalPower(for: queued + [urgent]))
+        #expect(!DownloadRules().catchUpRequiresExternalPower(for: queued))
+    }
+
+    /// Overnight Only is gone: someone who had it on isn't held back by the clock, and nothing in
+    /// the rules waits on the time of day.
+    @Test @MainActor func aStoredOvernightOnlyHoldsNothingBack() throws {
+        let suite = "net.vinnysaj.vinnyfin.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "settings.downloadOvernightOnly")
+        defaults.set(true, forKey: "settings.downloadOnlyWhileCharging")
+        let rules = DownloadRules(AppSettings(defaults: defaults))
+        #expect(rules == DownloadRules(downloadsOverCellular: false, onlyWhileCharging: true))
+        #expect(rules.wait(for: job(), network: wifi, isOnPower: true) == nil)
+        #expect(rules.wait(for: job(), network: wifi, isOnPower: false) == .power)
     }
 
     @Test @MainActor func saysPlainlyWhatItWaitsFor() {
