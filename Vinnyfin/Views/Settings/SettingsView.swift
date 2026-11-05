@@ -9,6 +9,9 @@ struct SettingsView: View {
     @Environment(DownloadNotifications.self) private var downloadNotifications
     @Environment(\.openURL) private var openURL
     #endif
+    #if os(iOS) || os(visionOS)
+    @Environment(KeepAwakeAudio.self) private var keepAwake
+    #endif
     @State private var confirmingSignOut = false
 
     var body: some View {
@@ -83,6 +86,9 @@ struct SettingsView: View {
                     #endif
                 }
                 whenToDownload
+                #if os(iOS) || os(visionOS)
+                keepRunning
+                #endif
                 storage
                 notifications
                 #endif
@@ -145,14 +151,41 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.downloadOverCellular")
             Toggle("Only While Charging", isOn: $settings.downloadOnlyWhileCharging)
                 .accessibilityIdentifier("settings.onlyWhileCharging")
-            Toggle("Overnight Only", isOn: $settings.downloadOvernightOnly)
-                .accessibilityIdentifier("settings.overnightOnly")
         } header: {
             Text("When to Download")
         } footer: {
-            Text("Downloads also wait while Low Data Mode is on. Overnight is \(Self.overnightWindow). vinnyfin starts waiting downloads when the system next lets it, so they can begin a while after you plug in or the night starts. Download Now on a waiting download starts it anyway.")
+            Text("Downloads also wait while Low Data Mode is on. vinnyfin starts waiting downloads when the system next lets it, so they can begin a while after you plug in. Download Now on a waiting download starts it anyway.")
         }
     }
+
+    #if os(iOS) || os(visionOS)
+    @ViewBuilder private var keepRunning: some View {
+        @Bindable var settings = settings
+        Section {
+            Toggle("Keep Downloads Running", isOn: $settings.keepDownloadsRunning)
+                .accessibilityIdentifier("settings.keepDownloadsRunning")
+                .onChange(of: settings.keepDownloadsRunning) { _, isOn in
+                    if isOn { keepAwake.switchedOn() }
+                }
+            if settings.keepDownloadsRunning {
+                LabeledContent("Sound") {
+                    TextField("Sound", text: $settings.keepDownloadsRunningSound, prompt: Text("Optional Web Address"))
+                        .multilineTextAlignment(.trailing)
+                        .keyboardType(.URL)
+                        .textContentType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.keepDownloadsRunningSound")
+                }
+                KeepAwakeSoundStatus()
+                Toggle("Keep Playing After Downloads Finish", isOn: $settings.keepPlayingAfterDownloads)
+                    .accessibilityIdentifier("settings.keepPlayingAfterDownloads")
+            }
+        } footer: {
+            Text("Plays audio in the background so \(UIDevice.current.systemName) keeps vinnyfin running until downloads finish. It uses more battery. Sound is the web address of an audio file to play on a loop, such as white noise.")
+        }
+    }
+    #endif
 
     @ViewBuilder private var storage: some View {
         @Bindable var settings = settings
@@ -200,17 +233,6 @@ struct SettingsView: View {
     #else
     private static let cellularLabel: LocalizedStringKey = "Download Over Personal Hotspot"
     #endif
-
-    /// "1 AM to 7 AM", in the person's own time format.
-    private static var overnightWindow: String {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: .now)
-        let hours = DownloadRules.overnightHours
-        let times = [hours.lowerBound, hours.upperBound].map { hour in
-            (calendar.date(bySettingHour: hour, minute: 0, second: 0, of: today) ?? today).formatted(date: .omitted, time: .shortened)
-        }
-        return "\(times[0]) to \(times[1])"
-    }
     #endif
 
     static var version: String {
@@ -219,6 +241,36 @@ struct SettingsView: View {
         return "\(version) (\(build))"
     }
 }
+
+#if os(iOS) || os(visionOS)
+/// How Keep Downloads Running's sound is getting on: fetching, ready, or why it can't be used.
+private struct KeepAwakeSoundStatus: View {
+    @Environment(KeepAwakeAudio.self) private var keepAwake
+
+    var body: some View {
+        switch keepAwake.sound {
+        case .silence:
+            EmptyView()
+        case .fetching:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Fetching the sound…")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        case .ready:
+            Label("The sound is ready", systemImage: "checkmark.circle")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        case .failed(let failure):
+            Label("\(failure.message) Downloads keep running in silence until it's fixed.", systemImage: "exclamationmark.triangle")
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .accessibilityIdentifier("settings.keepDownloadsRunningSound.problem")
+        }
+    }
+}
+#endif
 
 /// A setting chosen from a list. On Apple TV it's the setting's name and a button with the
 /// choice made, which opens a menu of them: a form's picker there lists every choice inline,

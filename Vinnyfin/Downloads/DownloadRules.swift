@@ -80,8 +80,6 @@ nonisolated enum DownloadWait: Equatable, Sendable {
     case lowDataMode
     /// Only While Charging is on, and the device isn't on power.
     case power
-    /// Overnight Only is on, and it's daytime; the window opens at this date.
-    case overnight(opens: Date)
     /// There's no room for it under the storage limit or on the device, even once every watched
     /// download is deleted; it needs this many bytes more.
     case space(needed: Int64)
@@ -103,7 +101,6 @@ extension DownloadWait {
         case .wifi: "Waiting for Wi-Fi"
         case .lowDataMode: "Waiting while Low Data Mode is on"
         case .power: "Waiting until your \(Device.name) is charging"
-        case .overnight(let opens): "Waiting until \(opens.formatted(date: .omitted, time: .shortened))"
         case .space(let needed): "Waiting for space: \(needed.formatted(.byteCount(style: .file))) more needed"
         }
     }
@@ -113,29 +110,22 @@ extension DownloadWait {
         case .wifi: "wifi"
         case .lowDataMode: "arrow.down.circle.dotted"
         case .power: "powerplug"
-        case .overnight: "moon"
         case .space: "externaldrive.badge.exclamationmark"
         }
     }
 }
 
-/// When and where downloads may run, from Settings. Download Now lifts the network and schedule
-/// rules for one download; nothing lifts the storage limit.
+/// When and where downloads may run, from Settings. Download Now lifts the network rules and
+/// Only While Charging for one download; nothing lifts the storage limit.
 nonisolated struct DownloadRules: Equatable, Sendable {
     var downloadsOverCellular: Bool
     var onlyWhileCharging: Bool
-    var overnightOnly: Bool
     /// Bytes downloads may take up in all, finished or partial; nil for no limit.
     var storageLimit: Int64?
 
-    /// The overnight window, in local hours: from 1 AM, once the evening's viewing has left the
-    /// server and its connection, to 7 AM, so what was queued is ready when people get up.
-    static let overnightHours = 1..<7
-
-    init(downloadsOverCellular: Bool = true, onlyWhileCharging: Bool = false, overnightOnly: Bool = false, storageLimit: Int64? = nil) {
+    init(downloadsOverCellular: Bool = true, onlyWhileCharging: Bool = false, storageLimit: Int64? = nil) {
         self.downloadsOverCellular = downloadsOverCellular
         self.onlyWhileCharging = onlyWhileCharging
-        self.overnightOnly = overnightOnly
         self.storageLimit = storageLimit
     }
 
@@ -145,11 +135,12 @@ nonisolated struct DownloadRules: Equatable, Sendable {
         return NetworkAccess(allowsCellular: downloadsOverCellular, allowsExpensive: downloadsOverCellular, allowsConstrained: false)
     }
 
-    /// What holds the job back right now, other than room: the schedule first, then the
-    /// network. Nil when nothing does, or when there's no network at all, which isn't a rule.
-    func wait(for job: DownloadJob, network: NetworkConditions, isOnPower: Bool?, now: Date, calendar: Calendar = .current) -> DownloadWait? {
+    /// What holds the job back right now, other than room: power first, then the network. Nil
+    /// when nothing does, or when there's no network at all, which isn't a rule. Power the
+    /// device can't report on doesn't hold anything back.
+    func wait(for job: DownloadJob, network: NetworkConditions, isOnPower: Bool?) -> DownloadWait? {
         guard !job.ignoresRules else { return nil }
-        if let wait = scheduleWait(isOnPower: isOnPower, now: now, calendar: calendar) { return wait }
+        if onlyWhileCharging, isOnPower == false { return .power }
         guard network.isReachable else { return nil }
         let access = access(for: job)
         if (network.usesCellular && !access.allowsCellular) || (network.isExpensive && !access.allowsExpensive) { return .wifi }
@@ -157,47 +148,17 @@ nonisolated struct DownloadRules: Equatable, Sendable {
         return nil
     }
 
-    /// Power the device can't report on doesn't hold anything back.
-    func scheduleWait(isOnPower: Bool?, now: Date, calendar: Calendar = .current) -> DownloadWait? {
-        if onlyWhileCharging, isOnPower == false { return .power }
-        if overnightOnly, !Self.isOvernight(now, calendar: calendar) { return .overnight(opens: Self.overnightStart(after: now, calendar: calendar)) }
-        return nil
-    }
-
-    static func isOvernight(_ date: Date, calendar: Calendar = .current) -> Bool {
-        overnightHours.contains(calendar.component(.hour, from: date))
-    }
-
-    static func overnightStart(after date: Date, calendar: Calendar = .current) -> Date {
-        next(hour: overnightHours.lowerBound, after: date, calendar: calendar)
-    }
-
-    private static func next(hour: Int, after date: Date, calendar: Calendar) -> Date {
-        calendar.nextDate(after: date, matching: DateComponents(hour: hour, minute: 0, second: 0), matchingPolicy: .nextTime)
-            ?? date.addingTimeInterval(24 * 60 * 60)
-    }
-
-    /// When the overnight window next opens or closes, to look at the downloads again then.
-    func nextScheduleChange(after now: Date, calendar: Calendar = .current) -> Date? {
-        guard overnightOnly else { return nil }
-        let hour = Self.isOvernight(now, calendar: calendar) ? Self.overnightHours.upperBound : Self.overnightHours.lowerBound
-        return Self.next(hour: hour, after: now, calendar: calendar)
-    }
-
-    /// What the system should wait for before launching the app to catch up on `queue`: power
-    /// for Only While Charging, and the window for Overnight Only. Nothing, when one of them is
-    /// a download someone chose Download Now for.
-    func catchUp(for queue: [DownloadJob], now: Date, calendar: Calendar = .current) -> (requiresExternalPower: Bool, earliestBeginDate: Date?) {
-        guard !queue.contains(where: \.ignoresRules) else { return (false, nil) }
-        let opens = overnightOnly && !Self.isOvernight(now, calendar: calendar) ? Self.overnightStart(after: now, calendar: calendar) : nil
-        return (onlyWhileCharging, opens)
+    /// Whether the system should wait for power before launching the app to catch up on
+    /// `queue`, for Only While Charging. Not when one of them is a download someone chose
+    /// Download Now for.
+    func catchUpRequiresExternalPower(for queue: [DownloadJob]) -> Bool {
+        onlyWhileCharging && !queue.contains(where: \.ignoresRules)
     }
 }
 
 extension DownloadRules {
     init(_ settings: AppSettings) {
         self.init(downloadsOverCellular: settings.downloadOverCellular, onlyWhileCharging: settings.downloadOnlyWhileCharging,
-                  overnightOnly: settings.downloadOvernightOnly,
                   storageLimit: settings.downloadStorageLimit > 0 ? Int64(settings.downloadStorageLimit) * 1_000_000_000 : nil)
     }
 }

@@ -60,8 +60,13 @@ final class AppSettings {
     var downloadOverCellular: Bool { didSet { store(downloadOverCellular, Keys.downloadOverCellular) } }
     /// Downloads wait while the device isn't plugged in.
     var downloadOnlyWhileCharging: Bool { didSet { store(downloadOnlyWhileCharging, Keys.downloadOnlyWhileCharging) } }
-    /// Downloads wait for the overnight window, `DownloadRules.overnightHours`.
-    var downloadOvernightOnly: Bool { didSet { store(downloadOvernightOnly, Keys.downloadOvernightOnly) } }
+    /// Plays audio in the background while downloads go on, so the system keeps the app
+    /// running (`KeepAwakeAudio`), on iPhone, iPad and Vision Pro.
+    var keepDownloadsRunning: Bool { didSet { store(keepDownloadsRunning, Keys.keepDownloadsRunning) } }
+    /// The web address of an audio file for Keep Downloads Running to loop; empty for silence.
+    var keepDownloadsRunningSound: String { didSet { store(keepDownloadsRunningSound, Keys.keepDownloadsRunningSound) } }
+    /// Keep Downloads Running carries on playing once downloads finish, until the person stops it.
+    var keepPlayingAfterDownloads: Bool { didSet { store(keepPlayingAfterDownloads, Keys.keepPlayingAfterDownloads) } }
     /// Gigabytes downloads may take up in all, one of `storageLimitChoices`; 0 for no limit.
     var downloadStorageLimit: Int { didSet { store(downloadStorageLimit, Keys.downloadStorageLimit) } }
     /// Notifies when downloads are ready to watch offline, and when one needs attention.
@@ -90,7 +95,9 @@ final class AppSettings {
         static let smartDownloadCount = "settings.smartDownloadCount"
         static let downloadOverCellular = "settings.downloadOverCellular"
         static let downloadOnlyWhileCharging = "settings.downloadOnlyWhileCharging"
-        static let downloadOvernightOnly = "settings.downloadOvernightOnly"
+        static let keepDownloadsRunning = "settings.keepDownloadsRunning"
+        static let keepDownloadsRunningSound = "settings.keepDownloadsRunningSound"
+        static let keepPlayingAfterDownloads = "settings.keepPlayingAfterDownloads"
         static let downloadStorageLimit = "settings.downloadStorageLimit"
         static let downloadNotifications = "settings.downloadNotifications"
         static let autoplayNextEpisode = "settings.autoplayNextEpisode"
@@ -114,7 +121,9 @@ final class AppSettings {
         smartDownloadCount = defaults.object(forKey: Keys.smartDownloadCount) as? Int ?? 10
         downloadOverCellular = defaults.object(forKey: Keys.downloadOverCellular) as? Bool ?? false
         downloadOnlyWhileCharging = defaults.object(forKey: Keys.downloadOnlyWhileCharging) as? Bool ?? false
-        downloadOvernightOnly = defaults.object(forKey: Keys.downloadOvernightOnly) as? Bool ?? false
+        keepDownloadsRunning = defaults.object(forKey: Keys.keepDownloadsRunning) as? Bool ?? false
+        keepDownloadsRunningSound = defaults.string(forKey: Keys.keepDownloadsRunningSound) ?? ""
+        keepPlayingAfterDownloads = defaults.object(forKey: Keys.keepPlayingAfterDownloads) as? Bool ?? false
         downloadStorageLimit = defaults.object(forKey: Keys.downloadStorageLimit) as? Int ?? 0
         downloadNotifications = defaults.object(forKey: Keys.downloadNotifications) as? Bool ?? true
         autoplayNextEpisode = defaults.object(forKey: Keys.autoplayNextEpisode) as? Bool ?? true

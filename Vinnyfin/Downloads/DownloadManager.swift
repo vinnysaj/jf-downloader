@@ -43,23 +43,23 @@ import OSLog
 /// in `waits`. Each transfer's request carries the networks it may use, so the system holds it
 /// until the device is on one, whether or not the app runs: not cellular or a Personal Hotspot
 /// unless Download Over Cellular is on, and not a network in Low Data Mode. In front, a file the
-/// network holds back isn't planned. Only While Charging and Overnight Only hold files back in
-/// the app, which a suspended app can't react to: `BackgroundDownloads` books the catch-up
-/// launch for when they allow. Room holds files back too (`StorageBudget`): the queue has to fit
-/// under the storage limit and on the device; downloads watched since they were downloaded are
+/// network holds back isn't planned. Only While Charging holds files back in the app, which a
+/// suspended app can't react to: `BackgroundDownloads` books the catch-up launch for when the
+/// device is on power. Room holds files back too (`StorageBudget`): the queue has to fit under
+/// the storage limit and on the device; downloads watched since they were downloaded are
 /// deleted to make room, the one watched longest ago first, and what still doesn't fit waits.
-/// Download Now lifts the network and schedule rules for one download. When the rules change,
-/// transfers that haven't started and no longer fit them come out to be planned again; those
-/// under way finish.
+/// Download Now lifts the network rules and Only While Charging for one download. When the
+/// rules change, transfers that haven't started and no longer fit them come out to be planned
+/// again; those under way finish.
 ///
-/// Whenever the process runs, in front or kept running in the background (`BackgroundDownloads`),
-/// finished chunks go into place as they arrive, files are published, and `trackProgress`
-/// replaces stalled transfers. `DownloadNotifications` tells the user when files are ready to
-/// watch offline and when one needs them. Swiping the app away in the app switcher makes the
-/// system cancel every transfer and leave the app closed until it's opened again; the reason
-/// comes with the cancellations then, and is kept in `systemCancellation` to tell the user.
-/// Which downloads someone started, rather than smart downloads by themselves, is in
-/// `userStartedJobIds`.
+/// Whenever the process runs, in front or kept running in the background (`BackgroundDownloads`,
+/// `KeepAwakeAudio`), finished chunks go into place as they arrive, files are published, and
+/// `trackProgress` replaces stalled transfers. `DownloadNotifications` tells the user when files
+/// are ready to watch offline and when one needs them. Swiping the app away in the app switcher
+/// makes the system cancel every transfer and leave the app closed until it's opened again; the
+/// reason comes with the cancellations then, and is kept in `systemCancellation` to tell the
+/// user. Which downloads someone started, rather than smart downloads by themselves, is in
+/// `userStartedJobIds`, and each time someone starts some moves `userStartCount`.
 ///
 /// Every transfer's purpose is in its `taskDescription` (`TransferTag`), so the queue rebuilds
 /// itself from the session after a relaunch. What was handed to the session is kept on disk as
@@ -109,9 +109,12 @@ final class DownloadManager {
     private(set) var isInFront = false
     /// Jobs someone started (downloaded, resumed, retried, started over, moved to the front, or
     /// queued by a smart download they set up), as opposed to smart downloads topping a show up
-    /// by themselves. Only those keep the app running in the background on iPhone and iPad.
-    /// Kept until `forgetUserStartedJobs()`.
+    /// by themselves. Only those start a continued-processing task on iPhone and iPad
+    /// (`BackgroundDownloads`). Kept until `forgetUserStartedJobs()`.
     private(set) var userStartedJobIds: Set<UUID> = []
+    /// Moves each time someone starts downloads, as `userStartedJobIds` records, even ones they
+    /// had started before, so `KeepAwakeAudio` can start with them.
+    private(set) var userStartCount = 0
     /// Why the system last cancelled transfers by itself, to tell the user until dismissed.
     var systemCancellation: URLError.BackgroundTaskCancelledReason?
     /// The watched downloads last deleted to make room, to say so.
@@ -205,8 +208,6 @@ final class DownloadManager {
     @ObservationIgnored private var spaceCheckedAt = Date.distantPast
     /// The queue, a size or the limit changed since room was last checked.
     @ObservationIgnored private var isSpaceCheckDue = true
-    /// When the overnight window next opens or closes, to look at the queue again then.
-    @ObservationIgnored private var nextScheduleChange: Date?
 
     init(accounts: AccountStore, settings: AppSettings, history: WatchHistory, notifications: DownloadNotifications,
          storage: DownloadStorage = .standard) {
@@ -377,9 +378,14 @@ final class DownloadManager {
         if !userStartedJobIds.isEmpty { userStartedJobIds = [] }
     }
 
-    /// What the system should wait for before launching the app to catch up on the queue.
-    var catchUpConditions: (requiresExternalPower: Bool, earliestBeginDate: Date?) {
-        rules.catchUp(for: DownloadJob.queued(jobs), now: .now)
+    /// Whether the system should wait for power before launching the app to catch up on the queue.
+    var catchUpRequiresExternalPower: Bool {
+        rules.catchUpRequiresExternalPower(for: DownloadJob.queued(jobs))
+    }
+
+    private func noteStartedByUser(_ ids: some Sequence<UUID>) {
+        userStartedJobIds.formUnion(ids)
+        userStartCount += 1
     }
 
     // MARK: Commands
@@ -393,7 +399,7 @@ final class DownloadManager {
         let job = DownloadJob(item: item, source: source)
         jobs.append(job)
         if startedByUser {
-            userStartedJobIds.insert(job.id)
+            noteStartedByUser([job.id])
             notifications.requestAuthorizationIfNeeded()
         }
         isSpaceCheckDue = true
@@ -448,7 +454,7 @@ final class DownloadManager {
     func resume(_ id: UUID) {
         guard let index = index(of: id), jobs[index].status == .paused || jobs[index].status == .failed else { return }
         jobs[index].resume()
-        userStartedJobIds.insert(id)
+        noteStartedByUser([id])
         isSpaceCheckDue = true
         save()
         pump()
@@ -459,7 +465,7 @@ final class DownloadManager {
         let ids = jobs.filter { $0.status == .paused || $0.status == .failed }.map(\.id)
         guard !ids.isEmpty else { return }
         for index in jobs.indices where ids.contains(jobs[index].id) { jobs[index].resume() }
-        userStartedJobIds.formUnion(ids)
+        noteStartedByUser(ids)
         isSpaceCheckDue = true
         save()
         pump()
@@ -486,15 +492,15 @@ final class DownloadManager {
         var job = jobs.remove(at: index)
         if job.status != .active { job.resume() }
         jobs.insert(job, at: 0)
-        userStartedJobIds.insert(id)
+        noteStartedByUser([id])
         isSpaceCheckDue = true
         save()
         pump()
     }
 
-    /// Downloads it next whatever the network and schedule rules say, for when someone needs it
-    /// anyway. Its transfers waiting for a network the rules allowed come out to go in again on
-    /// this one.
+    /// Downloads it next whatever the network rules and Only While Charging say, for when someone
+    /// needs it anyway. Its transfers waiting for a network the rules allowed come out to go in
+    /// again on this one.
     func downloadNow(_ id: UUID) {
         guard let index = index(of: id), jobs[index].status != .completed else { return }
         jobs[index].downloadNowAt = .now
@@ -610,7 +616,7 @@ final class DownloadManager {
                 guard let self else { return }
                 Self.log.info("""
                     Rules: cellular \(rules.downloadsOverCellular), charging only \(rules.onlyWhileCharging), \
-                    overnight only \(rules.overnightOnly), limit \(rules.storageLimit ?? -1)
+                    limit \(rules.storageLimit ?? -1)
                     """)
                 self.isSpaceCheckDue = true
                 self.pump()
@@ -703,7 +709,7 @@ final class DownloadManager {
         cancelTransfers(of: id)
         removePartial(of: id)
         jobs[index].resetProgress()
-        userStartedJobIds.insert(id)
+        noteStartedByUser([id])
         isSpaceCheckDue = true
         save()
         pump()
@@ -926,7 +932,7 @@ final class DownloadManager {
         for job in queued {
             if let needed = spaceShortfalls[job.id] {
                 waits[job.id] = .space(needed: needed)
-            } else if let wait = rules.wait(for: job, network: network, isOnPower: isOnPower, now: now) {
+            } else if let wait = rules.wait(for: job, network: network, isOnPower: isOnPower) {
                 waits[job.id] = wait
             }
         }
@@ -934,7 +940,6 @@ final class DownloadManager {
             Self.log.info("Waiting: \(waits.map { "\($0.key.uuidString.prefix(8)) \($0.value)" }.sorted().joined(separator: ", "), privacy: .public)")
             self.waits = waits
         }
-        nextScheduleChange = rules.nextScheduleChange(after: now)
         let fileInHand = queued.first { waits[$0.id] == nil }?.id
         if downloadingJobId != fileInHand { downloadingJobId = fileInHand }
     }
@@ -1471,10 +1476,8 @@ final class DownloadManager {
         if now.timeIntervalSince(lastStallCheck) > 10 {
             lastStallCheck = now
             replaceStalledTransfers(now: now)
-            // Room can come from elsewhere on the device, and the overnight window opens and
-            // closes by the clock.
-            let waitsForSpace = waits.values.contains { if case .space = $0 { true } else { false } }
-            if waitsForSpace || nextScheduleChange.map({ now >= $0 }) == true { pump() }
+            // Room can come from elsewhere on the device.
+            if waits.values.contains(where: { if case .space = $0 { true } else { false } }) { pump() }
         }
     }
 
