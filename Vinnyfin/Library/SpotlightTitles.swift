@@ -16,8 +16,14 @@ import OSLog
 /// app is open, once a day, at once for a new sign-in, and when Spotlight asks for its entries
 /// again. Signing out, or into another server or user, deletes every entry.
 ///
+/// Entries are deleted by the ids the ledger lists, never in bulk: Core Spotlight's bulk deletes
+/// (every item, a domain, an entity type) delete, but their completion never came in the iOS 27.2
+/// simulator, so a pass or sign-out awaiting one never finished; and they delete the whole app's
+/// items, whichever index they're asked of. The ledger is saved after every batch written or
+/// deleted, so it lists what Spotlight holds even when a pass stops partway.
+///
 /// Spotlight keeps its index itself, outside the app; the ledger is a file in the app's own
-/// container, written whole after a pass.
+/// container.
 @Observable
 final class SpotlightTitles {
     /// What Spotlight holds, for Settings.
@@ -54,17 +60,14 @@ final class SpotlightTitles {
 
     @ObservationIgnored private let accounts: AccountStore
     @ObservationIgnored private let downloads: DownloadManager
-    @ObservationIgnored private let index: SpotlightIndex
     @ObservationIgnored private let file: URL
     @ObservationIgnored private var ledger: SpotlightLedger?
     @ObservationIgnored private var passing: Task<Void, any Error>?
 
     init(accounts: AccountStore, downloads: DownloadManager,
-         index: SpotlightIndex = SpotlightIndex(name: "net.vinnysaj.vinnyfin.titles"),
          file: URL = URL.applicationSupportDirectory.appending(path: "Spotlight.json")) {
         self.accounts = accounts
         self.downloads = downloads
-        self.index = index
         self.file = file
         guard FileManager.default.fileExists(atPath: file.path) else { return }
         do {
@@ -72,14 +75,15 @@ final class SpotlightTitles {
             self.ledger = ledger
             status = Self.status(of: ledger)
         } catch {
-            // Spotlight's entries are then whoever's: `run()` deletes them all, as for someone else's.
+            // The next pass writes the titles it finds again, over their old entries; entries for
+            // titles it no longer finds stay until the app is deleted.
             Self.log.error("Couldn't read the Spotlight ledger: \(error.localizedDescription, privacy: .public)")
-            problem = "Couldn't read what's in Spotlight: \(error.localizedDescription)"
         }
     }
 
     /// Follows who is signed in for the life of the app: deletes every entry when nobody is, or
     /// someone else is, than the entries are for, and brings Spotlight up to date for a new sign-in.
+    /// A deletion that failed is tried again at the next launch, or from Settings.
     func run() async {
         let accounts = accounts
         for await key in Observations({ accounts.account.map(SpotlightLedger.AccountKey.init) }) {
@@ -98,21 +102,18 @@ final class SpotlightTitles {
         }
     }
 
-    /// Brings Spotlight up to date now, due or not.
+    /// Brings Spotlight up to date now, due or not, deleting first the entries of whoever was
+    /// signed in before when that failed.
     func refreshNow() async {
+        let key = accounts.account.map(SpotlightLedger.AccountKey.init)
+        if key != ledger?.account { await wipe(for: key) }
         await refresh(force: true)
     }
 
     /// Writes a kind's entries again, those of `ids` or all of them, for Spotlight, which asks
     /// when it lost them.
     func reindex(_ kind: SpotlightEntity.Kind, ids: [String]?) async throws {
-        try await pass(force: true) { ledger in
-            if let ids {
-                for id in ids { ledger.fingerprints[kind]?[id] = nil }
-            } else {
-                ledger.fingerprints[kind] = [:]
-            }
-        }
+        try await pass(force: true) { ledger in ledger.forget(kind, ids: ids) }
     }
 
     private func isDue(now: Date = .now) -> Bool {
@@ -153,8 +154,8 @@ final class SpotlightTitles {
     private func performPass(prepare: (inout SpotlightLedger) -> Void) async throws {
         guard let session = accounts.session else { return }
         let key = SpotlightLedger.AccountKey(session.account)
-        guard var ledger, ledger.account == key else { return }
-        prepare(&ledger)
+        guard ledger?.account == key else { return }
+        try record(prepare)
         isUpdating = true
         defer { isUpdating = false }
         let started = ContinuousClock.now
@@ -164,35 +165,36 @@ final class SpotlightTitles {
         let plan = SpotlightPlan(titles: counts.titles, episodes: counts.episodes)
         let entries = Array(try await gather(plan, session: session, key: key).values)
         let fingerprints = SpotlightLedger.byKind(entries.map { ($0.entity.kind, $0.entity.id, $0.fingerprint) })
-        let changes = SpotlightLedger.Changes(from: ledger.fingerprints, to: fingerprints)
+        let changes = SpotlightLedger.Changes(from: ledger?.fingerprints ?? [:], to: fingerprints)
         try await write(entries.filter { changes.writes[$0.entity.kind]?.contains($0.entity.id) == true })
         try ensureCurrent(key)
         try await delete(changes.deletions)
         try ensureCurrent(key)
 
-        ledger.fingerprints = fingerprints
-        ledger.plan = plan
-        ledger.refreshedAt = .now
-        try save(ledger)
-        self.ledger = ledger
-        status = Self.status(of: ledger)
+        try record { ledger in
+            ledger.plan = plan
+            ledger.refreshedAt = .now
+        }
+        status = ledger.flatMap(Self.status(of:))
         problem = nil
         let written = changes.writes.values.reduce(0) { $0 + $1.count }
         let deleted = changes.deletions.values.reduce(0) { $0 + $1.count }
-        Self.log.info("""
+        Self.log.notice("""
             Spotlight pass (\(plan.rawValue, privacy: .public)) of \(counts.titles) titles and \(counts.episodes) episodes: \
             \(entries.count) entries, \(written) written, \(deleted) deleted, in \(ContinuousClock.now - started, privacy: .public)
             """)
     }
 
-    /// Deletes every entry and starts the ledger over for `key`, or for nobody.
+    /// Deletes every entry the ledger lists and starts it over for `key`, or for nobody. When a
+    /// deletion fails, the ledger keeps listing what's left, under its account, for the next try.
     private func wipe(for key: SpotlightLedger.AccountKey?) async {
         while let running = passing {
             running.cancel()
             _ = await running.result
         }
         do {
-            try await index.deleteAll()
+            let count = ledger?.fingerprints.values.reduce(0) { $0 + $1.count } ?? 0
+            if let ledger { try await delete(ledger.fingerprints.mapValues { $0.keys.sorted() }) }
             let fresh = key.map { SpotlightLedger(account: $0) }
             if let fresh { try save(fresh) } else if FileManager.default.fileExists(atPath: file.path) {
                 try FileManager.default.removeItem(at: file)
@@ -200,11 +202,19 @@ final class SpotlightTitles {
             ledger = fresh
             status = nil
             problem = nil
-            Self.log.info("Deleted every Spotlight entry")
+            Self.log.notice("Deleted the \(count) Spotlight entries of the last sign-in")
         } catch {
             Self.log.error("Couldn't delete the Spotlight entries: \(error.localizedDescription, privacy: .public)")
             problem = "Couldn't take the last server's titles out of Spotlight: \(error.localizedDescription)"
         }
+    }
+
+    /// Changes the ledger and saves it.
+    private func record(_ change: (inout SpotlightLedger) -> Void) throws {
+        guard var ledger else { return }
+        change(&ledger)
+        try save(ledger)
+        self.ledger = ledger
     }
 
     /// Stops a pass whose account is no longer the one signed in.
@@ -306,18 +316,17 @@ final class SpotlightTitles {
 
     // MARK: Writing
 
-    /// Writes the entries a batch at a time, of one kind and rank each.
+    /// Writes the entries a batch at a time, of one kind and rank each, and records each batch.
     private func write(_ entries: [SpotlightEntry]) async throws {
         for kind in SpotlightEntity.Kind.allCases {
             let ofKind = entries.filter { $0.entity.kind == kind }
             for priority in Set(ofKind.map(\.priority)).sorted(by: >) {
-                let ranked = ofKind.filter { $0.priority == priority }.map(\.entity)
+                let ranked = ofKind.filter { $0.priority == priority }
                 for start in stride(from: 0, to: ranked.count, by: SpotlightPlan.writeBatch) {
                     let batch = ranked[start..<min(ranked.count, start + SpotlightPlan.writeBatch)]
-                    switch kind {
-                    case .movie: try await index.write(batch.compactMap(\.movie), priority: priority)
-                    case .show: try await index.write(batch.compactMap(\.show), priority: priority)
-                    case .episode: try await index.write(batch.compactMap(\.episode), priority: priority)
+                    try await SpotlightIndex.write(batch.map(\.entity), of: kind, priority: priority)
+                    try record { ledger in
+                        for entry in batch { ledger.fingerprints[kind, default: [:]][entry.entity.id] = entry.fingerprint }
                     }
                     try Task.checkCancellation()
                 }
@@ -325,12 +334,15 @@ final class SpotlightTitles {
         }
     }
 
+    /// Deletes the entries a batch at a time, and records each batch.
     private func delete(_ deletions: [SpotlightEntity.Kind: [String]]) async throws {
-        for (kind, ids) in deletions where !ids.isEmpty {
-            switch kind {
-            case .movie: try await index.delete(ids, of: MovieEntity.self)
-            case .show: try await index.delete(ids, of: ShowEntity.self)
-            case .episode: try await index.delete(ids, of: EpisodeEntity.self)
+        for (kind, ids) in deletions {
+            for start in stride(from: 0, to: ids.count, by: SpotlightPlan.writeBatch) {
+                let batch = Array(ids[start..<min(ids.count, start + SpotlightPlan.writeBatch)])
+                try await SpotlightIndex.delete(batch, of: kind)
+                try record { ledger in
+                    for id in batch { ledger.fingerprints[kind]?[id] = nil }
+                }
             }
         }
     }
@@ -347,35 +359,46 @@ final class SpotlightTitles {
     }
 }
 
-/// One of the app's Spotlight indexes, by name. Its calls run off the main actor, with an index
-/// object of their own, since the index object isn't safe to share.
-nonisolated struct SpotlightIndex: Sendable {
-    let name: String
-
+/// The app's entries in Spotlight's index, written and deleted off the main actor a kind at a
+/// time, as Spotlight's calls take them.
+nonisolated enum SpotlightIndex {
+    /// Writes the entities of `kind` among `entities`.
     @concurrent
-    func write<Entity: IndexedEntity>(_ entities: [Entity], priority: Int) async throws {
-        try await CSSearchableIndex(name: name).indexAppEntities(entities, priority: priority)
+    static func write(_ entities: [SpotlightEntity], of kind: SpotlightEntity.Kind, priority: Int) async throws {
+        let index = CSSearchableIndex.default()
+        switch kind {
+        case .movie: try await index.indexAppEntities(entities.compactMap(\.movie), priority: priority)
+        case .show: try await index.indexAppEntities(entities.compactMap(\.show), priority: priority)
+        case .episode: try await index.indexAppEntities(entities.compactMap(\.episode), priority: priority)
+        }
     }
 
     @concurrent
-    func delete<Entity: IndexedEntity>(_ ids: [Entity.ID], of type: Entity.Type) async throws {
-        try await CSSearchableIndex(name: name).deleteAppEntities(identifiedBy: ids, ofType: type)
-    }
-
-    @concurrent
-    func deleteAll() async throws {
-        try await CSSearchableIndex(name: name).deleteAllSearchableItems()
+    static func delete(_ ids: [String], of kind: SpotlightEntity.Kind) async throws {
+        let index = CSSearchableIndex.default()
+        switch kind {
+        case .movie: try await index.deleteAppEntities(identifiedBy: ids, ofType: MovieEntity.self)
+        case .show: try await index.deleteAppEntities(identifiedBy: ids, ofType: ShowEntity.self)
+        case .episode: try await index.deleteAppEntities(identifiedBy: ids, ofType: EpisodeEntity.self)
+        }
     }
 }
 
 /// How much of a library goes into Spotlight.
 ///
-/// Measured on an iPhone 17 Pro simulator (see `SpotlightBenchmarkTests`): each entry costs about
-/// a millisecond to write and under a kilobyte of index, and a page of 500 titles is about
-/// 0.3 MB from the server. Whole libraries of up to `limit` entries take a few seconds and a few
-/// megabytes. Past that, Spotlight gets what someone is likely to look for, which stays under a
-/// few thousand entries however big the library: what's being watched and its shows, downloads,
-/// favourites, the most recently watched, and the newest.
+/// Measured in the iPhone 17 Pro simulator on iOS 27.2 (see `SpotlightBenchmarkTests`) and
+/// against Jellyfin 12.4 with 18,000 titles, with a two-sentence summary each: an entry is 1.3 KB
+/// handed to Spotlight, which takes about a millisecond each to index it, and 2.1 KB kept on the
+/// device (1.1 KB in Spotlight's index, 1 KB in the system's store of app entities); a title is
+/// 0.65 KB from the server, in pages of 500 that take about a second. Spotlight holds at most
+/// 16 MB of an app's writes waiting to be indexed, and in the simulator a write past that never
+/// returns, so a pass has to stay well under 12,000 entries.
+///
+/// At `limit`, a pass is 6.5 MB handed over, under half of that, 10 MB on the device and 3.3 MB
+/// from the server in 10 pages. A whole library of 20,000 would be 26 MB handed over, 42 MB on
+/// the device and 13 MB from the server every day. Past `limit`, Spotlight gets what someone is
+/// likely to look for, about 2,400 entries and the downloads however big the library: what's
+/// being watched and its shows, downloads, favourites, the most recently watched, and the newest.
 nonisolated enum SpotlightPlan: String, Codable, Sendable {
     /// Every movie, show and episode.
     case everything
@@ -555,6 +578,14 @@ nonisolated struct SpotlightLedger: Codable, Equatable, Sendable {
 
     init(account: AccountKey) {
         self.account = account
+    }
+
+    /// Makes the next pass write the entries of `ids`, or all of a kind's, again, still listing
+    /// them so a pass that no longer finds them deletes them.
+    mutating func forget(_ kind: SpotlightEntity.Kind, ids: [String]?) {
+        guard var ofKind = fingerprints[kind] else { return }
+        for id in ids ?? Array(ofKind.keys) where ofKind[id] != nil { ofKind[id] = "" }
+        fingerprints[kind] = ofKind
     }
 
     static func byKind(_ entries: [(SpotlightEntity.Kind, String, String)]) -> [SpotlightEntity.Kind: [String: String]] {

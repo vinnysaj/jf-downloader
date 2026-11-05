@@ -1,5 +1,4 @@
 #if !os(tvOS)
-import AppIntents
 import Darwin
 import Foundation
 import Testing
@@ -7,21 +6,22 @@ import Testing
 
 nonisolated private let benchmarkMode = ProcessInfo.processInfo.environment["VINNYFIN_SPOTLIGHT_BENCHMARK"]
 
-/// What a whole library of 20,000 titles would cost in Spotlight, which `SpotlightPlan.limit` is
-/// set from: building the entries, their fingerprints and the ledger, and writing them to an
-/// index of their own. Off unless `VINNYFIN_SPOTLIGHT_BENCHMARK` is set (as
-/// `TEST_RUNNER_VINNYFIN_SPOTLIGHT_BENCHMARK` for xcodebuild): `write` leaves the entries in, to
-/// measure the index on disk, and `delete` takes them out again.
+/// What a library of 20,000 titles costs in Spotlight, which `SpotlightPlan.limit` is set from:
+/// building the entries, their fingerprints and the ledger for all of them, and writing the first
+/// `SpotlightPlan.limit` to the app's index, as a pass at most does. Off unless
+/// `VINNYFIN_SPOTLIGHT_BENCHMARK` is set (as `TEST_RUNNER_VINNYFIN_SPOTLIGHT_BENCHMARK` for
+/// xcodebuild): `write` leaves the entries in, to measure the index on disk, and `delete` takes
+/// them out again by their ids. Spotlight's own work on the writes, after they return, shows in
+/// its log: each "Completed donation" of `add-update-items`.
 @Suite(.enabled(if: benchmarkMode != nil), .serialized)
 struct SpotlightBenchmarkTests {
     private static let count = 20_000
-    private let index = SpotlightIndex(name: "net.vinnysaj.vinnyfin.benchmark")
     private let session = ServerSession(
         client: JellyfinClient(serverURL: URL(string: "http://192.168.1.20:8096")!, deviceId: "d", deviceName: "iPhone", token: "tok"),
         account: AccountStore.Account(serverURL: URL(string: "http://192.168.1.20:8096")!, serverId: "server", userId: "u", userName: "Alex")
     )
 
-    @Test func writesTwentyThousandTitles() async throws {
+    @Test func writesAPassOfTwentyThousandTitles() async throws {
         guard benchmarkMode == "write" else { return }
         let clock = ContinuousClock()
         let memoryBefore = Self.footprint()
@@ -41,40 +41,50 @@ struct SpotlightBenchmarkTests {
         let decoded = try clock.measure { _ = try JSONDecoder().decode(SpotlightLedger.self, from: ledgerData) }
         let unchanged = clock.measure { _ = SpotlightLedger.Changes(from: fingerprints, to: fingerprints) }
 
-        try await index.deleteAll()
-        let movies = entries.compactMap(\.entity.movie)
-        let shows = entries.compactMap(\.entity.show)
-        let started = clock.now
-        let slowestBatch = max(try await write(movies), try await write(shows))
-        let written = clock.now - started
-        let memoryAfter = Self.footprint()
-
         print("""
-            SPOTLIGHT BENCHMARK \(Self.count) titles (\(movies.count) movies, \(shows.count) shows)
+            SPOTLIGHT BENCHMARK \(Self.count) titles
               entities built: \(built)
               fingerprints: \(fingerprinted)
               ledger: \(ledgerData.count) bytes, encoded in \(encoded), decoded in \(decoded)
               diff of an unchanged library: \(unchanged)
-              written to Spotlight in batches of \(SpotlightPlan.writeBatch): \(written), slowest batch \(slowestBatch)
-              memory footprint: \(memoryBefore / 1_000_000) MB before, \(memoryAfter / 1_000_000) MB after
+              memory footprint: \(memoryBefore / 1_000_000) MB before, \(Self.footprint() / 1_000_000) MB with every entry built
             """)
         #expect(entries.count == Self.count)
+
+        let pass = entries.prefix(SpotlightPlan.limit)
+        let movies = pass.filter { $0.entity.kind == .movie }
+        let shows = pass.filter { $0.entity.kind == .show }
+        let started = clock.now
+        let slowestBatch = max(try await write(movies, of: .movie), try await write(shows, of: .show))
+        print("""
+            SPOTLIGHT BENCHMARK \(movies.count) movies and \(shows.count) shows handed to Spotlight in batches of \
+            \(SpotlightPlan.writeBatch): \(clock.now - started), slowest batch \(slowestBatch)
+            """)
     }
 
     @Test func deletesThemAgain() async throws {
         guard benchmarkMode == "delete" else { return }
         let clock = ContinuousClock()
-        let deleted = try await clock.measure { try await index.deleteAll() }
-        print("SPOTLIGHT BENCHMARK deleted every entry in \(deleted)")
+        let entries = (0..<Self.count).compactMap { SpotlightEntry(Self.item($0), priority: 0, session: session) }
+        let deleted = try await clock.measure {
+            for kind in [SpotlightEntity.Kind.movie, .show] {
+                let ids = entries.filter { $0.entity.kind == kind }.map(\.entity.id)
+                for start in stride(from: 0, to: ids.count, by: SpotlightPlan.writeBatch) {
+                    try await SpotlightIndex.delete(Array(ids[start..<min(ids.count, start + SpotlightPlan.writeBatch)]), of: kind)
+                }
+            }
+        }
+        print("SPOTLIGHT BENCHMARK deleted \(entries.count) entries in batches of \(SpotlightPlan.writeBatch) in \(deleted)")
     }
 
-    /// Writes the entities in the indexer's batches, and says how long the slowest took.
-    private func write<Entity: IndexedEntity>(_ entities: [Entity]) async throws -> Duration {
+    /// Writes the entries in the indexer's batches, and says how long the slowest took.
+    private func write(_ entries: [SpotlightEntry], of kind: SpotlightEntity.Kind) async throws -> Duration {
         let clock = ContinuousClock()
         var slowest = Duration.zero
-        for start in stride(from: 0, to: entities.count, by: SpotlightPlan.writeBatch) {
+        for start in stride(from: 0, to: entries.count, by: SpotlightPlan.writeBatch) {
+            let batch = entries[start..<min(entries.count, start + SpotlightPlan.writeBatch)]
             let started = clock.now
-            try await index.write(Array(entities[start..<min(entities.count, start + SpotlightPlan.writeBatch)]), priority: 0)
+            try await SpotlightIndex.write(batch.map(\.entity), of: kind, priority: 0)
             slowest = max(slowest, clock.now - started)
         }
         return slowest

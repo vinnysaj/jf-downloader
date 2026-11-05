@@ -85,7 +85,7 @@ struct PlaybackIntentTests {
     }
 
     @Test func saysWhyThereIsNothingToPlay() {
-        #expect(TitleIntentError.watchedEverything("Port Ellery").errorDescription == "You've watched every episode of Port Ellery.")
+        #expect(TitleIntentError.caughtUp("Port Ellery").errorDescription == "You're caught up on Port Ellery: there's no episode after the last one you watched.")
         #expect(TitleIntentError.nothingAfter(show: "Port Ellery", episode: "S02E08").errorDescription == "Port Ellery has no episode after S02E08.")
         #expect(TitleIntentError.notFound("Copperline").errorDescription == "There's nothing called Copperline on your server.")
     }
@@ -191,6 +191,22 @@ struct SpotlightLedgerTests {
     @Test func writesNothingWhenNothingChanged() {
         let same: [SpotlightEntity.Kind: [String: String]] = [.movie: ["a": "1"], .show: ["s": "2"]]
         #expect(SpotlightLedger.Changes(from: same, to: same) == SpotlightLedger.Changes(from: [:], to: [:]))
+    }
+
+    @Test func writesForgottenEntriesAgainAndStillDeletesThemWhenGone() {
+        var ledger = SpotlightLedger(account: SpotlightLedger.AccountKey(session.account))
+        ledger.fingerprints = [.movie: ["a": "1", "b": "2", "c": "3"], .show: ["s": "4"]]
+        var some = ledger
+        some.forget(.movie, ids: ["a", "unknown"])
+        #expect(some.fingerprints == [.movie: ["a": "", "b": "2", "c": "3"], .show: ["s": "4"]])
+        var all = ledger
+        all.forget(.movie, ids: nil)
+        all.forget(.episode, ids: nil)
+        #expect(all.fingerprints == [.movie: ["a": "", "b": "", "c": ""], .show: ["s": "4"]])
+
+        let changes = SpotlightLedger.Changes(from: all.fingerprints, to: [.movie: ["a": "1", "b": "2"], .show: ["s": "4"]])
+        #expect(changes.writes == [.movie: ["a", "b"]])
+        #expect(changes.deletions == [.movie: ["c"]])
     }
 
     @Test func groupsFingerprintsByKind() {
