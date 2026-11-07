@@ -1,4 +1,5 @@
 import Foundation
+import Nuke
 import Testing
 @testable import vinnyfin
 
@@ -302,5 +303,26 @@ struct HomeFeedTests {
         #expect(HomeFeed.hasNoTitles([HomeRows.recentMovies.id: [], HomeRows.recentShows.id: [], HomeRows.continueWatching.id: []]))
         #expect(!HomeFeed.hasNoTitles([HomeRows.recentMovies.id: [JellyfinItem(id: "m", name: "Movie", type: "Movie")]]))
         #expect(!HomeFeed.hasNoTitles([HomeRows.recentShows.id: [JellyfinItem(id: "s", name: "Show", type: "Series")]]))
+    }
+}
+
+struct ArtworkTests {
+    @Test func loadsAgainOnlyWhatTheServerMightSendNextTime() {
+        func loading(_ failure: any Error) -> ImagePipeline.Error { .dataLoadingFailed(error: failure) }
+        #expect(Artwork.isWorthRetrying(loading(URLError(.timedOut))))
+        #expect(Artwork.isWorthRetrying(loading(URLError(.notConnectedToInternet))))
+        #expect(Artwork.isWorthRetrying(loading(DataLoader.Error.statusCodeUnacceptable(503))))
+        #expect(Artwork.isWorthRetrying(loading(DataLoader.Error.statusCodeUnacceptable(429))))
+        #expect(!Artwork.isWorthRetrying(loading(DataLoader.Error.statusCodeUnacceptable(404))))
+        #expect(!Artwork.isWorthRetrying(loading(DataLoader.Error.statusCodeUnacceptable(401))))
+        #expect(!Artwork.isWorthRetrying(loading(URLError(.cancelled))))
+        #expect(!Artwork.isWorthRetrying(ImagePipeline.Error.dataIsEmpty))
+        #expect(!Artwork.isWorthRetrying(ImagePipeline.Error.imageRequestMissing))
+        #expect(!Artwork.isWorthRetrying(ImagePipeline.Error.cancelled))
+    }
+
+    @Test func waitsLongerEachTimeUpToHalfAMinute() {
+        #expect((1...7).map(Artwork.delay(beforeRetry:)) == [1, 2, 4, 8, 16, 30, 30].map { Duration.seconds($0) })
+        #expect(Artwork.delay(beforeRetry: 5000) == .seconds(30))
     }
 }
