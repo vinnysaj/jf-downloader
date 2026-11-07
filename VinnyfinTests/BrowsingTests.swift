@@ -295,3 +295,12 @@ struct HomeRowsTests {
         #expect(titles.first?.genres == ["Drama"])
     }
 }
+
+struct HomeFeedTests {
+    @Test func hasNoTitlesOnlyWithoutMoviesAndShows() {
+        #expect(HomeFeed.hasNoTitles([:]))
+        #expect(HomeFeed.hasNoTitles([HomeRows.recentMovies.id: [], HomeRows.recentShows.id: [], HomeRows.continueWatching.id: []]))
+        #expect(!HomeFeed.hasNoTitles([HomeRows.recentMovies.id: [JellyfinItem(id: "m", name: "Movie", type: "Movie")]]))
+        #expect(!HomeFeed.hasNoTitles([HomeRows.recentShows.id: [JellyfinItem(id: "s", name: "Show", type: "Series")]]))
+    }
+}

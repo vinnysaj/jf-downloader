@@ -34,6 +34,9 @@ struct HomeView: View {
                 }
                 .padding(.bottom, Metrics.edge)
             }
+            // On Apple TV, focus moves into Home at launch, and with nothing focusable there the
+            // remote would do nothing at all; Check Again takes it.
+            .overlay { if feed.hasNoTitles { noTitles } }
             // The page color the hero artwork fades into.
             .background(Color.pageBackground.ignoresSafeArea())
             .screenTitle("Home")
@@ -108,6 +111,17 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 16))
         .padding(.horizontal, Metrics.edge)
+    }
+
+    private var noTitles: some View {
+        ContentUnavailableView {
+            Label("No Movies or Shows Yet", systemImage: "film.stack")
+        } description: {
+            Text("\(session?.account.serverName ?? "The server") has no movies or shows for you. Add some in Jellyfin, then check again.")
+        } actions: {
+            Button("Check Again") { Task { await load() } }
+                .accessibilityIdentifier("home.checkAgain")
+        }
     }
 
     private func load(reshuffling: Bool = false) async {

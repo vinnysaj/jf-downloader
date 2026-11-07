@@ -24,6 +24,8 @@ final class HomeFeed {
     private(set) var loadError: String?
     /// The server turned the saved sign-in away (HTTP 401), so retrying won't help.
     private(set) var sessionEnded = false
+    /// The server has no movies or shows for this user, so Home has no rows and no banner.
+    private(set) var hasNoTitles = false
 
     @ObservationIgnored private var session: ServerSession?
     /// The first round of requests is out; the rows it fills don't load on their own meanwhile.
@@ -44,7 +46,8 @@ final class HomeFeed {
     func load(session: ServerSession, reshuffling: Bool = false) async {
         self.session = session
         if reshuffling { randomSeed = .random(in: .min ... .max) }
-        if rows.isEmpty { rows = HomeRows.leading }
+        // Checking again on a server with nothing on it keeps saying so until something turns up.
+        if rows.isEmpty && !hasNoTitles { rows = HomeRows.leading }
         isSeeding = true
         defer {
             isSeeding = false
@@ -82,7 +85,9 @@ final class HomeFeed {
                 showGenres: showGenres.compactMap { genre in genre.seriesCount.map { GenreSize(name: genre.name, count: $0) } }
             )
             var random = SeededRandom(seed: randomSeed)
-            let rows = HomeRows.assemble(inputs, using: &random)
+            hasNoTitles = Self.hasNoTitles(seeded)
+            // Every row is made of the movies and shows, so without them each would load empty.
+            let rows = hasNoTitles ? [] : HomeRows.assemble(inputs, using: &random)
             let ids = Set(rows.map(\.id))
             queue.cancelAll()
             stale = Set(items.keys).intersection(ids).subtracting(seeded.keys)
@@ -95,12 +100,20 @@ final class HomeFeed {
             sessionEnded = false
         } catch JellyfinError.http(status: 401, _) {
             sessionEnded = true
+            hasNoTitles = false
             dropPlaceholders()
         } catch {
             guard !error.isCancellation else { return }
             loadError = error.localizedDescription
+            hasNoTitles = false
             dropPlaceholders()
         }
+    }
+
+    /// Whether the first round of requests found no movies and no shows: the newest of each
+    /// are every one there is, newest first, so none of either means there are none.
+    nonisolated static func hasNoTitles(_ seeded: [HomeRow.ID: [JellyfinItem]]) -> Bool {
+        seeded[HomeRows.recentMovies.id, default: []].isEmpty && seeded[HomeRows.recentShows.id, default: []].isEmpty
     }
 
     /// Placeholders of a Home that never loaded give way to what went wrong.
