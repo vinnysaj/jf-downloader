@@ -97,12 +97,12 @@ nonisolated struct SignInFlow: Sendable {
     // MARK: Starting
 
     /// Starts from a server offered to sign in to, such as the one a handed-off title is from,
-    /// else from the last sign-in on this device. Only the first call does, so the screen
-    /// appearing again leaves what's been entered.
-    mutating func start(offer: ServerSignIn?, lastServerURL: URL?, lastUserName: String?) -> Field? {
+    /// with its password if there's one saved, else from the last sign-in on this device. Only
+    /// the first call does, so the screen appearing again leaves what's been entered.
+    mutating func start(offer: ServerSignIn?, password: String?, lastServerURL: URL?, lastUserName: String?) -> Next? {
         guard !hasStarted else { return nil }
         hasStarted = true
-        if let offer { return choose(offer) }
+        if let offer { return choose(offer, password: password) }
         if let lastServerURL, let address = ServerAddress(savedURL: lastServerURL) {
             pickedServer = PickedServer(address: address, url: lastServerURL,
                                         title: lastServerURL.host() ?? lastServerURL.absoluteString)
@@ -111,8 +111,10 @@ nonisolated struct SignInFlow: Sendable {
         return nil
     }
 
-    /// Picks a server someone signed in to, with their username, for the password next.
-    mutating func choose(_ signIn: ServerSignIn) -> Field? {
+    /// Picks a server someone signed in to, with their username. With the password they last
+    /// signed in with there, saved in iCloud Keychain on any of their devices, it signs in;
+    /// without one, the password is next.
+    mutating func choose(_ signIn: ServerSignIn, password: String?) -> Next? {
         guard let address = ServerAddress(savedURL: signIn.address) else {
             accountError = "\(signIn.address.absoluteString) isn't a server address vinnyfin can use."
             return nil
@@ -120,8 +122,9 @@ nonisolated struct SignInFlow: Sendable {
         show(.account)
         pickedServer = PickedServer(address: address, url: signIn.address, title: signIn.serverTitle)
         username = signIn.userName
-        password = ""
-        return .password
+        self.password = password ?? ""
+        guard password != nil else { return .focus(.password) }
+        return begin(Attempt(address: address, goal: credentials))
     }
 
     // MARK: The account step
