@@ -2,7 +2,8 @@ import Foundation
 import Observation
 
 /// One person on one Jellyfin server: where the server is and who they are on it, without a
-/// token or a password.
+/// token or a password. The password they last signed in with, if any, is in iCloud Keychain under
+/// the sign-in's `id` (`Keychain.syncedPassword`).
 nonisolated struct ServerSignIn: Codable, Hashable, Identifiable, Sendable {
     var serverId: String
     var serverName: String?
@@ -81,7 +82,13 @@ final class KnownServers {
         save(remembered, for: signIn.serverId)
     }
 
+    /// Forgets the sign-in on every device, with its password.
     func forget(_ signIn: ServerSignIn) {
+        do {
+            try Keychain.deleteSyncedPassword(for: signIn.id)
+        } catch {
+            problem = error.localizedDescription
+        }
         save(signIns.filter { $0.serverId == signIn.serverId && $0.userId != signIn.userId }, for: signIn.serverId)
     }
 

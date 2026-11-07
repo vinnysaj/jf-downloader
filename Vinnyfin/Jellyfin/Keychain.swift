@@ -7,8 +7,12 @@ import Security
 /// them too: the Top Shelf and the Up Next widgets. On the Mac access groups are the data
 /// protection keychain's, and the app group must be authorized by the provisioning profile for
 /// that keychain to honor it. Vision Pro, with no extensions, keeps them in the app's own group.
+///
+/// The passwords signed in with are kept too, in iCloud Keychain, so the person's other devices
+/// sign in without asking for them (`syncedPassword`).
 nonisolated enum Keychain {
     private static let service = "net.vinnysaj.vinnyfin.token"
+    private static let passwordService = "net.vinnysaj.vinnyfin.password"
 
     /// The server's token; nil when there's none.
     static func token(for account: String) throws -> String? {
@@ -81,6 +85,44 @@ nonisolated enum Keychain {
         #endif
     }
     #endif
+
+    // MARK: Passwords in iCloud Keychain
+
+    /// The password someone last signed in to a server with on any of their devices, by the
+    /// `ServerSignIn.id` of who they are there; nil when there's none, as after Quick Connect.
+    /// Each device signs in with it for a token of its own, so the server tells them apart.
+    static func syncedPassword(for signIn: String) throws -> String? {
+        try readToken(passwordQuery(signIn))
+    }
+
+    static func setSyncedPassword(_ password: String, for signIn: String) throws {
+        try deleteSyncedPassword(for: signIn)
+        var query = passwordQuery(signIn)
+        query[kSecValueData as String] = Data(password.utf8)
+        // An item that syncs can't be kept to this device alone.
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        try check(SecItemAdd(query as CFDictionary, nil), "Couldn't save the password to iCloud Keychain")
+    }
+
+    /// Deletes the password on every device.
+    static func deleteSyncedPassword(for signIn: String) throws {
+        try delete(passwordQuery(signIn))
+    }
+
+    /// In the app's own access group, its app ID's, the first of its groups and the same on
+    /// every platform, so iCloud Keychain carries it to the app on each of them.
+    private static func passwordQuery(_ signIn: String) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: passwordService,
+            kSecAttrAccount as String: signIn,
+            kSecAttrSynchronizable as String: true,
+        ]
+        #if os(macOS)
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        return query
+    }
 
     // MARK: Plumbing
 

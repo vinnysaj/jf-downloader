@@ -15,7 +15,7 @@ private enum SignIn {
     /// The flow on the account step with `home` picked and its user filled in.
     static func pickedHome() -> SignInFlow {
         var flow = SignInFlow()
-        _ = flow.start(offer: home, lastServerURL: nil, lastUserName: nil)
+        _ = flow.start(offer: home, password: nil, lastServerURL: nil, lastUserName: nil)
         return flow
     }
 
@@ -92,7 +92,8 @@ struct DemoAccountTests {
 struct SignInFlowTests {
     @Test func startsFromTheOfferedSignInWithTheCursorInThePassword() {
         var flow = SignInFlow()
-        #expect(flow.start(offer: SignIn.home, lastServerURL: URL(string: "http://other.local"), lastUserName: "Sam") == .password)
+        #expect(flow.start(offer: SignIn.home, password: nil, lastServerURL: URL(string: "http://other.local"), lastUserName: "Sam")
+            == .focus(.password))
         #expect(flow.pickedServer == SignInFlow.PickedServer(address: SignIn.homeAddress, url: SignIn.home.address, title: "Home"))
         #expect(flow.username == "Alex")
         #expect(flow.step == .account)
@@ -100,23 +101,46 @@ struct SignInFlowTests {
 
     @Test func startsFromTheLastSignInOnlyOnce() {
         var flow = SignInFlow()
-        #expect(flow.start(offer: nil, lastServerURL: URL(string: "http://nas.local:8096"), lastUserName: "Alex") == nil)
+        #expect(flow.start(offer: nil, password: nil, lastServerURL: URL(string: "http://nas.local:8096"), lastUserName: "Alex") == nil)
         #expect(flow.pickedServer?.address == SignIn.homeAddress)
         #expect(flow.pickedServer?.title == "nas.local")
         #expect(flow.username == "Alex")
 
         flow.username = "Sam"
-        _ = flow.start(offer: nil, lastServerURL: URL(string: "http://nas.local:8096"), lastUserName: "Alex")
+        _ = flow.start(offer: nil, password: nil, lastServerURL: URL(string: "http://nas.local:8096"), lastUserName: "Alex")
         #expect(flow.username == "Sam")
     }
 
     @Test func choosingAServerPicksItAndFillsInTheUser() {
         var flow = SignInFlow()
         flow.password = "typed"
-        #expect(flow.choose(SignIn.home) == .password)
+        #expect(flow.choose(SignIn.home, password: nil) == .focus(.password))
         #expect(flow.pickedServer?.address == SignIn.homeAddress)
         #expect(flow.username == "Alex")
         #expect(flow.password.isEmpty)
+    }
+
+    @Test func choosingAServerWithItsSavedPasswordSignsIn() throws {
+        var flow = SignInFlow()
+        let chosen = flow.choose(SignIn.home, password: "secret")
+        let attempt = try SignIn.attempt(try #require(chosen))
+        #expect(attempt == SignInFlow.Attempt(address: SignIn.homeAddress, goal: .password(username: "Alex", password: "secret")))
+        #expect(flow.step == .account)
+        #expect(flow.password == "secret")
+
+        var offered = SignInFlow()
+        let started = offered.start(offer: SignIn.home, password: "", lastServerURL: nil, lastUserName: nil)
+        #expect(try SignIn.attempt(try #require(started)).goal == .password(username: "Alex", password: ""))
+    }
+
+    @Test func aSavedPasswordThatNoLongerWorksAsksForItWithTheServerPicked() throws {
+        var flow = SignInFlow()
+        let chosen = flow.choose(SignIn.home, password: "old")
+        let attempt = try SignIn.attempt(try #require(chosen))
+        #expect(flow.fail(attempt, while: .signingIn, with: JellyfinError.invalidCredentials) == .password)
+        #expect(flow.step == .account)
+        #expect(flow.pickedServer?.address == SignIn.homeAddress)
+        #expect(flow.accountError != nil)
     }
 
     @Test func theAccountStepSignsInToThePickedServer() throws {
@@ -315,5 +339,19 @@ struct SignInFlowTests {
         _ = flow.fail(attempt, while: .signingIn, with: JellyfinError.invalidCredentials)
         _ = flow.submitAccount()
         #expect(flow.accountError == nil)
+    }
+}
+
+/// The password saved in iCloud Keychain, in the real Keychain of the signed app the tests run in.
+struct SyncedPasswordTests {
+    @Test func savesReplacesAndDeletesThePassword() throws {
+        let signIn = "SyncedPasswordTests-\(UUID().uuidString)/user"
+        defer { try? Keychain.deleteSyncedPassword(for: signIn) }
+        #expect(try Keychain.syncedPassword(for: signIn) == nil)
+        try Keychain.setSyncedPassword("first", for: signIn)
+        try Keychain.setSyncedPassword("second", for: signIn)
+        #expect(try Keychain.syncedPassword(for: signIn) == "second")
+        try Keychain.deleteSyncedPassword(for: signIn)
+        #expect(try Keychain.syncedPassword(for: signIn) == nil)
     }
 }

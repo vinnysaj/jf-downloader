@@ -1,14 +1,16 @@
 import SwiftUI
 
 /// Signs in to a Jellyfin server, asking for the account first and the server second: a server
-/// signed in to before, on this device or another of the person's, is picked in a tap, and any
-/// other is asked for by its address once the account is in (see `SignInFlow`).
+/// signed in to before, on this device or another of the person's, signs in with a tap, with the
+/// password saved in iCloud Keychain or for the password next, and any other is asked for by its
+/// address once the account is in (see `SignInFlow`).
 struct LoginView: View {
     /// A sign-in to start from, such as the one a handed-off title is from.
     var offer: ServerSignIn?
 
     @Environment(AccountStore.self) private var accounts
     @Environment(KnownServers.self) private var knownServers
+    @Environment(AppMessages.self) private var messages
     @Environment(\.dismiss) private var dismiss
     @State private var flow = SignInFlow()
     @State private var check = ServerCheck.idle
@@ -64,9 +66,9 @@ struct LoginView: View {
                     QuickConnectSheet(code: state.code, onCancel: cancelSignIn)
                 }
                 .onAppear {
-                    if let field = flow.start(offer: offer, lastServerURL: accounts.lastServerURL,
-                                              lastUserName: accounts.lastUserName) {
-                        nextFocus = field
+                    if let next = flow.start(offer: offer, password: offer.flatMap { savedPassword(for: $0) },
+                                             lastServerURL: accounts.lastServerURL, lastUserName: accounts.lastUserName) {
+                        follow(next)
                     }
                 }
                 .onChange(of: focus) { previous, _ in
@@ -188,7 +190,7 @@ struct LoginView: View {
                 Text("Your Servers")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Servers you've signed in to on your devices. Choose one, then enter the password or use Quick Connect.")
+                    Text("Servers you've signed in to on your devices. Choosing one signs in with the password saved in iCloud Keychain; without one, enter the password or use Quick Connect.")
                     if let problem = knownServers.problem {
                         Text(problem).foregroundStyle(.orange)
                         Button("Dismiss") { knownServers.problem = nil }
@@ -353,7 +355,29 @@ struct LoginView: View {
 
     private func choose(_ signIn: ServerSignIn) {
         cancelSignIn()
-        if let field = flow.choose(signIn) { nextFocus = field }
+        if let next = flow.choose(signIn, password: savedPassword(for: signIn)) { follow(next) }
+    }
+
+    /// The password `signIn` last signed in with on any of the person's devices; nil when there's
+    /// none, or when iCloud Keychain won't give it, which the servers' footer then says.
+    private func savedPassword(for signIn: ServerSignIn) -> String? {
+        do {
+            return try Keychain.syncedPassword(for: signIn.id)
+        } catch {
+            knownServers.problem = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Saves the password just signed in with in iCloud Keychain, for the person's other devices.
+    /// The sign-in stands either way.
+    private func keepPassword(_ password: String) {
+        guard let account = accounts.account else { return }
+        do {
+            try Keychain.setSyncedPassword(password, for: ServerSignIn(account).id)
+        } catch {
+            messages.show("You're signed in, but your other devices will still ask for the password. \(error.localizedDescription)")
+        }
     }
 
     private func changeServer() {
@@ -410,6 +434,7 @@ struct LoginView: View {
                 return
             case .password(let username, let password):
                 try await accounts.signIn(to: server, username: username, password: password)
+                keepPassword(password)
             case .quickConnect:
                 let state = try await accounts.startQuickConnect(on: server)
                 guard !Task.isCancelled else { return }

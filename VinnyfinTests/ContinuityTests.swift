@@ -291,6 +291,18 @@ struct KnownServerTests {
         #expect(cloud.values.isEmpty)
     }
 
+    /// In the real Keychain of the signed app the tests run in.
+    @Test func forgettingSomeoneDeletesTheirSavedPassword() throws {
+        var signIn = Continuity.home
+        signIn.serverId = "KnownServerTests-\(UUID().uuidString)"
+        try Keychain.setSyncedPassword("secret", for: signIn.id)
+        defer { try? Keychain.deleteSyncedPassword(for: signIn.id) }
+        let servers = store(MemoryCloud())
+        servers.forget(signIn)
+        #expect(try Keychain.syncedPassword(for: signIn.id) == nil)
+        #expect(servers.problem == nil)
+    }
+
     @Test func readsWhatOtherDevicesSavedAndSaysWhatItCant() throws {
         let cloud = MemoryCloud()
         cloud.values = [
