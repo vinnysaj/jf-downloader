@@ -610,12 +610,21 @@ final class PictureInPicture: NSObject, AVPictureInPictureControllerDelegate, AV
     }
 }
 
-/// The system's AirPlay and audio route button.
+/// The system's AirPlay and audio route button, on glass the size of the player's glass buttons
+/// beside it. The system's button can't take a button style, so a glass button like those, laid
+/// out and not drawn, gives the size.
 struct RoutePicker: View {
     var body: some View {
-        RoutePickerRepresentable()
-            .frame(width: 32, height: 32)
-            .accessibilityLabel("AirPlay")
+        Button {} label: { Color.clear.frame(width: 22, height: 22) }
+            .buttonStyle(.platformGlass)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+            .hidden()
+            .overlay {
+                RoutePickerRepresentable()
+                    .platformGlass(in: .circle)
+                    .accessibilityLabel("AirPlay")
+            }
     }
 }
 

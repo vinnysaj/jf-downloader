@@ -58,6 +58,7 @@ struct DemoAccountTests {
         var fresh = SignInFlow()
         fresh.username = "apple"
         fresh.password = "apple"
+        #expect(fresh.accountStepSignsIn)
         #expect(try SignIn.attempt(fresh.submitAccount()).isDemo)
         #expect(fresh.step == .account)
     }
@@ -121,6 +122,7 @@ struct SignInFlowTests {
     @Test func theAccountStepSignsInToThePickedServer() throws {
         var flow = SignIn.pickedHome()
         flow.password = "secret"
+        #expect(flow.accountStepSignsIn)
         #expect(try SignIn.attempt(flow.submitAccount())
             == SignInFlow.Attempt(address: SignIn.homeAddress, goal: .password(username: "Alex", password: "secret")))
     }
@@ -132,6 +134,7 @@ struct SignInFlowTests {
 
         flow.username = " Alex "
         flow.password = "secret"
+        #expect(!flow.accountStepSignsIn)
         #expect(flow.submitAccount() == .focus(.host))
         #expect(flow.step == .server)
         #expect(!flow.isQuickConnect)

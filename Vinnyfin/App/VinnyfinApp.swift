@@ -158,6 +158,7 @@ final class AppDelegate: NSObject {
 
     private func launched() {
         ImageCache.configure()
+        if let problem = accounts.savedSignInProblem { messages.show(problem) }
         #if os(iOS) || os(macOS)
         if let problem = accounts.sharingProblem { messages.show(problem) }
         #endif

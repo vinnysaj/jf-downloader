@@ -55,6 +55,7 @@ struct LoginView: View {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
                     }
+                    ToolbarItem(placement: .confirmationAction) { stepButton }
                 }
                 // Closing the sheet takes back the sign-in under way.
                 .onDisappear(perform: cancelSignIn)
@@ -92,6 +93,26 @@ struct LoginView: View {
     }
     #endif
 
+    /// The step's button, which signs in or goes on to the next step: beside Cancel in the
+    /// sheet's bar, and on Apple TV, whose sheet has no bar, in the form.
+    @ViewBuilder private var stepButton: some View {
+        switch flow.step {
+        case .account:
+            Button(action: submitAccount) {
+                title(flow.accountStepSignsIn ? "Sign In" : "Next",
+                      isRunning: running.map { $0.goal != .quickConnect } ?? false)
+            }
+            .disabled(flow.trimmedUsername.isEmpty || running != nil)
+            .accessibilityIdentifier("login.submit")
+        case .server:
+            Button(action: connect) {
+                title(connectTitle, isRunning: running != nil)
+            }
+            .disabled(flow.address.host.trimmingCharacters(in: .whitespaces).isEmpty || running != nil)
+            .accessibilityIdentifier("login.connect")
+        }
+    }
+
     // MARK: The account step
 
     @ViewBuilder private var accountStep: some View {
@@ -110,7 +131,7 @@ struct LoginView: View {
             SecureField("Password", text: $flow.password)
                 .textContentType(.password)
                 .focused($focus, equals: .password)
-                .submitLabel(flow.pickedServer == nil ? .continue : .go)
+                .submitLabel(flow.accountStepSignsIn ? .go : .next)
                 .onSubmit(submitAccount)
                 .accessibilityIdentifier("login.password")
                 .id(SignInFlow.Field.password)
@@ -132,14 +153,9 @@ struct LoginView: View {
                 }
             }
         }
-        Section {
-            Button(action: submitAccount) {
-                title(flow.pickedServer == nil ? "Continue" : "Sign In",
-                      isRunning: running.map { $0.goal != .quickConnect } ?? false)
-            }
-            .disabled(flow.trimmedUsername.isEmpty || running != nil)
-            .accessibilityIdentifier("login.submit")
-        }
+        #if os(tvOS)
+        Section { stepButton }
+        #endif
         Section {
             Button(action: useQuickConnect) {
                 title("Use Quick Connect", systemImage: "number.square", isRunning: running?.goal == .quickConnect)
@@ -194,6 +210,7 @@ struct LoginView: View {
             .accessibilityIdentifier("login.scheme")
             LabeledContent("Host") {
                 TextField("Host", text: $flow.address.host, prompt: Text("192.168.1.10 or jf.example.com"))
+                    .labelsHidden()
                     .textContentType(.URL)
                     #if !os(macOS)
                     .keyboardType(.URL)
@@ -208,6 +225,7 @@ struct LoginView: View {
             .id(SignInFlow.Field.host)
             LabeledContent("Port") {
                 TextField("Port", text: $flow.address.port, prompt: Text(String(flow.address.scheme.defaultPort)))
+                    .labelsHidden()
                     #if !os(macOS)
                     // Has a return key, unlike the number pad.
                     .keyboardType(.numbersAndPunctuation)
@@ -220,6 +238,7 @@ struct LoginView: View {
             .id(SignInFlow.Field.port)
             LabeledContent("Base Path") {
                 TextField("Base Path", text: $flow.address.path, prompt: Text("Optional, e.g. /jellyfin"))
+                    .labelsHidden()
                     #if !os(macOS)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
@@ -236,19 +255,9 @@ struct LoginView: View {
         } footer: {
             serverStatus
         }
-        Section {
-            Button(action: connect) {
-                title(connectTitle, isRunning: running != nil)
-            }
-            .disabled(flow.address.host.trimmingCharacters(in: .whitespaces).isEmpty || running != nil)
-            .accessibilityIdentifier("login.connect")
-        } footer: {
-            if flow.isQuickConnect {
-                Text(Self.quickConnectExplanation)
-            } else if !flow.trimmedUsername.isEmpty {
-                Text("Signs in as \(flow.trimmedUsername).")
-            }
-        }
+        #if os(tvOS)
+        Section { stepButton }
+        #endif
         if flow.offersPassword {
             Section {
                 Button("Sign In with a Password", systemImage: "key", action: usePassword)
@@ -261,7 +270,8 @@ struct LoginView: View {
         }
     }
 
-    /// The address as a URL, then why it didn't do, or else whether a server answers at it.
+    /// The address as a URL, then why it didn't do, or else whether a server answers at it, and
+    /// what the step's button does there.
     private var serverStatus: some View {
         VStack(alignment: .leading, spacing: 4) {
             if case .success(let url) = flow.address.url {
@@ -285,6 +295,11 @@ struct LoginView: View {
                         .foregroundStyle(.orange)
                 }
             }
+            if flow.isQuickConnect {
+                Text(Self.quickConnectExplanation)
+            } else if !flow.trimmedUsername.isEmpty {
+                Text("Signs in as \(flow.trimmedUsername).")
+            }
         }
         #if !os(tvOS)
         .textSelection(.enabled)
@@ -301,7 +316,7 @@ struct LoginView: View {
 
     private var connectTitle: LocalizedStringKey {
         if flow.isQuickConnect { return "Get Code" }
-        return flow.trimmedUsername.isEmpty ? "Continue" : "Sign In"
+        return flow.trimmedUsername.isEmpty ? "Next" : "Sign In"
     }
 
     /// A button's title, followed by a spinner while the sign-in it started is under way.
@@ -313,8 +328,8 @@ struct LoginView: View {
                 Text(text)
             }
             if isRunning {
-                Spacer()
                 ProgressView()
+                    .controlSize(.small)
             }
         }
     }

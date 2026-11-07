@@ -88,6 +88,12 @@ nonisolated struct SignInFlow: Sendable {
     /// The username as it's sent, without the spaces around it.
     var trimmedUsername: String { username.trimmingCharacters(in: .whitespacesAndNewlines) }
 
+    /// Whether the account step's button signs in, to the demo server or the server picked,
+    /// rather than going on to ask for the server.
+    var accountStepSignsIn: Bool {
+        pickedServer != nil || Self.isDemoAccount(username: username, password: password)
+    }
+
     // MARK: Starting
 
     /// Starts from a server offered to sign in to, such as the one a handed-off title is from,

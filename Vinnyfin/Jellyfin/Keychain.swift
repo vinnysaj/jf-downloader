@@ -55,12 +55,16 @@ nonisolated enum Keychain {
     }
 
     /// The query that finds the app's own item for the server, or nil when it has none. On the
-    /// Mac a query without the data protection keychain searches the login keychain alone. On
-    /// iPhone and iPad a query without an access group searches every group the app is in, the
-    /// app group among them, so it's narrowed to the group of the item outside the app group.
+    /// Mac it names the login keychain: macOS 27 takes a query that names neither for the data
+    /// protection keychain's, which finds the app group's item, and deleting the app's own then
+    /// signs the app out at every launch. On iPhone and iPad a query without an access group
+    /// searches every group the app is in, the app group among them, so it's narrowed to the group
+    /// of the item outside the app group.
     private static func appQuery(_ account: String) throws -> [String: Any]? {
         #if os(macOS)
-        return baseQuery(account)
+        var query = baseQuery(account)
+        query[kSecUseDataProtectionKeychain as String] = false
+        return query
         #else
         var search = baseQuery(account)
         search[kSecReturnAttributes as String] = true

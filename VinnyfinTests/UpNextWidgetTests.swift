@@ -138,6 +138,20 @@ struct UpNextWidgetTests {
     }
 }
 
+/// The Keychain's two places for a token, in the real Keychain of the signed app the tests run in.
+struct KeychainPlacesTests {
+    /// The app's own place is apart from the app group's: launching moves a token from the first
+    /// to the second and then deletes the first, which would otherwise take the moved token with it.
+    @Test func theAppGroupsTokenIsntTheAppsOwn() throws {
+        let server = "KeychainPlacesTests-\(UUID().uuidString)"
+        try Keychain.setToken("shared", for: server)
+        defer { try? Keychain.deleteToken(for: server) }
+        #expect(try Keychain.appToken(for: server) == nil)
+        try Keychain.deleteAppToken(for: server)
+        #expect(try Keychain.token(for: server) == "shared")
+    }
+}
+
 /// Moving a sign-in kept where only the app read it to the app group, where the widgets read it.
 /// Each test has its own pair of defaults suites, removed after it.
 final class SignInMoveTests {

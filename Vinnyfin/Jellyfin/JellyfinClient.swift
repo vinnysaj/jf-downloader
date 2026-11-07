@@ -522,10 +522,17 @@ nonisolated struct JellyfinClient: Sendable {
         ]
         if let token { fields["Token"] = token }
         let pairs = fields.sorted { $0.key < $1.key }.map { key, value in
-            "\(key)=\"\(value.replacingOccurrences(of: "\"", with: ""))\""
+            "\(key)=\"\(value.addingPercentEncoding(withAllowedCharacters: Self.headerValueCharacters) ?? "")\""
         }
         return "MediaBrowser " + pairs.joined(separator: ", ")
     }
+
+    /// What stays as it is in the header's values, as JavaScript's `encodeURIComponent` leaves
+    /// it; Jellyfin decodes the rest. The system drops a header with a character outside Latin-1,
+    /// as the curly apostrophe in a Mac's name, "Vincent’s MacBook Pro", and the server then turns
+    /// the sign-in away for having no device ID.
+    private static let headerValueCharacters = CharacterSet(charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
 
     private func url(for path: String, query: [String: String] = [:]) -> URL {
         var url = serverURL.appending(path: path)

@@ -111,11 +111,7 @@ extension XCTestCase {
         connect.tap()
         XCTAssertTrue(app.textFields["login.username"].waitForExistence(timeout: uiTimeout), "The sign-in form never opened")
         XCTAssertTrue(app.buttons["login.changeServer"].exists, "The sign-in form didn't start from the last sign-in's server")
-        // The form's list makes a button only once it scrolls into view, and the form is a window
-        // of its own, which the swipe has to name.
-        let submit = app.buttons["login.submit"]
-        for _ in 0..<4 where !submit.exists { app.collectionViews.firstMatch.swipeUp() }
-        tap(submit)
+        tap(app.buttons["login.submit"])
     }
     #else
     /// Signs in to `server` as `username`, a user without a password: typing a password would

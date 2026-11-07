@@ -203,6 +203,18 @@ struct AddressTests {
         #expect(url.absoluteString == "https://jf.example.com/base/Videos/item/stream?ApiKey=tok&mediaSourceId=source&static=true")
     }
 
+    @Test func encodesTheHeadersValuesForTheServerToDecode() {
+        var client = JellyfinClient(serverURL: URL(string: "https://jf.example.com")!, deviceId: "d-1",
+                                    deviceName: "Vincent’s MacBook Pro (6)", token: "tok")
+        client.clientName = "vinnyfin \"macOS\""
+        let header = client.authorizationHeader
+        #expect(header.unicodeScalars.allSatisfy { $0.isASCII })
+        #expect(header.contains(#"Device="Vincent%E2%80%99s%20MacBook%20Pro%20(6)""#))
+        #expect(header.contains(#"Client="vinnyfin%20%22macOS%22""#))
+        #expect(header.contains(#"DeviceId="d-1""#))
+        #expect(header.contains(#"Token="tok""#))
+    }
+
     @Test func matchesTheSameReleaseAcrossEpisodes() {
         func source(_ id: String, _ name: String) -> MediaSource {
             MediaSource(id: id, name: name)
