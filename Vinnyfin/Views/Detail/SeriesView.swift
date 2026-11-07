@@ -57,11 +57,11 @@ struct SeriesView: View {
                     if let loadError {
                         Label(loadError, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
-                            .edgePadding()
+                            .padding(.horizontal, Metrics.edge)
                         Button("Try Again", systemImage: "arrow.clockwise") { Task { await load() } }
-                            .edgePadding()
+                            .padding(.horizontal, Metrics.edge)
                     }
-                    OverviewText(item: shown).edgePadding()
+                    OverviewText(item: shown).padding(.horizontal, Metrics.edge)
                     seasonPicker
                     episodeList
                     if let people = detail?.people { CastShelf(people: people) }
@@ -280,7 +280,7 @@ struct SeriesView: View {
                         .accessibilityIdentifier("season.\(season.name)")
                     }
                 }
-                .edgePadding()
+                .padding(.horizontal, Metrics.edge)
                 #if os(tvOS)
                 .padding(.vertical, 20)
                 #endif
@@ -305,7 +305,7 @@ struct SeriesView: View {
             #if os(tvOS)
             .scrollTargetLayout()
             #endif
-            .edgePadding()
+            .padding(.horizontal, Metrics.edge)
             #if os(tvOS)
             .focusSection()
             #endif

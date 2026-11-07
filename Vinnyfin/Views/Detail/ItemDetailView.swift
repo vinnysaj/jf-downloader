@@ -74,9 +74,9 @@ struct ItemDetailView: View {
                     if let loadError {
                         Label(loadError, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
-                            .edgePadding()
+                            .padding(.horizontal, Metrics.edge)
                     }
-                    OverviewText(item: shown).edgePadding()
+                    OverviewText(item: shown).padding(.horizontal, Metrics.edge)
                     if sources.count > 1 { versions }
                     if let people = detail?.people { CastShelf(people: people) }
                     if !similar.isEmpty {
@@ -157,7 +157,7 @@ struct ItemDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .edgePadding()
+        .padding(.horizontal, Metrics.edge)
         .frame(maxWidth: 900, alignment: .leading)
     }
 

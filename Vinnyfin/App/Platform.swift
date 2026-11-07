@@ -159,16 +159,24 @@ extension View {
 
 /// A vertical scroll view whose artwork and rows run the whole width: past Apple TV's overscan
 /// margin, and elsewhere under the bars at the sides, like iPad's sidebar and iPhone Duo's
-/// vertical bar, and up under the bars over the top when `underTopBars`. Text and controls keep
-/// clear of those bars with `edgePadding()` and `barInsets`, and the view itself takes the safe
-/// area's size, so what's laid over it stays clear of them too. Apple TV's overscan margin isn't a
-/// bar: there the content and what's laid over it keep to `Metrics.edge`.
+/// vertical bar, and up under the bars over the top when `underTopBars`. At the sides the view and
+/// its content keep to the safe area: what's laid over the view, and the content's text and
+/// controls, `Metrics.edge` in, stay clear of the bars, while artwork runs under them with
+/// `ignoresSafeArea(edges: .horizontal)` and rows of cards scroll under them on their own. Over the
+/// top, content keeps clear of the bars with `topBarsHeight`. Apple TV's overscan margin isn't a
+/// bar: there the content runs to the screen's edges, and it and what's laid over the view keep to
+/// `Metrics.edge`.
 struct EdgeToEdgeScrollView<Content: View>: View {
     /// Runs up under the bars over the top, as a page does whose artwork starts at the screen's top.
     var underTopBars = false
     @ViewBuilder let content: Content
     #if !os(tvOS)
-    @State private var insets = EdgeInsets()
+    /// How far the bars over the top reach, the only inset measured. Artwork can run up under
+    /// those bars only when the scroll view gives that part of the safe area up, and then nothing
+    /// inside it knows where they end. At the sides the safe area does the work instead: measuring
+    /// a side's inset and padding content by it hangs iPhone Duo's outer display, whose vertical
+    /// bar moves by a fraction of a point with the content beside it.
+    @State private var topBarsHeight: CGFloat = 0
     #endif
 
     var body: some View {
@@ -176,39 +184,26 @@ struct EdgeToEdgeScrollView<Content: View>: View {
         ScrollView { content }
             .ignoresSafeArea(edges: edges)
         #else
-        Color.clear.overlay {
-            ScrollView { content.environment(\.barInsets, insets) }
-                .ignoresSafeArea(edges: edges)
-                // Measured outside the edges given up: inside, they'd read as no bars at all.
-                .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: { insets = $0 }
-        }
+        ScrollView { content.environment(\.topBarsHeight, underTopBars ? topBarsHeight : 0) }
+            .ignoresSafeArea(edges: edges)
+            // Measured outside the edge given up: inside, the bars would read as none at all.
+            .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { topBarsHeight = $0 }
         #endif
     }
 
+    /// The parts of the safe area the scroll view gives up: Apple TV's overscan margin at the
+    /// sides, and the bars over the top when `underTopBars`.
     private var edges: Edge.Set {
+        #if os(tvOS)
         underTopBars ? [.horizontal, .top] : .horizontal
+        #else
+        underTopBars ? .top : []
+        #endif
     }
 }
 
 extension EnvironmentValues {
-    /// How far the bars around an `EdgeToEdgeScrollView` reach over its content: at the sides,
-    /// and over the top of a page that runs up under them.
-    @Entry var barInsets = EdgeInsets()
-}
-
-extension View {
-    /// The margin at the screen's sides, `Metrics.edge`, inside any bars there.
-    func edgePadding() -> some View {
-        modifier(EdgePadding())
-    }
-}
-
-private struct EdgePadding: ViewModifier {
-    @Environment(\.barInsets) private var insets
-
-    func body(content: Content) -> some View {
-        content
-            .padding(.leading, Metrics.edge + insets.leading)
-            .padding(.trailing, Metrics.edge + insets.trailing)
-    }
+    /// How far the bars over the top of an `EdgeToEdgeScrollView` that runs up under them reach
+    /// over its content; zero in one that doesn't.
+    @Entry var topBarsHeight: CGFloat = 0
 }

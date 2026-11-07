@@ -9,7 +9,7 @@ struct DetailHero<Actions: View>: View {
     @ViewBuilder let actions: () -> Actions
 
     @Environment(\.session) private var session
-    @Environment(\.barInsets) private var barInsets
+    @Environment(\.topBarsHeight) private var topBarsHeight
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloads
     #endif
@@ -27,16 +27,15 @@ struct DetailHero<Actions: View>: View {
             actions()
                 .padding(.top, 4)
         }
-        .edgePadding()
+        .padding(.horizontal, Metrics.edge)
         .padding(.bottom, 8)
         .frame(maxWidth: 900, alignment: .leading)
         // Taller than the artwork's height when the title and actions need it, so none of them
         // goes under the bars over the page's top.
-        .padding(.top, barInsets.top)
+        .padding(.top, topBarsHeight)
         .frame(maxWidth: .infinity, minHeight: heroHeight, alignment: .bottomLeading)
         .background {
             Artwork(url: backdropURL, aspectRatio: nil, cornerRadius: 0, placeholder: item.isSeries ? "tv" : "film")
-                .ignoresSafeArea(edges: .horizontal)
                 .clipped()
                 .overlay {
                     LinearGradient(
@@ -48,6 +47,9 @@ struct DetailHero<Actions: View>: View {
                         startPoint: .top, endPoint: .bottom
                     )
                 }
+                // Past the safe area at the sides, under any bars there: clipped and faded first,
+                // so that part is too.
+                .ignoresSafeArea(edges: .horizontal)
         }
     }
 
