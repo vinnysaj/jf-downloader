@@ -79,7 +79,10 @@ final class WidgetDownloads: DownloadsRunning {
     @ObservationIgnored private let downloads: DownloadManager
     @ObservationIgnored private let history: WatchHistory
     @ObservationIgnored private var written: DownloadsSnapshot?
-    @ObservationIgnored private var writtenAt = Date.distantPast
+    /// The last snapshot that couldn't be written; nil once one is.
+    @ObservationIgnored private var failed: DownloadsSnapshot?
+    /// When a snapshot was last written, or failed to be.
+    @ObservationIgnored private var attemptedAt = Date.distantPast
     @ObservationIgnored private var pending: DownloadsSnapshot?
     @ObservationIgnored private var scheduled: (date: Date, task: Task<Void, Never>)?
     @ObservationIgnored private var appObservations: [NotificationCenter.ObservationToken] = []
@@ -119,7 +122,7 @@ final class WidgetDownloads: DownloadsRunning {
 
     /// Times the next write for what's pending, sooner than one already timed when it has to be.
     private func schedule() {
-        guard let pending, let date = pending.writeDate(after: written, writtenAt: writtenAt) else { return }
+        guard let pending, let date = pending.writeDate(after: written, failed: failed, attemptedAt: attemptedAt) else { return }
         if let scheduled, scheduled.date <= date { return }
         scheduled?.task.cancel()
         scheduled = (date, Task { [weak self] in
@@ -132,10 +135,12 @@ final class WidgetDownloads: DownloadsRunning {
     }
 
     private func writePending() async {
-        guard let snapshot = pending, snapshot.writeDate(after: written, writtenAt: writtenAt) != nil else { return }
+        guard let snapshot = pending, snapshot.writeDate(after: written, failed: failed, attemptedAt: attemptedAt) != nil else { return }
         scheduled?.task.cancel()
         scheduled = nil
         guard let folder = DownloadsSnapshot.folder else {
+            failed = snapshot
+            attemptedAt = .now
             problem = "The Downloads widget can't be kept up to date: this copy of vinnyfin can't reach its app group."
             return
         }
@@ -151,12 +156,14 @@ final class WidgetDownloads: DownloadsRunning {
                 $0.isRunning != saved.isRunning || $0.unfinishedCount != saved.unfinishedCount || $0.pausedCount != saved.pausedCount
             } ?? true
             written = snapshot
-            writtenAt = .now
+            failed = nil
             WidgetCenter.shared.reloadTimelines(ofKind: DownloadsSnapshot.widgetKind)
             if controlChanged { ControlCenter.shared.reloadControls(ofKind: DownloadsSnapshot.controlKind) }
         } catch {
+            failed = snapshot
             problem = "Couldn't update the Downloads widget: \(error.localizedDescription)"
         }
+        attemptedAt = .now
         // What changed while this was written.
         schedule()
     }

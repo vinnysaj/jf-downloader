@@ -332,23 +332,45 @@ struct DownloadsSnapshotTests {
         #expect(!none.isRunning)
     }
 
-    @Test func reloadsSoonForChangesAndOnceAMinuteForProgress() {
-        let jobs = [job("a", .active, minutesIn: 0)]
-        func snapshot(received: Int64, status: DownloadJob.Status = .active) -> DownloadsSnapshot {
-            var changed = jobs
-            changed[0].status = status
-            return DownloadsSnapshot(jobs: changed, receivedBytes: [changed[0].id: received], downloadingJobId: changed[0].id,
-                                     isHeldForPlayback: false, isNetworkReachable: true, isWatched: { _ in false },
-                                     now: Self.start.addingTimeInterval(Double(received)))
-        }
-        let written = snapshot(received: 100)
+    /// The snapshot of `job` alone with `received` bytes in, taken that many seconds after the start.
+    private func snapshot(of job: DownloadJob, received: Int64, status: DownloadJob.Status = .active) -> DownloadsSnapshot {
+        var job = job
+        job.status = status
+        return DownloadsSnapshot(jobs: [job], receivedBytes: [job.id: received], downloadingJobId: job.id,
+                                 isHeldForPlayback: false, isNetworkReachable: true, isWatched: { _ in false },
+                                 now: Self.start.addingTimeInterval(Double(received)))
+    }
+
+    @Test func reloadsSoonForChangesAndOnceAMinuteForProgress() throws {
+        let download = job("a", .active, minutesIn: 0)
+        let written = snapshot(of: download, received: 100)
         let at = Self.start
-        #expect(snapshot(received: 100).writeDate(after: nil, writtenAt: at) == .distantPast)
+        #expect(try #require(snapshot(of: download, received: 100).writeDate(after: nil, failed: nil, attemptedAt: .distantPast)) < .now)
         // Only the time it was taken differs.
-        #expect(snapshot(received: 100).writeDate(after: written, writtenAt: at) == nil)
-        #expect(snapshot(received: 200).writeDate(after: written, writtenAt: at)
+        #expect(snapshot(of: download, received: 100).writeDate(after: written, failed: nil, attemptedAt: at) == nil)
+        #expect(snapshot(of: download, received: 200).writeDate(after: written, failed: nil, attemptedAt: at)
             == at.addingTimeInterval(DownloadsSnapshot.progressReloadInterval))
-        #expect(snapshot(received: 100, status: .paused).writeDate(after: written, writtenAt: at)
+        #expect(snapshot(of: download, received: 100, status: .paused).writeDate(after: written, failed: nil, attemptedAt: at)
+            == at.addingTimeInterval(DownloadsSnapshot.changeReloadInterval))
+    }
+
+    /// A snapshot that couldn't be written isn't tried again until the downloads change, and then
+    /// no sooner after the failure than after a write, so a write that keeps failing, as one to an
+    /// app group the signature doesn't allow does, isn't retried over and over.
+    @Test func aSnapshotThatCouldntBeWrittenWaitsForTheDownloadsToChange() {
+        let download = job("a", .active, minutesIn: 0)
+        let failed = snapshot(of: download, received: 100)
+        let at = Self.start
+        // Never written: the same downloads taken again wait, and a change is tried soon after the failure.
+        #expect(snapshot(of: download, received: 100).writeDate(after: nil, failed: failed, attemptedAt: at) == nil)
+        #expect(snapshot(of: download, received: 200).writeDate(after: nil, failed: failed, attemptedAt: at)
+            == at.addingTimeInterval(DownloadsSnapshot.changeReloadInterval))
+        // Written before: the same wait, and the reload intervals count from the failure.
+        let written = snapshot(of: download, received: 50)
+        #expect(snapshot(of: download, received: 100).writeDate(after: written, failed: failed, attemptedAt: at) == nil)
+        #expect(snapshot(of: download, received: 200).writeDate(after: written, failed: failed, attemptedAt: at)
+            == at.addingTimeInterval(DownloadsSnapshot.progressReloadInterval))
+        #expect(snapshot(of: download, received: 100, status: .paused).writeDate(after: written, failed: failed, attemptedAt: at)
             == at.addingTimeInterval(DownloadsSnapshot.changeReloadInterval))
     }
 

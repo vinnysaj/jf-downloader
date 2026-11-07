@@ -168,16 +168,24 @@ nonisolated struct DownloadsSnapshot: Codable, Equatable, Sendable {
     static let changeReloadInterval: TimeInterval = 5
     static let progressReloadInterval: TimeInterval = 60
 
-    /// When to write this snapshot and reload the widget, given the one last written at
-    /// `writtenAt`: soon for a change in more than progress, a minute after the last for
-    /// progress alone, and never when nothing changed.
-    func writeDate(after written: DownloadsSnapshot?, writtenAt: Date) -> Date? {
-        guard let written else { return .distantPast }
-        var unstamped = self
-        unstamped.updatedAt = written.updatedAt
-        if unstamped == written { return nil }
+    /// When to write this snapshot and reload the widget, given the one last `written` and the
+    /// last attempt to write one, at `attemptedAt`: soon after that attempt for a change in more
+    /// than progress, a minute after it for progress alone, and never when nothing changed. One
+    /// that `failed` to be written waits for the downloads to change before it's tried again, so
+    /// a write that keeps failing is tried at most once per change.
+    func writeDate(after written: DownloadsSnapshot?, failed: DownloadsSnapshot?, attemptedAt: Date) -> Date? {
+        if let written, isSame(as: written) { return nil }
+        if let failed, isSame(as: failed) { return nil }
+        guard let written else { return attemptedAt.addingTimeInterval(Self.changeReloadInterval) }
         let interval = differsInMoreThanProgress(from: written) ? Self.changeReloadInterval : Self.progressReloadInterval
-        return writtenAt.addingTimeInterval(interval)
+        return attemptedAt.addingTimeInterval(interval)
+    }
+
+    /// Whether it's `other` taken at another time.
+    private func isSame(as other: DownloadsSnapshot) -> Bool {
+        var unstamped = self
+        unstamped.updatedAt = other.updatedAt
+        return unstamped == other
     }
 }
 #endif

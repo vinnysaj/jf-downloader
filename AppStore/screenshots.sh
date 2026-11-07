@@ -134,13 +134,15 @@ prepare() {
 }
 
 built=()
-# Builds the app and its UI tests for the platform `destination` is on, once.
+# Builds the app and its UI tests for the platform `destination` is on, once. The Mac's run
+# signed, with the profiles Xcode makes for the team signed in to it, and remakes when the
+# app's capabilities change.
 build_for() {
   local platform=$1 destination=$2
   [[ " ${built[*]-} " == *" $platform "* ]] && return
   say "Building for $platform"
   xcodebuild build-for-testing -project "$root/Vinnyfin.xcodeproj" -scheme Vinnyfin -destination "$destination" \
-    -derivedDataPath "$build" -quiet
+    -derivedDataPath "$build" -allowProvisioningUpdates -quiet
   built+=("$platform")
 }
 
