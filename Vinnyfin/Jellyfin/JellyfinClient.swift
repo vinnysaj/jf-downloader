@@ -1,8 +1,6 @@
 import Foundation
 
 nonisolated enum JellyfinError: LocalizedError {
-    /// The message says what's wrong with the address.
-    case invalidServerAddress(String)
     case notJellyfin(URL)
     case http(status: Int, body: String)
     case invalidCredentials
@@ -10,8 +8,6 @@ nonisolated enum JellyfinError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidServerAddress(let message):
-            message
         case .notJellyfin(let url):
             "No Jellyfin server answered at \(url.absoluteString)."
         case .http(let status, let body):

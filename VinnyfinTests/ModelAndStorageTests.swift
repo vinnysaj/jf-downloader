@@ -95,15 +95,15 @@ struct AddressTests {
         #expect(try ServerAddress(scheme: .https, host: "jf.example.com").url.get().absoluteString == "https://jf.example.com")
         #expect(try ServerAddress(scheme: .https, host: "jf.example.com", port: "8920", path: "jellyfin/").url.get().absoluteString == "https://jf.example.com:8920/jellyfin")
         #expect(try ServerAddress(scheme: .http, host: "nas.local", port: "80").url.get().absoluteString == "http://nas.local")
-        #expect(throws: JellyfinError.self) { try ServerAddress(host: "").url.get() }
-        #expect(throws: JellyfinError.self) { try ServerAddress(host: "nas.local", port: "99999").url.get() }
-        #expect(throws: JellyfinError.self) { try ServerAddress(host: "nas local").url.get() }
+        #expect(throws: ServerAddress.Problem.missingHost) { try ServerAddress(host: "").url.get() }
+        #expect(throws: ServerAddress.Problem.invalidPort) { try ServerAddress(host: "nas.local", port: "99999").url.get() }
+        #expect(throws: ServerAddress.Problem.invalidHost("nas local")) { try ServerAddress(host: "nas local").url.get() }
     }
 
     @Test func splitsPastedAddresses() {
         #expect(ServerAddress(parsing: "https://jf.example.com:8920/jellyfin/") == ServerAddress(scheme: .https, host: "jf.example.com", port: "8920", path: "/jellyfin"))
-        #expect(ServerAddress(parsing: "10.0.0.5:8096") == ServerAddress(scheme: .http, host: "10.0.0.5", port: "8096"))
-        #expect(ServerAddress(parsing: "nas.local/jf", defaultScheme: .https) == ServerAddress(scheme: .https, host: "nas.local", path: "/jf"))
+        #expect(ServerAddress(parsing: "10.0.0.5:8096") == ServerAddress(host: "10.0.0.5", port: "8096"))
+        #expect(ServerAddress(parsing: "nas.local/jf") == ServerAddress(host: "nas.local", path: "/jf"))
         #expect(ServerAddress(parsing: "ftp://nope") == nil)
         var typed = ServerAddress(scheme: .https, host: "nas.local:8920", path: "/jellyfin")
         typed.splitHost()
@@ -111,6 +111,90 @@ struct AddressTests {
         #expect(ServerAddress.looksLikeFullAddress("nas.local") == false)
         #expect(ServerAddress.looksLikeFullAddress("nas.local:8096"))
         #expect(ServerAddress.looksLikeFullAddress("https://nas.local"))
+    }
+
+    @Test func aHostAloneFallsBackToTheOtherSchemesDefaultPort() {
+        #expect(ServerAddress(host: "nas.local", path: "/jf").fallback == ServerAddress(scheme: .https, host: "nas.local", path: "/jf"))
+        var typed = ServerAddress(host: "nas.local/jellyfin")
+        typed.splitHost()
+        #expect(typed.fallback == ServerAddress(scheme: .https, host: "nas.local", path: "/jellyfin"))
+        // Nothing to fall back to once the address gives a port or a scheme, however it gives it.
+        #expect(ServerAddress(host: "nas.local", port: "8096").fallback == nil)
+        #expect(ServerAddress(scheme: .http, host: "nas.local").fallback == nil)
+        var picked = ServerAddress(host: "nas.local")
+        picked.choose(.http)
+        #expect(picked.fallback == nil)
+        var withScheme = ServerAddress(host: "http://nas.local")
+        withScheme.splitHost()
+        #expect(withScheme.fallback == nil)
+        #expect(ServerAddress(savedURL: URL(string: "https://jf.example.com")!)?.fallback == nil)
+    }
+
+    @Test func triesTheFallbackWhenNothingAnswersAndKeepsWhereItAnswered() async throws {
+        var asked: [String] = []
+        let found = try await ServerAddress(host: "nas.local").firstAnswer { url in
+            asked.append(url.absoluteString)
+            guard url.scheme == "https" else { throw URLError(.cannotConnectToHost) }
+            return "Jellyfin"
+        }
+        #expect(asked == ["http://nas.local:8096", "https://nas.local"])
+        #expect(found.address == ServerAddress(scheme: .https, host: "nas.local"))
+        #expect(found.answer == "Jellyfin")
+    }
+
+    @Test func asksOnceWhereTheAddressAnswers() async throws {
+        var asked: [String] = []
+        let found = try await ServerAddress(host: "nas.local").firstAnswer { url in
+            asked.append(url.absoluteString)
+            return url
+        }
+        #expect(asked == ["http://nas.local:8096"])
+        #expect(found.address == ServerAddress(host: "nas.local"))
+    }
+
+    @Test func aServerThatAnswersWithAnErrorHasAnswered() async {
+        var asked = 0
+        await #expect(throws: JellyfinError.self) {
+            try await ServerAddress(host: "nas.local").firstAnswer { url -> String in
+                asked += 1
+                throw JellyfinError.notJellyfin(url)
+            }
+        }
+        #expect(asked == 1)
+    }
+
+    @Test func failsWithTheAddresssOwnErrorWhenNeitherAnswers() async {
+        await #expect(throws: URLError(.cannotConnectToHost)) {
+            try await ServerAddress(host: "nas.local").firstAnswer { url -> String in
+                throw url.scheme == "http" ? URLError(.cannotConnectToHost) : URLError(.timedOut)
+            }
+        }
+        // The fallback answering as something other than Jellyfin doesn't count either.
+        await #expect(throws: URLError(.cannotConnectToHost)) {
+            try await ServerAddress(host: "nas.local").firstAnswer { url -> String in
+                guard url.scheme == "https" else { throw URLError(.cannotConnectToHost) }
+                throw JellyfinError.notJellyfin(url)
+            }
+        }
+    }
+
+    @Test func triesNothingElseForAnAddressThatGivesItsPortOrScheme() async {
+        for address in [ServerAddress(host: "nas.local", port: "8096"), ServerAddress(scheme: .http, host: "nas.local")] {
+            var asked = 0
+            await #expect(throws: URLError(.cannotConnectToHost)) {
+                try await address.firstAnswer { _ -> String in
+                    asked += 1
+                    throw URLError(.cannotConnectToHost)
+                }
+            }
+            #expect(asked == 1)
+        }
+    }
+
+    @Test func doesntAskAtAnAddressThatIsntOne() async {
+        await #expect(throws: ServerAddress.Problem.invalidPort) {
+            try await ServerAddress(host: "nas.local", port: "0").firstAnswer { $0 }
+        }
     }
 
     @Test func buildsStaticStreamURLs() {

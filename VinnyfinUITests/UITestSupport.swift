@@ -24,7 +24,8 @@ func requestScreenshot(_ name: String) async throws {
 extension XCTestCase {
     #if os(tvOS)
     /// Signs in to `server` as `username`, a user without a password, with the remote: down
-    /// through the form, typing into each field the keyboard opens for.
+    /// through the form, typing into each field the keyboard opens for. The account comes first,
+    /// then the server, unless the last sign-in picked it.
     @MainActor
     func signInIfNeeded(_ app: XCUIApplication, server: String, username: String) {
         let connect = app.buttons["welcome.connect"]
@@ -32,14 +33,30 @@ extension XCTestCase {
             focus(connect, in: app)
             XCUIRemote.shared.press(.select)
         }
+        let usernameField = app.textFields["login.username"]
+        guard usernameField.waitForExistence(timeout: 5) else { return }
+        enter(username, into: usernameField, in: app)
+        let change = app.buttons["login.changeServer"]
+        let changing = change.exists && !isAddress(change.value as? String, of: server)
+        if changing {
+            focus(change, in: app)
+        } else {
+            let submit = app.buttons["login.submit"]
+            XCTAssertTrue(submit.wait(for: \.isEnabled, toEqual: true, timeout: uiTimeout), "Sign In never became enabled")
+            focus(submit, in: app)
+        }
+        XCUIRemote.shared.press(.select)
         let host = app.textFields["login.host"]
-        guard host.waitForExistence(timeout: 5) else { return }
+        guard waitForServerStep(host, orSignInPast: usernameField) else { return }
+        if changing {
+            // The other server's port and path would stay, as an address without its own keeps them.
+            enter("", into: app.textFields["login.port"], in: app)
+            enter("", into: app.textFields["login.path"], in: app)
+        }
         // A full address in the host field is split into protocol, host, port and path.
         enter(server, into: host, in: app)
-        enter(username, into: app.textFields["login.username"], in: app)
-        let submit = app.buttons["login.submit"]
-        XCTAssertTrue(submit.wait(for: \.isEnabled, toEqual: true, timeout: uiTimeout), "Sign In never became enabled")
-        focus(submit, in: app)
+        let signIn = app.buttons["login.connect"]
+        focus(signIn, in: app)
         XCUIRemote.shared.press(.select)
     }
 
@@ -84,49 +101,121 @@ extension XCTestCase {
         return ["-lastServer", "<\(archived.map { String(format: "%02x", $0) }.joined())>", "-lastUserName", username]
     }
 
-    /// Signs in with the form as it starts, from the last sign-in or `signInArguments`. The build
-    /// must be signed, even ad hoc, for the Keychain to take the sign-in.
+    /// Signs in with the form as it starts, from the last sign-in or `signInArguments`: its server
+    /// picked and its user filled in, so Sign In signs straight in. The build must be signed, even
+    /// ad hoc, for the Keychain to take the sign-in.
     @MainActor
     func signInIfNeeded(_ app: XCUIApplication) {
         let connect = app.buttons["welcome.connect"]
         guard connect.waitForExistence(timeout: 5) else { return }
         connect.tap()
-        XCTAssertTrue(app.textFields["login.host"].waitForExistence(timeout: uiTimeout), "The sign-in form never opened")
-        // Below the servers signed in to on other devices the form's list makes the button only
-        // once it scrolls into view. The form is a window of its own, which the swipe has to name.
+        XCTAssertTrue(app.textFields["login.username"].waitForExistence(timeout: uiTimeout), "The sign-in form never opened")
+        XCTAssertTrue(app.buttons["login.changeServer"].exists, "The sign-in form didn't start from the last sign-in's server")
+        // The form's list makes a button only once it scrolls into view, and the form is a window
+        // of its own, which the swipe has to name.
         let submit = app.buttons["login.submit"]
         for _ in 0..<4 where !submit.exists { app.collectionViews.firstMatch.swipeUp() }
         tap(submit)
     }
     #else
     /// Signs in to `server` as `username`, a user without a password: typing a password would
-    /// raise the system's Save Password sheet.
+    /// raise the system's Save Password sheet. The account comes first, then the server, unless
+    /// the last sign-in picked it.
     @MainActor
     func signInIfNeeded(_ app: XCUIApplication, server: String, username: String) {
         let connect = app.buttons["welcome.connect"]
         if connect.waitForExistence(timeout: 5) { connect.tap() }
+        let usernameField = app.textFields["login.username"]
+        guard usernameField.waitForExistence(timeout: 5) else { return }
+        // The form starts from the last sign-in's user and server. Return walks the fields:
+        // username, password, then signs in to the server picked, or asks for one.
+        usernameField.tap()
+        usernameField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20) + username + "\n")
+        let change = app.buttons["login.changeServer"]
+        let changing = change.exists && !isAddress(change.value as? String, of: server)
+        if changing {
+            tap(change)
+        } else {
+            type("\n", into: app.secureTextFields["login.password"])
+        }
         let host = app.textFields["login.host"]
-        guard host.waitForExistence(timeout: 5) else { return }
+        guard waitForServerStep(host, orSignInPast: usernameField) else { return }
+        if changing {
+            // The other server's port and path would stay, as an address without its own keeps them.
+            for field in [app.textFields["login.path"], app.textFields["login.port"]] {
+                field.tap()
+                field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20))
+            }
+        }
+        // A full address in the host field is split into protocol, host, port and path, and Return
+        // walks the fields: host, port, path, then signs in.
         host.tap()
-        // The form starts from the last server signed in to. A full address in the host field
-        // is split into protocol, host, port and path, and Return walks the fields: host, port,
-        // path, username, password, then signs in.
         host.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 40) + server + "\n")
         type("\n", into: app.textFields["login.port"])
         type("\n", into: app.textFields["login.path"])
-        type(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20) + username + "\n", into: app.textFields["login.username"])
-        type("\n", into: app.secureTextFields["login.password"])
     }
 
     /// Types once `field` has the keyboard focus that Return moved to it.
     @MainActor
     func type(_ text: String, into field: XCUIElement) {
-        let focused = NSPredicate(format: "hasKeyboardFocus == true")
-        let expectation = XCTNSPredicateExpectation(predicate: focused, object: field)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: uiTimeout), .completed, "\(field) never took focus")
+        XCTAssertTrue(waitForKeyboardFocus(field), "\(field) never took focus")
         field.typeText(text)
     }
+
+    /// Whether `element` takes the keyboard focus in time.
+    @MainActor
+    func waitForKeyboardFocus(_ element: XCUIElement) -> Bool {
+        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: element)
+        return XCTWaiter.wait(for: [focused], timeout: uiTimeout) == .completed
+    }
     #endif
+
+    /// Signs out in Settings: a sheet from Home on iPhone, iPad and Vision Pro, a window of its
+    /// own on the Mac, and a tab of the sidebar on Apple TV.
+    @MainActor
+    func signOut(_ app: XCUIApplication) {
+        let confirm = app.buttons.matching(NSPredicate(format: "label == 'Sign Out' AND identifier != 'settings.signOut'")).firstMatch
+        #if os(tvOS)
+        // Left into the sidebar, no further: a press left there closes it. Focus may still be on
+        // its way there, as it is at launch.
+        let sidebar = app.collectionViews["Sidebar"]
+        let focusedRow = sidebar.cells.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        for _ in 0..<12 where !focusedRow.waitForExistence(timeout: 1) { XCUIRemote.shared.press(.left) }
+        focus(sidebar.buttons["Settings"], in: app)
+        XCUIRemote.shared.press(.select)
+        focus(app.buttons["settings.signOut"], in: app, moving: [.right, .down])
+        XCUIRemote.shared.press(.select)
+        // The dialog's buttons are side by side, Cancel first.
+        focus(confirm, in: app, moving: [.right, .left])
+        XCUIRemote.shared.press(.select)
+        #elseif os(macOS)
+        app.typeKey(",", modifierFlags: .command)
+        tap(app.buttons["settings.signOut"])
+        tap(confirm)
+        app.typeKey("w", modifierFlags: .command)
+        #else
+        tap(app.buttons["home.settings"])
+        tap(app.buttons["settings.signOut"])
+        tap(confirm)
+        #endif
+    }
+
+    #if !os(visionOS)
+    /// Waits for the sign-in screen to ask for the server's address, or to sign in to the server
+    /// it picked, which takes it and the account step away. Whether it asked.
+    @MainActor
+    private func waitForServerStep(_ host: XCUIElement, orSignInPast usernameField: XCUIElement) -> Bool {
+        let deadline = Date.now.addingTimeInterval(uiTimeout)
+        while !host.waitForExistence(timeout: 1), usernameField.exists, Date.now < deadline {}
+        return host.exists
+    }
+    #endif
+
+    /// Whether `address`, a server's as the sign-in screen gives it, is `server`'s.
+    func isAddress(_ address: String?, of server: String) -> Bool {
+        func normalized(_ text: String) -> String { text.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+        return address.map(normalized) == normalized(server)
+    }
 
     #if !os(tvOS)
     /// Taps once the element is there and enabled; buttons wait on loading, and a tap before

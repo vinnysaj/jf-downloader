@@ -104,36 +104,34 @@ final class ContinuityUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         signInIfNeeded(app, server: server, username: "viewer")
-        tap(app.buttons["home.settings"])
-        tap(app.buttons["settings.signOut"])
-        tap(app.buttons.matching(NSPredicate(format: "label == 'Sign Out' AND identifier != 'settings.signOut'")).firstMatch)
+        signOut(app)
 
         tap(app.buttons["welcome.connect"])
+        // The account step starts from the last sign-in: its user, and its server picked.
+        let username = app.textFields["login.username"]
+        XCTAssertTrue(username.waitForExistence(timeout: timeout), "The sign-in screen never opened")
+        XCTAssertEqual(username.value as? String, "viewer")
+        let picked = app.buttons["login.changeServer"]
+        XCTAssertTrue(picked.exists, "The sign-in screen didn't pick the server signed in to last")
+        XCTAssertTrue(isAddress(picked.value as? String, of: server), "The sign-in screen picked \(String(describing: picked.value))")
         // Among any other servers signed in to on this simulator.
         let known = app.buttons.matching(NSPredicate(format: "identifier == 'login.knownServer' AND label ENDSWITH 'as viewer'")).firstMatch
         XCTAssertTrue(known.waitForExistence(timeout: timeout),
                       "The sign-in screen doesn't offer the server; it offers \(app.buttons.matching(identifier: "login.knownServer").allElementsBoundByIndex.map(\.label))")
         keep("Sign-in offering the server")
 
-        // Clear the form, so the tap is what fills it in.
-        let host = app.textFields["login.host"]
-        host.tap()
-        host.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 40))
+        // Clear the user, so the tap is what fills it in.
+        username.tap()
+        username.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20))
         known.tap()
         XCTAssertTrue(waitForKeyboardFocus(app.secureTextFields["login.password"]), "The password wasn't next")
-        XCTAssertEqual(app.textFields["login.username"].value as? String, "viewer")
-        XCTAssertEqual(host.value as? String, URL(string: server)?.host())
+        XCTAssertEqual(username.value as? String, "viewer")
+        XCTAssertTrue(isAddress(picked.value as? String, of: server), "Choosing the server picked \(String(describing: picked.value))")
         keep("Sign-in filled in from the server")
 
-        // Return on the password signs in; the Sign In button is below the keyboard.
+        // Return on the password signs in to the server picked.
         app.typeText("\n")
         XCTAssertTrue(app.buttons["home.settings"].waitForExistence(timeout: timeout), "Signing in again didn't open Home")
-    }
-
-    @MainActor
-    private func waitForKeyboardFocus(_ element: XCUIElement) -> Bool {
-        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: element)
-        return XCTWaiter.wait(for: [focused], timeout: timeout) == .completed
     }
 
     /// "1:05 of 10:00" as 65.
