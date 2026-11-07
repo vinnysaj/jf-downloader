@@ -88,7 +88,7 @@ struct HomeView: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 16))
-        .edgePadding()
+        .padding(.horizontal, Metrics.edge)
     }
 
     private func offlineNotice(_ message: String) -> some View {
@@ -107,7 +107,7 @@ struct HomeView: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 16))
-        .edgePadding()
+        .padding(.horizontal, Metrics.edge)
     }
 
     private func load(reshuffling: Bool = false) async {
@@ -172,7 +172,7 @@ private struct HomeRowView: View {
             Button("Try Again") { feed.retry(row.id) }
                 .buttonStyle(.platformGlass)
         }
-        .edgePadding()
+        .padding(.horizontal, Metrics.edge)
         #if os(tvOS)
         .focusSection()
         #endif
@@ -202,8 +202,6 @@ private struct HeroBanner: View {
             Artwork(url: session?.backdrop(item), aspectRatio: nil, cornerRadius: 0)
                 .frame(height: height)
                 .frame(maxWidth: .infinity)
-                // Edge to edge, past the TV's overscan margins and the iPhone's landscape insets.
-                .ignoresSafeArea(edges: .horizontal)
                 .clipped()
                 .id(item.id)
                 .transition(.opacity)
@@ -214,6 +212,9 @@ private struct HeroBanner: View {
                         .init(color: Color.pageBackground, location: 1),
                     ], startPoint: .top, endPoint: .bottom)
                 }
+                // Past the safe area at the sides, under any bars there: clipped and faded first,
+                // so that part is too.
+                .ignoresSafeArea(edges: .horizontal)
             VStack(alignment: .leading, spacing: 10) {
                 if let logo = session?.logo(item) {
                     Artwork(url: logo, aspectRatio: nil, cornerRadius: 0, placeholder: "", contentMode: .fit)
@@ -256,7 +257,7 @@ private struct HeroBanner: View {
                     .accessibilityHidden(true)
                 }
             }
-            .edgePadding()
+            .padding(.horizontal, Metrics.edge)
             .padding(.bottom, 6)
         }
         .animation(.easeInOut(duration: 0.6), value: index)

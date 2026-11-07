@@ -112,7 +112,7 @@ struct LibraryGridView: View {
                     grid(items, count: count)
                 }
             }
-            .edgePadding()
+            .padding(.horizontal, Metrics.edge)
             .padding(Self.indexEdge, showsIndex ? indexWidth + indexInset : 0)
             .padding(.bottom, Metrics.edge)
         }
@@ -185,7 +185,7 @@ struct LibraryGridView: View {
             }
             .padding(12)
             .platformGlass(in: .capsule)
-            .edgePadding()
+            .padding(.horizontal, Metrics.edge)
             .padding(.bottom, Metrics.edge)
         }
     }
