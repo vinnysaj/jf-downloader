@@ -20,6 +20,15 @@ final class AccountStore {
         var serverTitle: String { serverName ?? serverURL.host() ?? "the server" }
     }
 
+    /// A Jellyfin server that answered at an address, before anyone signs in to it.
+    nonisolated struct Server: Sendable {
+        var url: URL
+        var info: PublicSystemInfo
+
+        /// What to call the server in a sentence.
+        var title: String { info.serverName ?? url.host() ?? "the server" }
+    }
+
     private(set) var account: Account?
     private(set) var client: JellyfinClient?
     /// Why the sign-in saved here can't be used: its token isn't in the Keychain, or the Keychain
@@ -112,49 +121,50 @@ final class AccountStore {
         return id
     }
 
-    /// The server and user of the last sign-in, to fill in the form after signing out.
+    /// The server and user of the last sign-in, which the sign-in screen starts from after signing out.
     var lastServerURL: URL? { defaults.url(forKey: Self.lastServerKey) }
     var lastUserName: String? { defaults.string(forKey: Self.lastUserNameKey) }
 
-    /// Checks that a Jellyfin server answers at the address, without signing in.
-    func probe(_ serverURL: URL) async throws -> PublicSystemInfo {
-        try await JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName).publicSystemInfo()
+    /// The Jellyfin server at the address, found without signing in.
+    func findServer(at serverURL: URL) async throws -> Server {
+        Server(url: serverURL, info: try await publicClient(for: serverURL).publicSystemInfo())
     }
 
-    func signIn(serverURL: URL, username: String, password: String) async throws {
-        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName)
-        let info = try await client.publicSystemInfo()
+    func signIn(to server: Server, username: String, password: String) async throws {
+        let client = publicClient(for: server.url)
         let result = try await client.authenticate(username: username, password: password)
-        try adopt(result, serverURL: serverURL, info: info, client: client)
-        defaults.set(username, forKey: Self.lastUserNameKey)
+        try adopt(result, on: server, client: client)
     }
 
     /// Starts a Quick Connect sign-in: the code is entered in an app that is already signed in.
-    func startQuickConnect(serverURL: URL) async throws -> QuickConnectState {
-        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName)
+    func startQuickConnect(on server: Server) async throws -> QuickConnectState {
+        let client = publicClient(for: server.url)
         guard try await client.quickConnectEnabled() else { throw JellyfinError.quickConnectDisabled }
         return try await client.initiateQuickConnect()
     }
 
     /// Waits for the code to be approved, then signs in. Ends when the calling task is cancelled.
-    func finishQuickConnect(serverURL: URL, secret: String) async throws {
-        let client = JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName)
-        let info = try await client.publicSystemInfo()
+    func finishQuickConnect(on server: Server, secret: String) async throws {
+        let client = publicClient(for: server.url)
         while try await !client.quickConnectState(secret: secret).authenticated {
             try await Task.sleep(for: .seconds(2))
         }
         let result = try await client.authenticate(quickConnectSecret: secret)
-        try adopt(result, serverURL: serverURL, info: info, client: client)
-        defaults.set(result.user.name, forKey: Self.lastUserNameKey)
+        try adopt(result, on: server, client: client)
     }
 
-    private func adopt(_ result: AuthenticationResult, serverURL: URL, info: PublicSystemInfo, client: JellyfinClient) throws {
+    /// A client of the server for its public calls and for signing in, with no one signed in yet.
+    private func publicClient(for serverURL: URL) -> JellyfinClient {
+        JellyfinClient(serverURL: serverURL, deviceId: deviceId, deviceName: Device.ownName)
+    }
+
+    private func adopt(_ result: AuthenticationResult, on server: Server, client: JellyfinClient) throws {
         var client = client
         client.token = result.accessToken
         let account = Account(
-            serverURL: serverURL,
+            serverURL: server.url,
             serverId: result.serverId,
-            serverName: info.serverName,
+            serverName: server.info.serverName,
             userId: result.user.id,
             userName: result.user.name
         )
@@ -164,7 +174,8 @@ final class AccountStore {
         try Keychain.deleteAppToken(for: account.serverId)
         #endif
         defaults.set(try JSONEncoder().encode(account), forKey: Self.accountKey)
-        defaults.set(serverURL, forKey: Self.lastServerKey)
+        defaults.set(server.url, forKey: Self.lastServerKey)
+        defaults.set(account.userName, forKey: Self.lastUserNameKey)
         self.account = account
         self.client = client
         savedSignInProblem = nil
