@@ -8,10 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		66A5C0E9CA6212B264B3639A /* TopShelf.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 652F552FF841B2312D917CF4 /* TopShelf.appex */; platformFilters = (tvos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		D0A1D0A1D0A1D0A1D0A10003 /* DownloadsWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D0A1D0A1D0A1D0A1D0A10002 /* DownloadsWidget.appex */; platformFilters = (ios, macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A1E7E1A1E7E1A1E7E1A1E706 /* AetherEngine in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E703 /* AetherEngine */; };
 		A1E7E1A1E7E1A1E7E1A1E707 /* Nuke in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E704 /* Nuke */; };
 		A1E7E1A1E7E1A1E7E1A1E708 /* NukeUI in Frameworks */ = {isa = PBXBuildFile; productRef = A1E7E1A1E7E1A1E7E1A1E705 /* NukeUI */; };
+		D0A1D0A1D0A1D0A1D0A10003 /* DownloadsWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D0A1D0A1D0A1D0A1D0A10002 /* DownloadsWidget.appex */; platformFilters = (ios, macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -61,10 +61,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		0696FC3419A958EA70DD02E9 /* VinnyfinUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VinnyfinUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0696FC3419A958EA70DD02E9 /* VinnyfinUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VinnyfinUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5D10A52A987F8DDDC248D2A2 /* vinnyfin.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = vinnyfin.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		652F552FF841B2312D917CF4 /* TopShelf.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TopShelf.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		7BADCD9C76DAEAAB4CF6A6D5 /* VinnyfinTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VinnyfinTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7BADCD9C76DAEAAB4CF6A6D5 /* VinnyfinTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VinnyfinTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D0A1D0A1D0A1D0A1D0A10002 /* DownloadsWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DownloadsWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -148,20 +148,20 @@
 			path = VinnyfinTests;
 			sourceTree = "<group>";
 		};
-		DEDCA089B5565C25617C4919 /* TopShelf */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				83E5FB91468D7069BC86970A /* Exceptions for "TopShelf" folder in "TopShelf" target */,
-			);
-			path = TopShelf;
-			sourceTree = "<group>";
-		};
 		D0A1D0A1D0A1D0A1D0A10006 /* DownloadsWidget */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				D0A1D0A1D0A1D0A1D0A10007 /* Exceptions for "DownloadsWidget" folder in "DownloadsWidget" target */,
 			);
 			path = DownloadsWidget;
+			sourceTree = "<group>";
+		};
+		DEDCA089B5565C25617C4919 /* TopShelf */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				83E5FB91468D7069BC86970A /* Exceptions for "TopShelf" folder in "TopShelf" target */,
+			);
+			path = TopShelf;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -271,6 +271,28 @@
 			productReference = 5D10A52A987F8DDDC248D2A2 /* vinnyfin.app */;
 			productType = "com.apple.product-type.application";
 		};
+		C15E999431C3000AC0B371D7 /* VinnyfinUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF7C5472D8884440F1BED195 /* Build configuration list for PBXNativeTarget "VinnyfinUITests" */;
+			buildPhases = (
+				0BBB2CB5B85406248FBE82C3 /* Sources */,
+				25668B67BF2417060C170940 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5274CCAA6511654F276C5B5F /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				850D8079A140ED3691C41285 /* VinnyfinUITests */,
+			);
+			name = VinnyfinUITests;
+			packageProductDependencies = (
+			);
+			productName = VinnyfinUITests;
+			productReference = 0696FC3419A958EA70DD02E9 /* VinnyfinUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		C406F95571791F6DE04B8B0B /* TopShelf */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 77C09E02F9FC8F8F7EE89473 /* Build configuration list for PBXNativeTarget "TopShelf" */;
@@ -314,28 +336,6 @@
 			productName = DownloadsWidget;
 			productReference = D0A1D0A1D0A1D0A1D0A10002 /* DownloadsWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
-		};
-		C15E999431C3000AC0B371D7 /* VinnyfinUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = FF7C5472D8884440F1BED195 /* Build configuration list for PBXNativeTarget "VinnyfinUITests" */;
-			buildPhases = (
-				0BBB2CB5B85406248FBE82C3 /* Sources */,
-				25668B67BF2417060C170940 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				5274CCAA6511654F276C5B5F /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				850D8079A140ED3691C41285 /* VinnyfinUITests */,
-			);
-			name = VinnyfinUITests;
-			packageProductDependencies = (
-			);
-			productName = VinnyfinUITests;
-			productReference = 0696FC3419A958EA70DD02E9 /* VinnyfinUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -392,13 +392,6 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		AC8A8E7A9B1E99394FB9A363 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		1926D1E43D0A099F26634655 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -413,7 +406,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		D9F6EC267ED4438C2305969A /* Resources */ = {
+		AC8A8E7A9B1E99394FB9A363 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -421,6 +414,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		D0A1D0A1D0A1D0A1D0A1000B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D9F6EC267ED4438C2305969A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -451,14 +451,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		E161FA50840A365A1A347530 /* Sources */ = {
+		D0A1D0A1D0A1D0A1D0A10009 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		D0A1D0A1D0A1D0A1D0A10009 /* Sources */ = {
+		E161FA50840A365A1A347530 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -498,108 +498,11 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		D0A1D0A1D0A1D0A1D0A1000D /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = DownloadsWidget/DownloadsWidget.entitlements;
-				DEVELOPMENT_TEAM = T5XCUP79BU;
-				ENABLE_APP_SANDBOX = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = DownloadsWidget/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@executable_path/../../../../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.widgets;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		D0A1D0A1D0A1D0A1D0A1000E /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = DownloadsWidget/DownloadsWidget.entitlements;
-				DEVELOPMENT_TEAM = T5XCUP79BU;
-				ENABLE_APP_SANDBOX = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = DownloadsWidget/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@executable_path/../../../../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.widgets;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
-		};
-		8339943559963AC7848AEEE6 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
-				DEVELOPMENT_TEAM = T5XCUP79BU;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = TopShelf/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.topshelf;
-				SDKROOT = appletvos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "appletvos appletvsimulator";
-				TARGETED_DEVICE_FAMILY = 3;
-			};
-			name = Debug;
-		};
-		B1BB927894A198E686CB8421 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
-				DEVELOPMENT_TEAM = T5XCUP79BU;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = TopShelf/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.topshelf;
-				SDKROOT = appletvos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "appletvos appletvsimulator";
-				TARGETED_DEVICE_FAMILY = 3;
-			};
-			name = Release;
-		};
 		6F53A65F92511F2FCBE3C5E1 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = T5XCUP79BU;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -687,10 +590,32 @@
 			};
 			name = Release;
 		};
+		8339943559963AC7848AEEE6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
+				DEVELOPMENT_TEAM = T5XCUP79BU;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TopShelf/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.topshelf;
+				SDKROOT = appletvos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "appletvos appletvsimulator";
+				TARGETED_DEVICE_FAMILY = 3;
+			};
+			name = Debug;
+		};
 		AE47CC7A9B70F2B35DC7F1FD /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = T5XCUP79BU;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -704,6 +629,27 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.tests;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vinnyfin.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vinnyfin";
+			};
+			name = Release;
+		};
+		B1BB927894A198E686CB8421 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
+				DEVELOPMENT_TEAM = T5XCUP79BU;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TopShelf/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.topshelf;
+				SDKROOT = appletvos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "appletvos appletvsimulator";
+				TARGETED_DEVICE_FAMILY = 3;
 			};
 			name = Release;
 		};
@@ -787,6 +733,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = T5XCUP79BU;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -803,10 +750,69 @@
 			};
 			name = Debug;
 		};
+		D0A1D0A1D0A1D0A1D0A1000D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = DownloadsWidget/DownloadsWidget.entitlements;
+				DEVELOPMENT_TEAM = T5XCUP79BU;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DownloadsWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.widgets;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D0A1D0A1D0A1D0A1D0A1000E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = DownloadsWidget/DownloadsWidget.entitlements;
+				DEVELOPMENT_TEAM = T5XCUP79BU;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DownloadsWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = vinnyfin;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.vinnysaj.vinnyfin.widgets;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		DC7247B4FEAF1B077B81636B /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = T5XCUP79BU;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -831,6 +837,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "AppIcon TV";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Vinnyfin/Vinnyfin.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvsimulator*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
@@ -866,6 +873,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "AppIcon TV";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvsimulator*]" = "AppIcon TV";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Vinnyfin/Vinnyfin.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
 				"CODE_SIGN_ENTITLEMENTS[sdk=appletvsimulator*]" = "Vinnyfin/Vinnyfin-tvOS.entitlements";
@@ -898,15 +906,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		D0A1D0A1D0A1D0A1D0A1000C /* Build configuration list for PBXNativeTarget "DownloadsWidget" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				D0A1D0A1D0A1D0A1D0A1000D /* Debug */,
-				D0A1D0A1D0A1D0A1D0A1000E /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
 		33DD849D12DB8178059A44EA /* Build configuration list for PBXNativeTarget "Vinnyfin" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -930,6 +929,15 @@
 			buildConfigurations = (
 				8339943559963AC7848AEEE6 /* Debug */,
 				B1BB927894A198E686CB8421 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D0A1D0A1D0A1D0A1D0A1000C /* Build configuration list for PBXNativeTarget "DownloadsWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0A1D0A1D0A1D0A1D0A1000D /* Debug */,
+				D0A1D0A1D0A1D0A1D0A1000E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

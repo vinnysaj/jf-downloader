@@ -83,13 +83,18 @@ final class ScreenshotTests: XCTestCase {
         settings.terminate()
     }
 
-    /// Closed: the outer display.
+    /// Closed: the outer display. Its shots and the inner display's share a slot, numbered to
+    /// take turns, closed first.
     @MainActor
     func testDuoOuter() async throws {
         XCUIDevice.shared.orientation = .portrait
         let app = try launch()
         try await snapHome(app)
-        try await snapShow(app, name: "02-show")
+        try await startDownloads(app)
+        // The season snapDownloads starts is Port Ellery's, from its page.
+        tap(tab("Shows", in: app))
+        tap(app.buttons["poster.Port Ellery"])
+        try await snapDownloads(app, name: "03-downloads")
     }
 
     /// Open flat, held like a book: the inner display, wider than tall.
@@ -97,11 +102,10 @@ final class ScreenshotTests: XCTestCase {
     func testDuoInner() async throws {
         XCUIDevice.shared.orientation = .portrait
         let app = try launch()
-        try await snapHome(app)
         try await snapShow(app, name: "02-show")
         tap(tab("Movies", in: app))
         tap(app.buttons["poster.The Quiet Meridian"])
-        try await snapPlayer(app, name: "03-player")
+        try await snapPlayer(app, name: "04-player")
     }
     #endif
 
@@ -292,7 +296,10 @@ final class ScreenshotTests: XCTestCase {
         tap(app.buttons[quality])
         turn(scrolledTo(app.switches["settings.transcodeDownloads"], in: app), on: transcoded)
         if keepingThemRunning { turn(scrolledTo(app.switches["settings.keepDownloadsRunning"], in: app), on: true) }
-        tap(app.navigationBars.buttons["Done"])
+        // On iPhone Duo's outer display the bar scrolls away with the form, and back as it scrolls up.
+        let done = app.navigationBars.buttons["Done"]
+        for _ in 0..<8 where !done.exists { app.swipeDown() }
+        tap(done)
     }
 
     /// Turns `toggle` on or off, a row whose switch at the end takes the tap.

@@ -111,7 +111,9 @@ echo "Library scanned: $count movies and episodes"
 
 # MARK: Devices
 
-# The screenshot simulator for a device type, created on first use and booted.
+# The screenshot simulator for a device type, created on first use and booted. Each is shut down
+# once its shots are taken: one left running, Vision Pro's above all, slows the sets after it
+# until their tests' waits time out.
 simulator() {
   local name="vinnyfin screenshots: $1" udid
   udid=$(xcrun simctl list devices -j | json "next((d['udid'] for r in json.load(sys.stdin)['devices'].values() for d in r if d['name'] == '$name' and d['isAvailable']), '')")
@@ -198,11 +200,11 @@ ios_device() { # folder, device type, test
   prepare "$udid"
   build_for iOS "id=$udid"
   shoot "$1" "$3" "id=$udid"
+  xcrun simctl shutdown "$udid"
 }
 
 if wants iphone; then
   ios_device "iPhone 6.9-inch" "iPhone 18 Pro Max" testIPhone
-  ios_device "iPhone 6.3-inch" "iPhone 18 Pro" testIPhone
 fi
 if wants ipad; then
   ios_device "iPad 13-inch" "iPad Pro 13-inch (M5)" testIPad
@@ -230,18 +232,21 @@ if wants duo; then
   fold open
   prepare "$duo"
   shoot "iPhone Duo inner" testDuoInner "id=$duo"
+  xcrun simctl shutdown "$duo"
 fi
 if wants tv; then
   tv=$(simulator "Apple TV 4K (4th generation)")
   prepare "$tv" tv
   build_for tvOS "id=$tv"
   shoot "Apple TV" testTV "id=$tv"
+  xcrun simctl shutdown "$tv"
 fi
 if wants vision; then
   vision=$(simulator "Apple Vision Pro")
   prepare "$vision" vision
   build_for visionOS "id=$vision"
   shoot "Apple Vision Pro" testVision "id=$vision" "$vision"
+  xcrun simctl shutdown "$vision"
 fi
 if wants mac; then
   if automationmodetool | grep -q "requires user authentication"; then
