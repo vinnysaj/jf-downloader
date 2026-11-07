@@ -317,9 +317,13 @@ final class ScreenshotTests: XCTestCase {
     @MainActor
     private func snapDownloads(_ app: XCUIApplication, name: String) async throws {
         tap(tab("Downloads", in: app))
-        let downloaded = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'downloaded.'"))
-        let four = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count >= 4"), object: downloaded)
-        XCTAssertEqual(XCTWaiter.wait(for: [four], timeout: 120), .completed, "The downloads didn't finish")
+        // Done when no row is left at the top in progress. Finished rows can't be counted: a list
+        // makes its rows only as they come into view, and on iPhone Duo's outer display they don't
+        // all fit.
+        let unfinished = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'job.'")).firstMatch
+        let downloaded = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'downloaded.'")).firstMatch
+        let done = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !unfinished.exists && downloaded.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [done], timeout: 120), .completed, "The downloads didn't finish")
         chooseDownloads("720p", transcoded: true, keepingThemRunning: true, in: app)
         // Port Ellery's page, still open from its screenshot.
         tap(tab("Shows", in: app))
@@ -327,8 +331,7 @@ final class ScreenshotTests: XCTestCase {
         tap(app.buttons["Download Season 1"])
         tap(app.buttons["batch.download"])
         tap(tab("Downloads", in: app))
-        let downloading = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'job.'")).firstMatch
-        XCTAssertTrue(downloading.waitForExistence(timeout: uiTimeout), "The season never started downloading")
+        XCTAssertTrue(unfinished.waitForExistence(timeout: uiTimeout), "The season never started downloading")
         try await snap(name, once: app.descendants(matching: .any)["keepAwake.status"])
     }
     #endif
